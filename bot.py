@@ -112,18 +112,22 @@ def extract_text_from_pdfs(pdf_paths):
 def generate_news_with_gemini(text):
     """Invia il testo a Gemini 3.5 Flash imponendo la formattazione e i tag HTML richiesti"""
     prompt = """
-    Analizza il testo di questi giornali ed estrai TUTTE le notizie rilevanti sulla Juventus.
-    Separa nettamente ogni singola notizia inserendo la parola esatta [NOTIZIA] all'inizio di ognuna.
-    
+    Sei un estrattore di notizie calcistiche estremamente preciso e letterale. Il tuo compito è analizzare il testo dei quotidiani forniti ed estrarre le notizie riguardanti la Juventus.
+
+    RECOLA TASSATIVA DI FEDELTÀ: 
+    - Non inventare nulla. 
+    - Non fare supposizioni, non aggiungere dettagli di mercato basati sulla tua conoscenza pregressa e non ricamare sulle trattative.
+    - Riporta SOLO ed esclusivamente i fatti, le cifre, i nomi e le dichiarazioni esplicitamente scritti nel testo fornito. Se il testo non contiene notizie sulla Juventus, non generare nulla.
+
     Regole RIGIDE di formattazione del testo (Applica tassativamente ed esclusivamente questi tag HTML):
-    1. Applica il GRASSETTO usando i tag <b> e </b> sui nomi di battesimo e cognomi dei giocatori (es: <b>Bernardo Silva</b>, <b>Brahim Diaz</b>), sui nomi di allenatori (es: <b>Thiago Motta</b>), sui dirigenti (es: <b>Damien Comolli</b>) e sui nomi di tutte le squadre di calcio citate (es: <b>Juventus</b>, <b>Atletico Madrid</b>). Il nome deve includere anche il nome di battesimo se presente.
+    1. Applica il GRASSETTO usando i tag <b> e </b> sui nomi di battesimo e cognomi dei giocatori (es: <b>Bernardo Silva</b>, <b>Brahim Diaz</b>), sui nomi di allenatori (es: <b>Thiago Motta</b>), sui dirigenti (es: <b>Damien Comolli</b>) e sui nomi di tutte le squadre di calcio citate (es: <b>Juventus</b>, <b>Atletico Madrid</b>). Il nome deve includere anche il nome di battesimo se presente nel testo.
     
-    2. Rileva quale quotidiano riporta la notizia (TuttoSport, Gazzetta dello Sport o Corriere dello Sport) e inserisci la parola chiave della fonte corrispondente alla fine del testo della notizia usando uno di questi tre tag precisi: [FONTE_TUTTO], [FONTE_GAZZETTA] o [FONTE_CORRIERE]. Se non è chiara la fonte, usa [FONTE_DEFAULT].
+    2. Rileva quale quotidiano riporta la notizia (TuttoSport, Gazzetta dello Sport o Corriere dello Sport) e inserisci la parola chiave della fonte corrispondente alla fine del testo della notizia usando uno di questi tre tag precisi: [FONTE_TUTTO], [FONTE_GAZZETTA] o [FONTE_CORRIERE]. Se la notizia è presente su più quotidiani o non è chiara la fonte principale, usa [FONTE_DEFAULT].
     
     Struttura finale della risposta per ogni notizia:
-    [NOTIZIA][EMOJI INIZIALI ADATTE] Testo breve, lineare e d'impatto senza titoli della notizia con i tag <b> applicati. [TAG_FONTE_RILEVATA]
+    [NOTIZIA][EMOJI INIZIALI ADATTE] Testo breve, lineare, fedele e d'impatto senza alcun titolo o intestazione. Il testo deve iniziare direttamente con l'emoji e contenere i tag <b> applicati. [TAG_FONTE_RILEVATA]
     
-    Nota fondamentale: Sii estremamente sintetico nel testo della notizia. Non inserire MAI titoli o intestazioni, l'output deve essere un flusso lineare di testo che inizia direttamente con l'emoji. Non usare asterischi (*) o trattini bassi (_).
+    Nota fondamentale: Sii estremamente sintetico nel testo della notizia per rimanere comodamente nei 280 caratteri. L'output deve essere un flusso continuo diviso solo dal marcatore [NOTIZIA]. Non usare asterischi (*) o trattini bassi (_).
     """
     
     response = client.models.generate_content(
