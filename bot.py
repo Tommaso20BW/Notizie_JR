@@ -122,7 +122,8 @@ def generate_news_with_gemini(text):
     Regole RIGIDE di formattazione del testo (Applica tassativamente ed esclusivamente questi tag HTML):
     1. Applica il GRASSETTO usando i tag <b> e </b> sui nomi di battesimo e cognomi dei giocatori (es: <b>Bernardo Silva</b>, <b>Brahim Diaz</b>), sui nomi di allenatori (es: <b>Thiago Motta</b>), sui dirigenti (es: <b>Damien Comolli</b>) e sui nomi di tutte le squadre di calcio citate (es: <b>Juventus</b>, <b>Atletico Madrid</b>). Il nome deve includere anche il nome di battesimo se presente nel testo.
     
-    2. Rileva quale quotidiano riporta la notizia (TuttoSport, Gazzetta dello Sport o Corriere dello Sport) e inserisci la parola chiave della fonte corrispondente alla fine del testo della notizia usando uno di questi tre tag precisi: [FONTE_TUTTO], [FONTE_GAZZETTA] o [FONTE_CORRIERE]. Se la notizia è presente su più quotidiani o non è chiara la fonte principale, usa [FONTE_DEFAULT].
+    2. Identifica TASSARE COMPORTAMENTO: assegna OGNI notizia a uno specifico quotidiano. Devi inserire la parola chiave della fonte corrispondente alla fine del testo della notizia usando uno di questi tre tag precisi: [FONTE_TUTTO], [FONTE_GAZZETTA] o [FONTE_CORRIERE]. 
+    NON puoi usare altri tag e NON devi lasciare notizie senza una di queste tre fonti. Se una notizia è presente su più giornali, assegnala a quello che fornisce più dettagli o al primo che la riporta.
     
     Struttura finale della risposta per ogni notizia:
     [NOTIZIA][EMOJI INIZIALI ADATTE] Testo breve, lineare, fedele e d'impatto senza alcun titolo o intestazione. Il testo deve iniziare direttamente con l'emoji e contenere i tag <b> applicati. [TAG_FONTE_RILEVATA]
