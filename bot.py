@@ -96,36 +96,23 @@ def get_pdf_from_telegram():
         
     return pdf_paths
 
-def extract_text_from_pdfs(pdf_paths):
-    """Estrae il testo filtrando solo le pagine che parlano di Juventus per risparmiare Quota Token"""
-    full_text = ""
-    parole_chiave = ["juve", "juventus", "allegri", "giuntoli", "motta", "comolli", "reborn"]
-    
-    pagine_totali = 0
-    pagine_utili = 0
-    
-    for path in pdf_paths:
-        try:
-            reader = PdfReader(path)
-            for page in reader.pages:
-                pagine_totali += 1
-                text = page.extract_text()
-                if text:
-                    # Controllo se la pagina contiene almeno una delle parole chiave bianconere
-                    text_lower = text.lower()
-                    if any(chiave in text_lower for chiave in parole_chiave):
-                        full_text += text + "\n"
-                        pagine_utili += 1
-        except Exception as e:
-            print(f"Errore lettura testo nel file {path}: {e}")
-            
-    print(f"Ottimizzazione Token: analizzate {pagine_totali} pagine totali. Tenute solo {pagine_utili} pagine rilevanti.")
-    return full_text
+def extract_text_from_single_pdf(path):
+    """Estrae tutto il contenuto testuale da un singolo file PDF"""
+    text = ""
+    try:
+        reader = PdfReader(path)
+        for page in reader.pages:
+            page_text = page.extract_text()
+            if page_text:
+                text += page_text + "\n"
+    except Exception as e:
+        print(f"Errore lettura testo nel file {path}: {e}")
+    return text
 
 def generate_news_with_gemini(text):
     """Invia il testo a Gemini 3.5 Flash imponendo la formattazione e i tag HTML richiesti"""
     prompt = """
-    Sei un estrattore di notizie calcistiche estremamente preciso e letterale. Il tuo compito è analizzare il testo dei quotidiani forniti ed estrarre le notizie riguardanti la Juventus.
+    Sei un estrattore di notizie calcistiche estremamente preciso e letterale. Il tuo compito è analizzare il testo del quotidiano fornito ed estrarre TUTTE le notizie riguardanti la Juventus, il suo calciomercato, la dirigenza e i suoi giocatori. Non tralasciare nulla che sia rilevante.
 
     REGOLA TASSATIVA DI FEDELTÀ: 
     - Non inventare nulla. 
@@ -133,9 +120,9 @@ def generate_news_with_gemini(text):
     - Riporta SOLO ed esclusivamente i fatti, le cifre, i nomi e le dichiarazioni esplicitamente scritti nel testo fornito. Se il testo non contiene notizie sulla Juventus, non generare nulla.
 
     Regole RIGIDE di formattazione del testo (Applica tassativamente ed esclusivamente questi tag HTML):
-    1. Applica il GRASSETTO usando i tag <b> e </b> sui nomi di battesimo e cognomi dei giocatori (es: <b>Bernardo Silva</b>, <b>Brahim Diaz</b>), sui nomi di allenatori (es: <b>Thiago Motta</b>), sui dirigenti (es: <b>Damien Comolli</b>) e sui nomi di tutte le squadre di calcio citate (es: <b>Juventus</b>, <b>Atletico Madrid</b>). Il nome deve INCLUDE anche il nome di battesimo se presente nel testo.
+    1. Applica il GRASSETTO usando i tag <b> e </b> sui nomi di battesimo e cognomi dei giocatori (es: <b>Bernardo Silva</b>, <b>Brahim Diaz</b>), sui nomi di allenatori (es: <b>Thiago Motta</b>), sui dirigenti (es: <b>Damien Comolli</b>) e sui nomi di tutte le squadre di calcio citate (es: <b>Juventus</b>, <b>Atletico Madrid</b>). Il nome deve includere anche il nome di battesimo se presente nel testo.
     
-    2. IDENTIFICAZIONE DELLA FONTE OBBLIGATORIA: Assegna TASSATIVAMENTE ogni notizia a uno specifico quotidiano. Devi inserire la parola chiave della fonte corrispondente alla fine del testo della notizia usando uno di questi tre tag precisi: [FONTE_TUTTO], [FONTE_GAZZETTA] o [FONTE_CORRIERE]. Non lasciare mai notizie senza uno di questi tre tag specifici. Se una notizia è riportata su più giornali, assegnala a quello che fornisce più dettagli o al primo che incontra.
+    2. IDENTIFICAZIONE DELLA FONTE OBBLIGATORIA: Assegna TASSATIVAMENTE ogni notizia estratta a uno specifico quotidiano. Devi inserire la parola chiave della fonte corrispondente alla fine del testo della notizia usando uno di questi tre tag precisi: [FONTE_TUTTO], [FONTE_GAZZETTA] o [FONTE_CORRIERE]. Se una notizia è riportata su più giornali o l'attribuzione avviene nel testo di quel PDF, usa lo specifico tag del giornale analizzato.
     
     Struttura finale della risposta per ogni notizia:
     [NOTIZIA][EMOJI INIZIALI ADATTE] Testo breve, lineare, fedele e d'impatto senza alcun titolo o intestazione. Il testo deve iniziare direttamente con l'emoji e contenere i tag <b> applicati. [TAG_FONTE_RILEVATA]
@@ -145,7 +132,7 @@ def generate_news_with_gemini(text):
     
     response = client.models.generate_content(
         model='gemini-3.5-flash',
-        contents=f"{prompt}\n\nTesto dei quotidiani:\n{text}",
+        contents=f"{prompt}\n\nTesto del quotidiano:\n{text}",
     )
     return response.text
 
@@ -174,7 +161,7 @@ def send_to_telegram(news_list):
                 clean_news = clean_news.replace(tag, "").strip()
                 break
                 
-        # Se per un'anomalia Gemini non ha inserito il tag, fa un fallback sicuro su TuttoSport
+        # Fallback sicuro se manca il tag della fonte
         if not tag_fonte:
             tag_fonte = "[FONTE_TUTTO]"
                 
@@ -197,37 +184,45 @@ def send_to_telegram(news_list):
         res_json = res.json()
         
         if res_json.get("ok"):
-            print(f"-> Notizia {idx+1} pubblicata con stile Premium!")
+            print(f"-> Notizia pubblicata con stile Premium!")
         else:
-            print(f"-> Errore di pubblicazione sulla notizia {idx+1}: {res_json.get('description')}")
+            print(f"-> Errore di pubblicazione: {res_json.get('description')}")
 
 if __name__ == "__main__":
     print("Scaricamento PDF da Telegram...")
     pdfs = get_pdf_from_telegram()
     
     if len(pdfs) == 0:
-        print("Errore critico: Nessun PDF è stato scaricato (controlla le dimensioni dei file).")
+        print("Errore critico: Nessun PDF è stato scaricato.")
     else:
-        print(f"Procedo con l'estrazione da {len(pdfs)} giornali recuperati con successo.")
-        print("Estrazione testo dai PDF...")
-        testo_giornali = extract_text_from_pdfs(pdfs)
+        print(f"Procedo con l'estrazione sequenziale da {len(pdfs)} giornali recuperati.")
         
-        if not testo_giornali.strip():
-            print("Errore: Testo assente o nessuna pagina parla della Juventus.")
-        else:
+        for i, path in enumerate(pdfs):
+            print(f"\n--- Elaborazione Giornale {i+1} di {len(pdfs)} ({path}) ---")
+            print("Estrazione testo dal PDF...")
+            testo_giornale = extract_text_from_single_pdf(path)
+            
+            if not testo_giornale.strip():
+                print("Testo assente o non estraibile da questo file. Salto.")
+                continue
+                
             print("Generazione notizie con Gemini 3.5 Flash...")
             try:
-                notizie_raw = generate_news_with_gemini(testo_giornali)
+                notizie_raw = generate_news_with_gemini(testo_giornale)
                 
-                # Divisione della stringa in singole notizie basata sul marcatore impostato
+                # Divisione della stringa in singole notizie
                 lista_notizie = notizie_raw.split("[NOTIZIA]")
                 lista_notizie = [n.strip() for n in lista_notizie if n.strip()]
                 
-                print(f"Trovate {len(lista_notizie)} notizie elaborate. Avvio pubblicazione...")
+                print(f"Trovate {len(lista_notizie)} notizie. Avvio pubblicazione...")
                 send_to_telegram(lista_notizie)
-                print("Procedura completata con successo!")
+                
             except Exception as e:
-                if "429" in str(e) or "quota" in str(e).lower():
-                    print("Errore Quota superata. Il testo estratto è ancora troppo pesante per il piano gratuito.")
-                else:
-                    print(f"Errore durante la generazione: {e}")
+                print(f"Errore durante la generazione per questo giornale: {e}")
+            
+            # Se ci sono altri giornali da leggere, aspetta 60 secondi per azzerare i token al minuto (TPM)
+            if i < len(pdfs) - 1:
+                print("In attesa di 60 secondi prima del prossimo giornale per non sovraccaricare la quota di Google...")
+                time.sleep(60)
+                
+        print("\nProcedura di elaborazione giornaliera completata con successo!")
