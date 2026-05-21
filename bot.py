@@ -11,11 +11,11 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-# Inizializzazione del client ufficiale Google GenAI per la serie 3.5
+# Inizializzazione del client ufficiale Google GenAI
 client = genai.Client(api_key=GEMINI_API_KEY)
 
 def crea_sessione_robusta():
-    """Crea una sessione HTTP con tentativi di ripescaggio automatico in caso di instabilità"""
+    """Crea una sessione HTTP con tentativi di ripescaggio automatico"""
     session = requests.Session()
     retry = Retry(
         total=5,
@@ -28,7 +28,7 @@ def crea_sessione_robusta():
     return session
 
 def extract_pdf_info(message):
-    """Intercetta il file_id del PDF sia nei messaggi normali che negli inoltri diretti"""
+    """Intercetta il file_id del PDF"""
     if "document" in message:
         doc = message["document"]
         if doc.get("mime_type") == "application/pdf" or doc.get("file_name", "").lower().endswith(".pdf"):
@@ -36,34 +36,30 @@ def extract_pdf_info(message):
     return None
 
 def get_pdf_from_telegram():
-    """Recupera, scarica fino a 3 PDF recenti e conferma la lettura a Telegram per svuotare la coda"""
+    """Recupera PDF e svuota la coda di Telegram tramite offset"""
     session = crea_sessione_robusta()
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates?limit=100"
     
     try:
         response = session.get(url, timeout=30).json()
     except Exception as e:
-        print(f"Errore di connessione a Telegram durante getUpdates: {e}")
+        print(f"Errore di connessione a Telegram: {e}")
         return []
     
     updates = response.get("result", [])
     if not updates:
-        print("Nessun aggiornamento presente nella coda di Telegram.")
         return []
         
     file_ids = []
     highest_update_id = 0
     
-    # Analizza la cronologia al contrario partendo dall'ultimo messaggio inviato
     for update in reversed(updates):
-        # Tracciamo l'update_id più alto per confermare la lettura alla fine
         u_id = update.get("update_id")
-        if u_id and u_id > highest_update_id:
+        if u_id > highest_update_id:
             highest_update_id = u_id
             
         message = update.get("message") or update.get("channel_post")
-        if not message:
-            continue
+        if not message: continue
             
         file_id = extract_pdf_info(message)
         if not file_id and "reply_to_message" in message:
@@ -71,178 +67,92 @@ def get_pdf_from_telegram():
             
         if file_id and file_id not in file_ids:
             file_ids.append(file_id)
-            if len(file_ids) == 3:
-                break
+            if len(file_ids) == 3: break
                 
     pdf_paths = []
     if file_ids:
-        print(f"Trovati {len(file_ids)} file PDF negli aggiornamenti. Avvio del download...")
+        print(f"Trovati {len(file_ids)} PDF. Avvio download...")
         for idx, file_id in enumerate(file_ids):
             try:
                 file_info = session.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getFile?file_id={file_id}", timeout=30).json()
                 if "result" in file_info:
                     file_path = file_info["result"]["file_path"]
                     download_url = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file_path}"
-                    
                     local_filename = f"giornale_{idx}.pdf"
-                    print(f"Scaricamento file {idx+1}...")
                     
                     with session.get(download_url, stream=True, timeout=120) as r:
                         if r.status_code == 200:
                             with open(local_filename, "wb") as f:
                                 for chunk in r.iter_content(chunk_size=65536):
-                                    if chunk:
-                                        f.write(chunk)
-                            
-                            if os.path.exists(local_filename) and os.path.getsize(local_filename) > 0:
-                                print(f"-> File {idx+1} salvato ({round(os.path.getsize(local_filename)/(1024*1024), 2)} MB).")
-                                pdf_paths.append(local_filename)
-                        else:
-                            print(f"-> Telegram ha negato il download del file {idx+1} (Status: {r.status_code}).")
-                else:
-                    print(f"-> File {idx+1} ignorato dal bot: {file_info.get('description', 'Errore getFile')}")
+                                    if chunk: f.write(chunk)
+                            pdf_paths.append(local_filename)
             except Exception as e:
-                print(f"-> Errore sul file {idx+1}: {e}")
+                print(f"Errore file {idx+1}: {e}")
                 
-    # SVUOTAMENTO CODA: Confermiamo a Telegram che abbiamo letto tutto fino a highest_update_id
-    if highest_update_id > 0:
-        try:
-            confirm_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates?offset={highest_update_id + 1}&limit=1"
-            session.get(confirm_url, timeout=10)
-            print("-> Coda degli aggiornamenti di Telegram svuotata con successo (conferma offset).")
-        except Exception as e:
-            print(f"Errore durante lo svuotamento della coda dei log: {e}")
-            
+    # Svuotamento coda
+    session.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates?offset={highest_update_id + 1}&limit=1", timeout=10)
     return pdf_paths
 
 def extract_text_from_single_pdf(path):
-    """Estrae tutto il contenuto testuale da un singolo file PDF"""
     text = ""
     try:
         reader = PdfReader(path)
         for page in reader.pages:
-            page_text = page.extract_text()
-            if page_text:
-                text += page_text + "\n"
+            p = page.extract_text()
+            if p: text += p + "\n"
     except Exception as e:
-        print(f"Errore lettura testo nel file {path}: {e}")
+        print(f"Errore lettura {path}: {e}")
     return text
 
 def generate_news_with_gemini(text):
-    """Invia il testo a Gemini 3.5 Flash imponendo la formattazione e i tag HTML richiesti"""
-    prompt = """
-    Sei un estrattore di notizie calcistiche estremamente preciso e letterale. Il tuo compito è analizzare il testo del quotidiano fornito ed estrarre TUTTE le notizie riguardanti la Juventus, il suo calciomercato, la dirigenza e i suoi giocatori. Non tralasciare nulla che sia rilevante.
-
-    REGOLA TASSATIVA DI FEDELTÀ: 
-    - Non inventare nulla. 
-    - Non fare supposizioni, non aggiungere dettagli di mercato basati sulla tua conoscenza pregressa e non ricamare sulle trattative.
-    - Riporta SOLO ed esclusivamente i fatti, le cifre, i nomi e le dichiarazioni esplicitamente scritti nel testo fornito. Se il testo non contiene notizie sulla Juventus, non generare nulla.
-
-    Regole RIGIDE di formattazione del testo (Applica tassativamente ed esclusivamente questi tag HTML):
-    1. Applica il GRASSETTO usando i tag <b> e </b> sui nomi di battesimo e cognomi dei giocatori (es: <b>Bernardo Silva</b>, <b>Brahim Diaz</b>), sui nomi di allenatori (es: <b>Thiago Motta</b>), sui dirigenti (es: <b>Damien Comolli</b>) e sui nomi di tutte le squadre di calcio citate (es: <b>Juventus</b>, <b>Atletico Madrid</b>). Il nome deve includere anche il nome di battesimo se presente nel testo.
-    
-    2. IDENTIFICAZIONE DELLA FONTE OBBLIGATORIA: Assegna TASSATIVAMENTE ogni notizia estratta a uno specifico quotidiano. Devi inserire la parola chiave della fonte corrispondente alla fine del testo della notizia usando uno di questi tre tag precisi: [FONTE_TUTTO], [FONTE_GAZZETTA] o [FONTE_CORRIERE]. Se una notizia è riportata su più giornali o l'attribuzione avviene nel testo di quel PDF, usa lo specifico tag del giornale analizzato.
-    
-    Struttura finale della risposta per ogni notizia:
-    [NOTIZIA][EMOJI INIZIALI ADATTE] Testo breve, lineare, fedele e d'impatto senza alcun titolo o intestazione. Il testo deve iniziare direttamente con l'emoji e contenere i tag <b> applicati. [TAG_FONTE_RILEVATA]
-    
-    Nota fondamentale: Sii estremamente sintetico nel testo della notizia per rimanere comodamente nei 280 caratteri. L'output deve essere un flusso continuo diviso solo dal marcatore [NOTIZIA]. Non usare asterischi (*) o trattini bassi (_).
+    prompt = """Sei un estrattore di notizie calcistiche. Estrai TUTTE le notizie sulla <b>Juventus</b> dal testo fornito.
+    - Non inventare nulla.
+    - Formato: Grassetti su giocatori, allenatori, dirigenti e squadre.
+    - Fonte obbligatoria alla fine con tag: [FONTE_TUTTO], [FONTE_GAZZETTA] o [FONTE_CORRIERE].
+    - Struttura: [NOTIZIA] [Emoji] Testo... [TAG_FONTE]
+    - Sii sintetico (max 280 caratteri).
     """
-    
     response = client.models.generate_content(
         model='gemini-3.5-flash',
-        contents=f"{prompt}\n\nTesto del quotidiano:\n{text}",
+        contents=f"{prompt}\n\nTesto:\n{text}",
     )
     return response.text
 
 def send_to_telegram(news_list):
-    """Costruisce il post inserendo le emoji Premium con attributo emoji-id e la spaziatura corretta"""
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    
-    # Mappatura corretta con l'attributo esatto emoji-id richiesto dalle API di Telegram
     emoji_mapping = {
         "[FONTE_TUTTO]": ('<tg-emoji emoji-id="6032834612990841221">📰</tg-emoji>', "TuttoSport"),
         "[FONTE_GAZZETTA]": ('<tg-emoji emoji-id="6032862491623559282">📰</tg-emoji>', "Gazzetta dello Sport"),
         "[FONTE_CORRIERE]": ('<tg-emoji emoji-id="6030691308346019878">📰</tg-emoji>', "Corriere dello Sport")
     }
-    tg_reborn_emoji = '<tg-emoji emoji-id="5985659276327132147">👉</tg-emoji>'
+    tg_reborn = '<tg-emoji emoji-id="5985659276327132147">👉</tg-emoji>'
 
-    for idx, news in enumerate(news_list):
-        clean_news = news.strip()
-        if not clean_news:
-            continue
-            
-        tag_fonte = None
-        for tag in emoji_mapping.keys():
-            if tag in clean_news:
-                tag_fonte = tag
-                clean_news = clean_news.replace(tag, "").strip()
-                break
-                
-        if not tag_fonte:
-            tag_fonte = "[FONTE_TUTTO]"
-                
-        emoji_fonte, nome_fonte = emoji_mapping[tag_fonte]
+    for news in news_list:
+        clean = news.strip()
+        if not clean: continue
+        tag = next((t for t in emoji_mapping if t in clean), "[FONTE_TUTTO]")
+        clean = clean.replace(tag, "").strip()
+        emoji_fonte, nome_fonte = emoji_mapping[tag]
         
-        testo_finale = (
-            f"{clean_news}\n\n"
-            f"{emoji_fonte} <i>{nome_fonte}</i>\n\n"
-            f"{tg_reborn_emoji} @Juventus_Reborn"
-        )
-        
-        payload = {
-            "chat_id": CHAT_ID,
-            "text": testo_finale,
-            "parse_mode": "HTML"
-        }
-        
-        res = requests.post(url, json=payload)
-        res_json = res.json()
-        
-        if res_json.get("ok"):
-            print(f"-> Notizia pubblicata con stile Premium!")
-        else:
-            print(f"-> Errore di pubblicazione: {res_json.get('description')}")
+        testo = f"{clean}\n\n{emoji_fonte} <i>{nome_fonte}</i>\n\n{tg_reborn} @Juventus_Reborn"
+        requests.post(url, json={"chat_id": CHAT_ID, "text": testo, "parse_mode": "HTML"})
 
 if __name__ == "__main__":
-    print("Scaricamento PDF da Telegram...")
     pdfs = get_pdf_from_telegram()
-    
     if len(pdfs) == 0:
-        print("Nessun nuovo file PDF trovato negli aggiornamenti di Telegram. Chiusura del bot in corso...")
+        print("Nessun PDF nuovo. Chiusura.")
     else:
-        print(f"Procedo con l'estrazione sequenziale da {len(pdfs)} giornali recuperati.")
-        
         for i, path in enumerate(pdfs):
-            print(f"\n--- Elaborazione Giornale {i+1} di {len(pdfs)} ({path}) ---")
-            print("Estrazione testo dal PDF...")
-            testo_giornale = extract_text_from_single_pdf(path)
-            
-            if not testo_giornale.strip():
-                print("Testo assente o non estraibile da questo file. Salto.")
-                if os.path.exists(path):
-                    os.remove(path)
-                continue
-                
-            print("Generazione notizie con Gemini 3.5 Flash...")
-            try:
-                notizie_raw = generate_news_with_gemini(testo_giornale)
-                
-                lista_notizie = notizie_raw.split("[NOTIZIA]")
-                lista_notizie = [n.strip() for n in lista_notizie if n.strip()]
-                
-                print(f"Trovate {len(lista_notizie)} notizie. Avvio pubblicazione...")
-                send_to_telegram(lista_notizie)
-                
-            except Exception as e:
-                print(f"Errore durante la generazione per questo giornale: {e}")
-            
-            if os.path.exists(path):
-                os.remove(path)
-                print(f"-> File {path} eliminato permanentemente dalla memoria locale.")
-            
+            print(f"Elaborazione {path}...")
+            testo = extract_text_from_single_pdf(path)
+            if testo.strip():
+                try:
+                    raw = generate_news_with_gemini(testo)
+                    lista = [n.strip() for n in raw.split("[NOTIZIA]") if n.strip()]
+                    send_to_telegram(lista)
+                except Exception as e:
+                    print(f"Errore Gemini: {e}")
+            if os.path.exists(path): os.remove(path)
             if i < len(pdfs) - 1:
-                print("In attesa di 60 secondi prima del prossimo giornale...")
-                time.sleep(60)
-                
-        print("\nProcedura di elaborazione giornaliera completata con successo!")
+                time.sleep(20) # Pausa ottimizzata
+        print("Operazione completata.")
