@@ -1,5 +1,6 @@
 import os
 import requests
+import time
 from pypdf import PdfReader
 from google import genai
 from requests.adapters import HTTPAdapter
@@ -96,17 +97,29 @@ def get_pdf_from_telegram():
     return pdf_paths
 
 def extract_text_from_pdfs(pdf_paths):
-    """Estrae tutto il contenuto testuale dai PDF scaricati"""
+    """Estrae il testo filtrando solo le pagine che parlano di Juventus per risparmiare Quota Token"""
     full_text = ""
+    parole_chiave = ["juve", "juventus", "allegri", "giuntoli", "motta", "comolli", "reborn"]
+    
+    pagine_totali = 0
+    pagine_utili = 0
+    
     for path in pdf_paths:
         try:
             reader = PdfReader(path)
             for page in reader.pages:
+                pagine_totali += 1
                 text = page.extract_text()
                 if text:
-                    full_text += text + "\n"
+                    # Controllo se la pagina contiene almeno una delle parole chiave bianconere
+                    text_lower = text.lower()
+                    if any(chiave in text_lower for chiave in parole_chiave):
+                        full_text += text + "\n"
+                        pagine_utili += 1
         except Exception as e:
             print(f"Errore lettura testo nel file {path}: {e}")
+            
+    print(f"Ottimizzazione Token: analizzate {pagine_totali} pagine totali. Tenute solo {pagine_utili} pagine rilevanti.")
     return full_text
 
 def generate_news_with_gemini(text):
@@ -120,7 +133,7 @@ def generate_news_with_gemini(text):
     - Riporta SOLO ed esclusivamente i fatti, le cifre, i nomi e le dichiarazioni esplicitamente scritti nel testo fornito. Se il testo non contiene notizie sulla Juventus, non generare nulla.
 
     Regole RIGIDE di formattazione del testo (Applica tassativamente ed esclusivamente questi tag HTML):
-    1. Applica il GRASSETTO usando i tag <b> e </b> sui nomi di battesimo e cognomi dei giocatori (es: <b>Bernardo Silva</b>, <b>Brahim Diaz</b>), sui nomi di allenatori (es: <b>Thiago Motta</b>), sui dirigenti (es: <b>Damien Comolli</b>) e sui nomi di tutte le squadre di calcio citate (es: <b>Juventus</b>, <b>Atletico Madrid</b>). Il nome deve includere anche il nome di battesimo se presente nel testo.
+    1. Applica il GRASSETTO usando i tag <b> e </b> sui nomi di battesimo e cognomi dei giocatori (es: <b>Bernardo Silva</b>, <b>Brahim Diaz</b>), sui nomi di allenatori (es: <b>Thiago Motta</b>), sui dirigenti (es: <b>Damien Comolli</b>) e sui nomi di tutte le squadre di calcio citate (es: <b>Juventus</b>, <b>Atletico Madrid</b>). Il nome deve INCLUDE anche il nome di battesimo se presente nel testo.
     
     2. IDENTIFICAZIONE DELLA FONTE OBBLIGATORIA: Assegna TASSATIVAMENTE ogni notizia a uno specifico quotidiano. Devi inserire la parola chiave della fonte corrispondente alla fine del testo della notizia usando uno di questi tre tag precisi: [FONTE_TUTTO], [FONTE_GAZZETTA] o [FONTE_CORRIERE]. Non lasciare mai notizie senza uno di questi tre tag specifici. Se una notizia è riportata su più giornali, assegnala a quello che fornisce più dettagli o al primo che incontra.
     
@@ -200,15 +213,21 @@ if __name__ == "__main__":
         testo_giornali = extract_text_from_pdfs(pdfs)
         
         if not testo_giornali.strip():
-            print("Errore: Testo assente o non estraibile dai PDF.")
+            print("Errore: Testo assente o nessuna pagina parla della Juventus.")
         else:
             print("Generazione notizie con Gemini 3.5 Flash...")
-            notizie_raw = generate_news_with_gemini(testo_giornali)
-            
-            # Divisione della stringa in singole notizie basata sul marcatore impostato
-            lista_notizie = notizie_raw.split("[NOTIZIA]")
-            lista_notizie = [n.strip() for n in lista_notizie if n.strip()]
-            
-            print(f"Trovate {len(lista_notizie)} notizie elaborate. Avvio pubblicazione...")
-            send_to_telegram(lista_notizie)
-            print("Procedura completata con successo!")
+            try:
+                notizie_raw = generate_news_with_gemini(testo_giornali)
+                
+                # Divisione della stringa in singole notizie basata sul marcatore impostato
+                lista_notizie = notizie_raw.split("[NOTIZIA]")
+                lista_notizie = [n.strip() for n in lista_notizie if n.strip()]
+                
+                print(f"Trovate {len(lista_notizie)} notizie elaborate. Avvio pubblicazione...")
+                send_to_telegram(lista_notizie)
+                print("Procedura completata con successo!")
+            except Exception as e:
+                if "429" in str(e) or "quota" in str(e).lower():
+                    print("Errore Quota superata. Il testo estratto è ancora troppo pesante per il piano gratuito.")
+                else:
+                    print(f"Errore durante la generazione: {e}")
