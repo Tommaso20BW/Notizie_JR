@@ -122,8 +122,7 @@ def generate_news_with_gemini(text):
     Regole RIGIDE di formattazione del testo (Applica tassativamente ed esclusivamente questi tag HTML):
     1. Applica il GRASSETTO usando i tag <b> e </b> sui nomi di battesimo e cognomi dei giocatori (es: <b>Bernardo Silva</b>, <b>Brahim Diaz</b>), sui nomi di allenatori (es: <b>Thiago Motta</b>), sui dirigenti (es: <b>Damien Comolli</b>) e sui nomi di tutte le squadre di calcio citate (es: <b>Juventus</b>, <b>Atletico Madrid</b>). Il nome deve includere anche il nome di battesimo se presente nel testo.
     
-    2. Identifica TASSARE COMPORTAMENTO: assegna OGNI notizia a uno specifico quotidiano. Devi inserire la parola chiave della fonte corrispondente alla fine del testo della notizia usando uno di questi tre tag precisi: [FONTE_TUTTO], [FONTE_GAZZETTA] o [FONTE_CORRIERE]. 
-    NON puoi usare altri tag e NON devi lasciare notizie senza una di queste tre fonti. Se una notizia è presente su più giornali, assegnala a quello che fornisce più dettagli o al primo che la riporta.
+    2. IDENTIFICAZIONE DELLA FONTE OBBLIGATORIA: Assegna TASSATIVAMENTE ogni notizia a uno specifico quotidiano. Devi inserire la parola chiave della fonte corrispondente alla fine del testo della notizia usando uno di questi tre tag precisi: [FONTE_TUTTO], [FONTE_GAZZETTA] o [FONTE_CORRIERE]. Non lasciare mai notizie senza uno di questi tre tag specifici. Se una notizia è riportata su più giornali, assegnala a quello che fornisce più dettagli o al primo che incontra.
     
     Struttura finale della risposta per ogni notizia:
     [NOTIZIA][EMOJI INIZIALI ADATTE] Testo breve, lineare, fedele e d'impatto senza alcun titolo o intestazione. Il testo deve iniziare direttamente con l'emoji e contenere i tag <b> applicati. [TAG_FONTE_RILEVATA]
@@ -145,8 +144,7 @@ def send_to_telegram(news_list):
     emoji_mapping = {
         "[FONTE_TUTTO]": ('<tg-emoji emoji-id="6032834612990841221">📰</tg-emoji>', "TuttoSport"),
         "[FONTE_GAZZETTA]": ('<tg-emoji emoji-id="6032862491623559282">📰</tg-emoji>', "Gazzetta dello Sport"),
-        "[FONTE_CORRIERE]": ('<tg-emoji emoji-id="6030691308346019878">📰</tg-emoji>', "Corriere dello Sport"),
-        "[FONTE_DEFAULT]": ('📰', "Quotidiano")
+        "[FONTE_CORRIERE]": ('<tg-emoji emoji-id="6030691308346019878">📰</tg-emoji>', "Corriere dello Sport")
     }
     tg_reborn_emoji = '<tg-emoji emoji-id="5985659276327132147">👉</tg-emoji>'
 
@@ -156,12 +154,16 @@ def send_to_telegram(news_list):
             continue
             
         # Determina la fonte inserita da Gemini e pulisce il tag di controllo
-        tag_fonte = "[FONTE_DEFAULT]"
+        tag_fonte = None
         for tag in emoji_mapping.keys():
             if tag in clean_news:
                 tag_fonte = tag
                 clean_news = clean_news.replace(tag, "").strip()
                 break
+                
+        # Se per un'anomalia Gemini non ha inserito il tag, fa un fallback sicuro su TuttoSport
+        if not tag_fonte:
+            tag_fonte = "[FONTE_TUTTO]"
                 
         emoji_fonte, nome_fonte = emoji_mapping[tag_fonte]
         
@@ -182,7 +184,7 @@ def send_to_telegram(news_list):
         res_json = res.json()
         
         if res_json.get("ok"):
-            print(f"-> Notizia {idx+1} pubblicata sul gruppo con stile Premium!")
+            print(f"-> Notizia {idx+1} pubblicata con stile Premium!")
         else:
             print(f"-> Errore di pubblicazione sulla notizia {idx+1}: {res_json.get('description')}")
 
