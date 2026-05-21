@@ -192,8 +192,9 @@ if __name__ == "__main__":
     print("Scaricamento PDF da Telegram...")
     pdfs = get_pdf_from_telegram()
     
+    # CONTROLLO DI CHIUSURA: Se l'array è vuoto, il bot interrompe subito l'esecuzione senza fare altro
     if len(pdfs) == 0:
-        print("Errore critico: Nessun PDF è stato scaricato.")
+        print("Nessun file PDF trovato negli aggiornamenti di Telegram. Chiusura del bot in corso...")
     else:
         print(f"Procedo con l'estrazione sequenziale da {len(pdfs)} giornali recuperati.")
         
@@ -220,7 +221,7 @@ if __name__ == "__main__":
             except Exception as e:
                 print(f"Errore durante la generazione per questo giornale: {e}")
             
-            # Se ci sono altri giornali da leggere, aspetta 60 secondi per azzerare i token al minuto (TPM)
+            # Se ci sono altri giornali da leggere, aspetta 60 secondi
             if i < len(pdfs) - 1:
                 print("In attesa di 60 secondi prima del prossimo giornale per non sovraccaricare la quota di Google...")
                 time.sleep(60)
