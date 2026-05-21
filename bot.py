@@ -1,15 +1,15 @@
 import os
-import re
 import requests
 from pypdf import PdfReader
-from openai import OpenAI
+from google import genai
 
 # Configurazione variabili d'ambiente
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-client = OpenAI(api_key=OPENAI_API_KEY)
+# Inizializza il client con la libreria ufficiale Google GenAI
+client = genai.Client(api_key=GEMINI_API_KEY)
 
 def get_pdf_from_telegram():
     """Recupera gli ultimi 3 PDF inviati nella chat"""
@@ -17,7 +17,6 @@ def get_pdf_from_telegram():
     response = requests.get(url).json()
     
     file_ids = []
-    # Analizza i messaggi al contrario per prendere gli ultimi file
     for update in reversed(response.get("result", [])):
         message = update.get("message", {})
         if "document" in message and message["document"]["mime_type"] == "application/pdf":
@@ -41,6 +40,7 @@ def get_pdf_from_telegram():
     return pdf_paths
 
 def extract_text_from_pdfs(pdf_paths):
+    """Estrae il testo dai PDF scaricati"""
     full_text = ""
     for path in pdf_paths:
         reader = PdfReader(path)
@@ -48,10 +48,11 @@ def extract_text_from_pdfs(pdf_paths):
             full_text += page.extract_text() + "\n"
     return full_text
 
-def generate_news_with_gpt(text):
+def generate_news_with_gemini(text):
+    """Invia il testo a Gemini 3.5 Flash e riceve le notizie formattate"""
     prompt = """
     Analizza il testo di questi giornali ed estrai TUTTE le notizie rilevanti sulla Juventus.
-    Separa ogni notizia con il marcatore [NOTIZIA].
+    Separa nettamente ogni singola notizia inserendo la parola esatta [NOTIZIA] prima di ognuna.
     Ogni notizia deve seguire RIGIDAMENTE questo stile e non superare MAI i 280 caratteri totali:
 
     [EMOJI INIZIALI] Testo della notizia breve e d'impatto.
@@ -60,23 +61,21 @@ def generate_news_with_gpt(text):
     
     👉 @Juventus_Reborn
 
-    Nota: Sii molto sintetico per non sforare i 280 caratteri incluso il tag finale.
+    Nota fondamentale: Sii estremamente sintetico nel testo della notizia per non sforare MAI i 280 caratteri complessivi (inclusi i tag e la fonte). Non inventare notizie non presenti nel testo.
     """
     
-    response = client.chat.completions.create(
-        model="gpt-4o",
-        messages=[
-            {"role": "system", "content": prompt},
-            {"role": "user", "content": text}
-        ]
+    # Utilizzo mirato del modello gemini-3.5-flash
+    response = client.models.generate_content(
+        model='gemini-3.5-flash',
+        contents=f"{prompt}\n\nTesto dei giornali:\n{text}",
     )
-    return response.choices[0].message.content
+    return response.text
 
 def send_to_telegram(news_list):
+    """Invia ogni singola notizia sul canale Telegram"""
     for news in news_list:
-        if news.strip():
-            # Pulisce il marcatore
-            clean_news = news.replace("[NOTIZIA]", "").strip()
+        clean_news = news.strip()
+        if clean_news:
             url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
             payload = {
                 "chat_id": CHAT_ID,
@@ -86,18 +85,19 @@ def send_to_telegram(news_list):
             requests.post(url, json=payload)
 
 if __name__ == "__main__":
-    print("Scaricamento PDF...")
+    print("Scaricamento PDF da Telegram...")
     pdfs = get_pdf_from_telegram()
     if len(pdfs) < 3:
-        print(f"Trovati solo {len(pdfs)} PDF. Ce ne vogliono 3.")
+        print(f"Trovati solo {len(pdfs)} PDF. Ce ne vogliono 3 per procedere.")
     else:
-        print("Estrazione testo...")
+        print("Estrazione testo dai PDF...")
         testo_giornali = extract_text_from_pdfs(pdfs)
-        print("Generazione notizie con IA...")
-        notizie_raw = generate_news_with_gpt(testo_giornali)
         
-        # Divide le notizie generate basandosi sul marcatore
+        print("Generazione notizie con Gemini 3.5 Flash...")
+        notizie_raw = generate_news_with_gemini(testo_giornali)
+        
         lista_notizie = notizie_raw.split("[NOTIZIA]")
-        print(f"Invio di {len(lista_notizie)-1} notizie su Telegram...")
+        
+        print(f"Invio dei post su Telegram...")
         send_to_telegram(lista_notizie)
-        print("Fatto!")
+        print("Procedura completata con successo!")
