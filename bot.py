@@ -14,11 +14,7 @@ client = genai.Client(api_key=GEMINI_API_KEY)
 
 def crea_sessione_robusta():
     session = requests.Session()
-    retry = Retry(
-        total=5,
-        backoff_factor=1,
-        status_forcelist=[500, 502, 503, 504]
-    )
+    retry = Retry(total=5, backoff_factor=1, status_forcelist=[500, 502, 503, 504])
     adapter = HTTPAdapter(max_retries=retry)
     session.mount("http://", adapter)
     session.mount("https://", adapter)
@@ -69,24 +65,16 @@ def get_pdf_from_telegram():
                 download_url = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file_path}"
                 
                 local_filename = f"giornale_{idx}.pdf"
-                print(f"Scaricamento file {idx+1}... ")
-                
                 with session.get(download_url, stream=True, timeout=120) as r:
                     if r.status_code == 200:
                         with open(local_filename, "wb") as f:
                             for chunk in r.iter_content(chunk_size=65536):
-                                if chunk:
-                                    f.write(chunk)
+                                if chunk: f.write(chunk)
                         
                         if os.path.exists(local_filename) and os.path.getsize(local_filename) > 0:
-                            print(f"-> File {idx+1} scaricato con successo ({round(os.path.getsize(local_filename)/(1024*1024), 2)} MB).")
                             pdf_paths.append(local_filename)
-                    else:
-                        print(f"-> Telegram ha rifiutato il download del file {idx+1} (Status: {r.status_code}). Probabilmente supera i 20MB.")
-            else:
-                print(f"-> Impossibile ottenere il percorso per il file {idx+1}: {file_info.get('description', 'Errore Telegram')}")
         except Exception as e:
-            print(f"-> Errore durante il download del file {idx+1}: {e}")
+            print(f"-> Errore download file {idx+1}: {e}")
         
     return pdf_paths
 
@@ -97,25 +85,24 @@ def extract_text_from_pdfs(pdf_paths):
             reader = PdfReader(path)
             for page in reader.pages:
                 text = page.extract_text()
-                if text:
-                    full_text += text + "\n"
+                if text: full_text += text + "\n"
         except Exception as e:
-            print(f"Errore nella lettura del file {path}: {e}")
+            print(f"Errore lettura file {path}: {e}")
     return full_text
 
 def generate_news_with_gemini(text):
     prompt = """
     Analizza il testo di questi giornali ed estrai TUTTE le notizie rilevanti sulla Juventus.
-    Separa nettamente ogni singola notizia inserendo la parola esatta [NOTIZIA] prima di ognuna.
+    Scrivi le notizie una di seguito all'altra.
+    IMPORTANTE: Inizia OGNI singola notizia tassativamente ed esattamente con la parola chiave [NOTIZIA].
+    
     Ogni notizia deve seguire RIGIDAMENTE questo stile e non superare MAI i 280 caratteri totali:
 
-    [EMOJI INIZIALI] Testo della notizia breve e d'impatto.
-    
+    [NOTIZIA] [EMOJI INIZIALI] Testo della notizia breve e d'impatto.
     📰 [Nome Quotidiano Fonte, es: TuttoSport, Gazzetta dello Sport, Corriere dello Sport]
-    
     👉 @Juventus_Reborn
 
-    Nota fondamentale: Sii estremamente sintetico nel testo della notizia per non sforare MAI i 280 caratteri complessivi (inclusi i tag e la fonte). Non inventare notizie non presenti nel testo.
+    Nota fondamentale: Sii estremamente sintetico nel testo per non sforare i 280 caratteri. Non usare grassetti o corsivi strani (niente asterischi o trattini bassi).
     """
     
     response = client.models.generate_content(
@@ -125,36 +112,54 @@ def generate_news_with_gemini(text):
     return response.text
 
 def send_to_telegram(news_list):
-    for news in news_list:
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    inviati = 0
+    
+    for idx, news in enumerate(news_list):
         clean_news = news.strip()
-        if clean_news:
-            clean_news = clean_news.replace("[NOTIZIA]", "").strip()
-            url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-            payload = {
-                "chat_id": CHAT_ID,
-                "text": clean_news,
-                "parse_mode": "Markdown"
-            }
-            requests.post(url, json=payload)
+        if not clean_news:
+            continue
+            
+        print(f"Provando a inviare la notizia {idx}...")
+        payload = {
+            "chat_id": CHAT_ID,
+            "text": clean_news
+        }
+        
+        # Invio standard senza parse_mode per evitare blocchi dovuti a caratteri speciali
+        res = requests.post(url, json=payload)
+        res_json = res.json()
+        
+        if res_json.get("ok"):
+            print(f"-> Notizia {idx} inviata con successo!")
+            inviati += 1
+        else:
+            print(f"-> Errore di invio sulla notizia {idx}: {res_json.get('description')}")
+            
+    print(f"Totale messaggi recapitati sul canale: {inviati}")
 
 if __name__ == "__main__":
     print("Scaricamento PDF da Telegram...")
     pdfs = get_pdf_from_telegram()
     
-    # Adesso basta che ci sia almeno 1 file valido per continuare
     if len(pdfs) == 0:
-        print("Errore critico: Impossibile scaricare alcun PDF (tutti sopra i 20 MB o nessun file trovato).")
+        print("Errore critico: Nessun PDF scaricato.")
     else:
-        print(f"Procedo con l'estrazione da {len(pdfs)} giornali recuperati con successo.")
-        print("Estrazione testo dai PDF...")
+        print(f"Procedo con {len(pdfs)} giornali.")
         testo_giornali = extract_text_from_pdfs(pdfs)
         
         if not testo_giornali.strip():
-            print("Errore: I PDF scaricati non contengono testo leggibile.")
+            print("Errore: Testo assente nei PDF.")
         else:
             print("Generazione notizie con Gemini 3.5 Flash...")
             notizie_raw = generate_news_with_gemini(testo_giornali)
+            
+            # Splittiamo sulla parola chiave passata da Gemini
             lista_notizie = notizie_raw.split("[NOTIZIA]")
-            print(f"Invio dei post su Telegram...")
+            
+            # Rimuoviamo elementi vuoti dalla lista
+            lista_notizie = [n.strip() for n in lista_notizie if n.strip()]
+            
+            print(f"Trovate {len(lista_notizie)} notizie elaborate. Avvio l'invio...")
             send_to_telegram(lista_notizie)
-            print("Procedura completata con successo!")
+            print("Procedura completata!")
