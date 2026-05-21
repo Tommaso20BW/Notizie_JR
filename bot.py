@@ -114,7 +114,7 @@ def generate_news_with_gemini(text):
     prompt = """
     Sei un estrattore di notizie calcistiche estremamente preciso e letterale. Il tuo compito è analizzare il testo dei quotidiani forniti ed estrarre le notizie riguardanti la Juventus.
 
-    RECOLA TASSATIVA DI FEDELTÀ: 
+    REGOLA TASSATIVA DI FEDELTÀ: 
     - Non inventare nulla. 
     - Non fare supposizioni, non aggiungere dettagli di mercato basati sulla tua conoscenza pregressa e non ricamare sulle trattative.
     - Riporta SOLO ed esclusivamente i fatti, le cifre, i nomi e le dichiarazioni esplicitamente scritti nel testo fornito. Se il testo non contiene notizie sulla Juventus, non generare nulla.
@@ -137,17 +137,17 @@ def generate_news_with_gemini(text):
     return response.text
 
 def send_to_telegram(news_list):
-    """Costruisce il post inserendo le Emoji Premium e la spaziatura corretta, poi lo pubblica su Telegram"""
+    """Costruisce il post inserendo le emoji Premium con attributo emoji-id e la spaziatura corretta"""
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     
-    # Mappatura delle Custom Emoji Premium estratte dal tuo JSON strutturale
+    # Mappatura corretta con l'attributo esatto emoji-id richiesto dalle API di Telegram
     emoji_mapping = {
-        "[FONTE_TUTTO]": ('<tg-emoji id="6032834612990841221">📰</tg-emoji>', "TuttoSport"),
-        "[FONTE_GAZZETTA]": ('<tg-emoji id="6032862491623559282">📰</tg-emoji>', "Gazzetta dello Sport"),
-        "[FONTE_CORRIERE]": ('<tg-emoji id="6030691308346019878">📰</tg-emoji>', "Corriere dello Sport"),
+        "[FONTE_TUTTO]": ('<tg-emoji emoji-id="6032834612990841221">📰</tg-emoji>', "TuttoSport"),
+        "[FONTE_GAZZETTA]": ('<tg-emoji emoji-id="6032862491623559282">📰</tg-emoji>', "Gazzetta dello Sport"),
+        "[FONTE_CORRIERE]": ('<tg-emoji emoji-id="6030691308346019878">📰</tg-emoji>', "Corriere dello Sport"),
         "[FONTE_DEFAULT]": ('📰', "Quotidiano")
     }
-    tg_reborn_emoji = '<tg-emoji id="5985659276327132147">👉</tg-emoji>'
+    tg_reborn_emoji = '<tg-emoji emoji-id="5985659276327132147">👉</tg-emoji>'
 
     for idx, news in enumerate(news_list):
         clean_news = news.strip()
@@ -174,14 +174,14 @@ def send_to_telegram(news_list):
         payload = {
             "chat_id": CHAT_ID,
             "text": testo_finale,
-            "parse_mode": "HTML"  # Forziamo l'HTML per far visualizzare le Custom Emoji e i tag b/i
+            "parse_mode": "HTML"
         }
         
         res = requests.post(url, json=payload)
         res_json = res.json()
         
         if res_json.get("ok"):
-            print(f"-> Notizia {idx+1} pubblicata sul canale con stile Premium!")
+            print(f"-> Notizia {idx+1} pubblicata sul gruppo con stile Premium!")
         else:
             print(f"-> Errore di pubblicazione sulla notizia {idx+1}: {res_json.get('description')}")
 
