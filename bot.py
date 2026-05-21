@@ -36,7 +36,7 @@ def extract_pdf_info(message):
     return None
 
 def get_pdf_from_telegram():
-    """Recupera e scarica fino a 3 PDF recenti presenti nella chat di Telegram"""
+    """Recupera, scarica fino a 3 PDF recenti e conferma la lettura a Telegram per svuotare la coda"""
     session = crea_sessione_robusta()
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates?limit=100"
     
@@ -46,11 +46,21 @@ def get_pdf_from_telegram():
         print(f"Errore di connessione a Telegram durante getUpdates: {e}")
         return []
     
-    file_ids = []
     updates = response.get("result", [])
+    if not updates:
+        print("Nessun aggiornamento presente nella coda di Telegram.")
+        return []
+        
+    file_ids = []
+    highest_update_id = 0
     
     # Analizza la cronologia al contrario partendo dall'ultimo messaggio inviato
     for update in reversed(updates):
+        # Tracciamo l'update_id più alto per confermare la lettura alla fine
+        u_id = update.get("update_id")
+        if u_id and u_id > highest_update_id:
+            highest_update_id = u_id
+            
         message = update.get("message") or update.get("channel_post")
         if not message:
             continue
@@ -65,35 +75,44 @@ def get_pdf_from_telegram():
                 break
                 
     pdf_paths = []
-    print(f"Trovati {len(file_ids)} file PDF negli aggiornamenti. Avvio del download...")
-    
-    for idx, file_id in enumerate(file_ids):
+    if file_ids:
+        print(f"Trovati {len(file_ids)} file PDF negli aggiornamenti. Avvio del download...")
+        for idx, file_id in enumerate(file_ids):
+            try:
+                file_info = session.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getFile?file_id={file_id}", timeout=30).json()
+                if "result" in file_info:
+                    file_path = file_info["result"]["file_path"]
+                    download_url = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file_path}"
+                    
+                    local_filename = f"giornale_{idx}.pdf"
+                    print(f"Scaricamento file {idx+1}...")
+                    
+                    with session.get(download_url, stream=True, timeout=120) as r:
+                        if r.status_code == 200:
+                            with open(local_filename, "wb") as f:
+                                for chunk in r.iter_content(chunk_size=65536):
+                                    if chunk:
+                                        f.write(chunk)
+                            
+                            if os.path.exists(local_filename) and os.path.getsize(local_filename) > 0:
+                                print(f"-> File {idx+1} salvato ({round(os.path.getsize(local_filename)/(1024*1024), 2)} MB).")
+                                pdf_paths.append(local_filename)
+                        else:
+                            print(f"-> Telegram ha negato il download del file {idx+1} (Status: {r.status_code}).")
+                else:
+                    print(f"-> File {idx+1} ignorato dal bot: {file_info.get('description', 'Errore getFile')}")
+            except Exception as e:
+                print(f"-> Errore sul file {idx+1}: {e}")
+                
+    # SVUOTAMENTO CODA: Confermiamo a Telegram che abbiamo letto tutto fino a highest_update_id
+    if highest_update_id > 0:
         try:
-            file_info = session.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getFile?file_id={file_id}", timeout=30).json()
-            if "result" in file_info:
-                file_path = file_info["result"]["file_path"]
-                download_url = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file_path}"
-                
-                local_filename = f"giornale_{idx}.pdf"
-                print(f"Scaricamento file {idx+1}...")
-                
-                with session.get(download_url, stream=True, timeout=120) as r:
-                    if r.status_code == 200:
-                        with open(local_filename, "wb") as f:
-                            for chunk in r.iter_content(chunk_size=65536):
-                                if chunk:
-                                    f.write(chunk)
-                        
-                        if os.path.exists(local_filename) and os.path.getsize(local_filename) > 0:
-                            print(f"-> File {idx+1} salvato ({round(os.path.getsize(local_filename)/(1024*1024), 2)} MB).")
-                            pdf_paths.append(local_filename)
-                    else:
-                        print(f"-> Telegram ha negato il download del file {idx+1} (Status: {r.status_code}). Supera i 20MB.")
-            else:
-                print(f"-> File {idx+1} ignorato dal bot: {file_info.get('description', 'Limite API o errore')}")
+            confirm_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates?offset={highest_update_id + 1}&limit=1"
+            session.get(confirm_url, timeout=10)
+            print("-> Coda degli aggiornamenti di Telegram svuotata con successo (conferma offset).")
         except Exception as e:
-            print(f"-> Errore sul file {idx+1}: {e}")
-        
+            print(f"Errore durante lo svuotamento della coda dei log: {e}")
+            
     return pdf_paths
 
 def extract_text_from_single_pdf(path):
@@ -153,7 +172,6 @@ def send_to_telegram(news_list):
         if not clean_news:
             continue
             
-        # Determina la fonte inserita da Gemini e pulisce il tag di controllo
         tag_fonte = None
         for tag in emoji_mapping.keys():
             if tag in clean_news:
@@ -161,13 +179,11 @@ def send_to_telegram(news_list):
                 clean_news = clean_news.replace(tag, "").strip()
                 break
                 
-        # Fallback sicuro se manca il tag della fonte
         if not tag_fonte:
             tag_fonte = "[FONTE_TUTTO]"
                 
         emoji_fonte, nome_fonte = emoji_mapping[tag_fonte]
         
-        # Costruzione del post finale con doppi a capo per generare la spaziatura richiesta
         testo_finale = (
             f"{clean_news}\n\n"
             f"{emoji_fonte} <i>{nome_fonte}</i>\n\n"
@@ -192,9 +208,8 @@ if __name__ == "__main__":
     print("Scaricamento PDF da Telegram...")
     pdfs = get_pdf_from_telegram()
     
-    # CONTROLLO DI CHIUSURA: Se l'array è vuoto, il bot interrompe subito l'esecuzione senza fare altro
     if len(pdfs) == 0:
-        print("Nessun file PDF trovato negli aggiornamenti di Telegram. Chiusura del bot in corso...")
+        print("Nessun nuovo file PDF trovato negli aggiornamenti di Telegram. Chiusura del bot in corso...")
     else:
         print(f"Procedo con l'estrazione sequenziale da {len(pdfs)} giornali recuperati.")
         
@@ -205,13 +220,14 @@ if __name__ == "__main__":
             
             if not testo_giornale.strip():
                 print("Testo assente o non estraibile da questo file. Salto.")
+                if os.path.exists(path):
+                    os.remove(path)
                 continue
                 
             print("Generazione notizie con Gemini 3.5 Flash...")
             try:
                 notizie_raw = generate_news_with_gemini(testo_giornale)
                 
-                # Divisione della stringa in singole notizie
                 lista_notizie = notizie_raw.split("[NOTIZIA]")
                 lista_notizie = [n.strip() for n in lista_notizie if n.strip()]
                 
@@ -221,9 +237,12 @@ if __name__ == "__main__":
             except Exception as e:
                 print(f"Errore durante la generazione per questo giornale: {e}")
             
-            # Se ci sono altri giornali da leggere, aspetta 60 secondi
+            if os.path.exists(path):
+                os.remove(path)
+                print(f"-> File {path} eliminato permanentemente dalla memoria locale.")
+            
             if i < len(pdfs) - 1:
-                print("In attesa di 60 secondi prima del prossimo giornale per non sovraccaricare la quota di Google...")
+                print("In attesa di 60 secondi prima del prossimo giornale...")
                 time.sleep(60)
                 
         print("\nProcedura di elaborazione giornaliera completata con successo!")
