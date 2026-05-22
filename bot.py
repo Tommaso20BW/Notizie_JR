@@ -89,8 +89,9 @@ def get_pdf_from_telegram():
             except Exception as e:
                 print(f"Errore file {idx+1}: {e}")
                 
-    # Svuotamento coda
-    session.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates?offset={highest_update_id + 1}&limit=1", timeout=10)
+    # Svuotamento coda per non rileggere gli stessi file al prossimo avvio
+    if highest_update_id > 0:
+        session.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates?offset={highest_update_id + 1}&limit=1", timeout=10)
     return pdf_paths
 
 def extract_text_from_single_pdf(path):
@@ -105,21 +106,27 @@ def extract_text_from_single_pdf(path):
     return text
 
 def generate_news_with_gemini(text):
-    prompt = """Sei un estrattore di notizie calcistiche. Estrai TUTTE le notizie sulla <b>Juventus</b> dal testo fornito.
-    - Non inventare nulla.
-    - Formato: Grassetti su giocatori, allenatori, dirigenti e squadre.
-    - Fonte obbligatoria alla fine con tag: [FONTE_TUTTO], [FONTE_GAZZETTA] o [FONTE_CORRIERE].
-    - Struttura: [NOTIZIA] [Emoji] Testo... [TAG_FONTE]
-    - Sii sintetico (max 280 caratteri).
+    prompt = """Sei un estrattore di notizie calcistiche estremamente preciso. Il tuo compito è analizzare il testo e riportare SOLO le notizie riguardanti la Juventus.
+    
+    REGOLA TASSATIVA ED IMPERATIVI: 
+    - NON USARE MAI GLI ASTERISCHI (**) per il grassetto.
+    - Usa SOLO ed esclusivamente i tag HTML <b> e </b> per applicare il grassetto.
+    
+    Formattazione richiesta:
+    1. Applica il grassetto HTML usando <b> e </b> sui nomi di battesimo e cognomi dei giocatori, allenatori, dirigenti (es: <b>Damien Comolli</b>) e squadre di calcio.
+    2. Inserisci tassativamente uno di questi tre tag alla fine di ogni notizia per indicare la fonte: [FONTE_TUTTO], [FONTE_GAZZETTA] o [FONTE_CORRIERE].
+    3. Struttura: [NOTIZIA][Emoji] Testo continuo senza titoli... [TAG_FONTE]
+    4. Sii sintetico (max 280 caratteri a notizia).
     """
     response = client.models.generate_content(
         model='gemini-3.5-flash',
-        contents=f"{prompt}\n\nTesto:\n{text}",
+        contents=f"{prompt}\n\nTesto del quotidiano:\n{text}",
     )
     return response.text
 
 def send_to_telegram(news_list):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    
     emoji_mapping = {
         "[FONTE_TUTTO]": ('<tg-emoji emoji-id="6032834612990841221">📰</tg-emoji>', "TuttoSport"),
         "[FONTE_GAZZETTA]": ('<tg-emoji emoji-id="6032862491623559282">📰</tg-emoji>', "Gazzetta dello Sport"),
@@ -130,11 +137,17 @@ def send_to_telegram(news_list):
     for news in news_list:
         clean = news.strip()
         if not clean: continue
+        
+        # ASSICURAZIONE CONTRO I BUG DI GEMINI: Rimuove forzatamente gli asterischi se presenti
+        clean = clean.replace("**", "")
+        
         tag = next((t for t in emoji_mapping if t in clean), "[FONTE_TUTTO]")
         clean = clean.replace(tag, "").strip()
+        
         emoji_fonte, nome_fonte = emoji_mapping[tag]
         
         testo = f"{clean}\n\n{emoji_fonte} <i>{nome_fonte}</i>\n\n{tg_reborn} @Juventus_Reborn"
+        
         requests.post(url, json={"chat_id": CHAT_ID, "text": testo, "parse_mode": "HTML"})
 
 if __name__ == "__main__":
@@ -154,5 +167,6 @@ if __name__ == "__main__":
                     print(f"Errore Gemini: {e}")
             if os.path.exists(path): os.remove(path)
             if i < len(pdfs) - 1:
-                time.sleep(20) # Pausa ottimizzata
+                print("In attesa di 20 secondi prima del prossimo giornale...")
+                time.sleep(20)
         print("Operazione completata.")
