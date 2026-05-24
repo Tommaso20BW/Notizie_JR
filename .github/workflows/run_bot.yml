@@ -1,4 +1,4 @@
-name: Avvio Estrazioni Notizie
+name: Avvio Estrazione Notizie
 
 on:
   workflow_dispatch: # Solo attivazione manuale con bottone
