@@ -19,7 +19,6 @@ client = genai.Client(api_key=GEMINI_API_KEY)
 
 
 def crea_dropbox_client():
-    """Crea il client Dropbox con refresh token"""
     return dropbox.Dropbox(
         app_key=DROPBOX_APP_KEY,
         app_secret=DROPBOX_APP_SECRET,
@@ -28,7 +27,6 @@ def crea_dropbox_client():
 
 
 def get_urls_from_dropbox():
-    """Legge il file txt con gli URL YouTube da Dropbox"""
     dbx = crea_dropbox_client()
     try:
         metadata, response = dbx.files_download(DROPBOX_URLS_FILE)
@@ -42,7 +40,6 @@ def get_urls_from_dropbox():
 
 
 def delete_urls_file_from_dropbox():
-    """Cancella il file txt da Dropbox dopo l'elaborazione"""
     dbx = crea_dropbox_client()
     try:
         dbx.files_delete_v2(DROPBOX_URLS_FILE)
@@ -52,32 +49,30 @@ def delete_urls_file_from_dropbox():
 
 
 def generate_news_from_youtube(url):
-    """Usa Gemini per analizzare il video YouTube ed estrarre notizie sulla Juventus"""
-    prompt = """Sei un estrattore di notizie calcistiche estremamente preciso. Il tuo compito è analizzare il contenuto audio/video e riportare SOLO le notizie riguardanti la Juventus.
-
-    REGOLE TASSATIVE E IMPERATIVE:
-    - NON USARE MAI GLI ASTERISCHI (**) per il grassetto.
-    - Usa SOLO ed esclusivamente i tag HTML <b> e </b> per applicare il grassetto.
-    - Se nel video non ci sono notizie sulla Juventus, rispondi SOLO con: NESSUNA_NOTIZIA
-
-    Formattazione richiesta:
-    1. Applica il grassetto HTML usando <b> e </b> sui nomi di battesimo e cognomi dei giocatori, allenatori, dirigenti (es: <b>Damien Comolli</b>) e squadre di calcio.
-    2. Alla fine di OGNI notizia inserisci il tag con il nome di chi presenta/conduce il video, scegliendo ESATTAMENTE uno tra:
-       [FONTE_ROMEO_AGRESTI], [FONTE_MATTEO_MORETTO], [FONTE_FABRIZIO_ROMANO],
-       [FONTE_NICOLO_SCHIRA], [FONTE_ALFREDO_PEDULLA], [FONTE_ALTRO]
-       Se non riesci a identificare il giornalista, usa [FONTE_ALTRO].
-    3. Struttura: [NOTIZIA][Emoji] Testo continuo senza titoli... [FONTE_X]
-    4. Sii sintetico (max 280 caratteri a notizia).
-    5. Per le cifre in milioni di euro usa SEMPRE il formato compatto: 1M€, 50M€, 100M€. Mai scrivere "milioni di euro" o "mln" o "M di euro".
-    6. Ogni notizia deve iniziare con [NOTIZIA] seguito da un'emoji pertinente al contenuto.
-    """
+    prompt = (
+        "Sei un estrattore di notizie calcistiche estremamente preciso. "
+        "Il tuo compito e analizzare il contenuto audio/video e riportare SOLO le notizie riguardanti la Juventus.\n\n"
+        "REGOLE TASSATIVE E IMPERATIVE:\n"
+        "- NON USARE MAI GLI ASTERISCHI (**) per il grassetto.\n"
+        "- Usa SOLO ed esclusivamente i tag HTML <b> e </b> per applicare il grassetto.\n"
+        "- Se nel video non ci sono notizie sulla Juventus, rispondi SOLO con: NESSUNA_NOTIZIA\n\n"
+        "Formattazione richiesta:\n"
+        "1. Applica il grassetto HTML usando <b> e </b> sui nomi di giocatori, allenatori, dirigenti e squadre di calcio.\n"
+        "2. Alla fine di OGNI notizia inserisci il tag del giornalista, scegliendo ESATTAMENTE uno tra:\n"
+        "   [FONTE_ROMEO_AGRESTI], [FONTE_MATTEO_MORETTO], [FONTE_FABRIZIO_ROMANO],\n"
+        "   [FONTE_NICOLO_SCHIRA], [FONTE_ALFREDO_PEDULLA], [FONTE_ALTRO]\n"
+        "   Se non riesci a identificare il giornalista, usa [FONTE_ALTRO].\n"
+        "3. Struttura: [NOTIZIA][Emoji] Testo continuo senza titoli... [FONTE_X]\n"
+        "4. Sii sintetico (max 280 caratteri a notizia).\n"
+        "5. Per le cifre in milioni di euro usa SEMPRE il formato compatto: 1M, 50M, 100M euro.\n"
+        "6. Ogni notizia deve iniziare con [NOTIZIA] seguito da un emoji pertinente al contenuto.\n\n"
+        "Video YouTube da analizzare: " + url
+    )
 
     try:
         response = client.models.generate_content(
             model="gemini-2.5-flash",
-            contents=f"{prompt}
-
-Video YouTube da analizzare: {url}"
+            contents=prompt
         )
         return response.text
     except Exception as e:
@@ -85,19 +80,18 @@ Video YouTube da analizzare: {url}"
         return None
 
 
-# Mapping fonte → (custom_emoji_id, nome visualizzato)
+# Mapping fonte -> (custom_emoji_id, nome visualizzato)
 FONTE_MAPPING = {
     "[FONTE_ROMEO_AGRESTI]":   ("5784902446098685755", "Romeo Agresti - YouTube"),
     "[FONTE_MATTEO_MORETTO]":  ("5785259727248170398", "Matteo Moretto - YouTube"),
     "[FONTE_FABRIZIO_ROMANO]": ("5785366354106261925", "Fabrizio Romano - YouTube"),
-    "[FONTE_NICOLO_SCHIRA]":   ("5785305056333012850", "Nicolò Schira - YouTube"),
-    "[FONTE_ALFREDO_PEDULLA]": ("5785322627044220734", "Alfredo Pedullà - YouTube"),
+    "[FONTE_NICOLO_SCHIRA]":   ("5785305056333012850", "Nicolo Schira - YouTube"),
+    "[FONTE_ALFREDO_PEDULLA]": ("5785322627044220734", "Alfredo Pedulla - YouTube"),
     "[FONTE_ALTRO]":           ("5784902446098685755", "YouTube"),
 }
 
 
 def send_to_telegram(news_list):
-    """Invia ogni notizia su Telegram con formattazione HTML"""
     url_api = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     tg_reborn = '<tg-emoji emoji-id="5985659276327132147">👉</tg-emoji>'
 
@@ -106,10 +100,8 @@ def send_to_telegram(news_list):
         if not clean:
             continue
 
-        # Rimuovi eventuali asterischi rimasti
         clean = clean.replace("**", "")
 
-        # Identifica il tag fonte presente nel testo
         tag_trovato = "[FONTE_ALTRO]"
         for tag in FONTE_MAPPING:
             if tag in clean:
@@ -119,7 +111,6 @@ def send_to_telegram(news_list):
         emoji_id, nome_fonte = FONTE_MAPPING[tag_trovato]
         emoji_fonte = f'<tg-emoji emoji-id="{emoji_id}">📲</tg-emoji>'
 
-        # Rimuovi il tag fonte dal testo
         clean = clean.replace(tag_trovato, "").strip()
 
         testo = f"{clean}\n\n{emoji_fonte} <i>{nome_fonte}</i>\n\n{tg_reborn} @Juventus_Reborn"
@@ -127,11 +118,7 @@ def send_to_telegram(news_list):
         try:
             requests.post(
                 url_api,
-                json={
-                    "chat_id": CHAT_ID,
-                    "text": testo,
-                    "parse_mode": "HTML"
-                },
+                json={"chat_id": CHAT_ID, "text": testo, "parse_mode": "HTML"},
                 timeout=10
             )
             time.sleep(1)
