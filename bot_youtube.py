@@ -86,7 +86,6 @@ def generate_news_from_youtube(url):
                         gtypes.Part(
                             file_data=gtypes.FileData(
                                 file_uri=url,
-                                mime_type="video/*"
                             )
                         ),
                         gtypes.Part(text=prompt)
