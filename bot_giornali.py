@@ -2,27 +2,22 @@ import os
 import requests
 import time
 import dropbox
-from dropbox.oauth import DropboxOAuth2FlowNoRedirect
-from pypdf import PdfReader
 from google import genai
-from requests.adapters import HTTPAdapter
-from urllib3.util import Retry
+from google.genai import types as gtypes
 
-# Configurazione variabili d'ambiente da GitHub Secrets
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 DROPBOX_APP_KEY = os.getenv("DROPBOX_APP_KEY")
 DROPBOX_APP_SECRET = os.getenv("DROPBOX_APP_SECRET")
 DROPBOX_REFRESH_TOKEN = os.getenv("DROPBOX_REFRESH_TOKEN")
-DROPBOX_FOLDER = "/NotizieJR"
 
-# Inizializzazione del client ufficiale Google GenAI
+DROPBOX_URLS_FILE = "/NotizieJR/youtube_urls.txt"
+
 client = genai.Client(api_key=GEMINI_API_KEY)
 
 
 def crea_dropbox_client():
-    """Crea il client Dropbox con refresh token (non scade mai)"""
     return dropbox.Dropbox(
         app_key=DROPBOX_APP_KEY,
         app_secret=DROPBOX_APP_SECRET,
@@ -30,108 +25,94 @@ def crea_dropbox_client():
     )
 
 
-def crea_sessione_robusta():
-    session = requests.Session()
-    retry = Retry(
-        total=5,
-        backoff_factor=1,
-        status_forcelist=[500, 502, 503, 504]
-    )
-    adapter = HTTPAdapter(max_retries=retry)
-    session.mount("http://", adapter)
-    session.mount("https://", adapter)
-    return session
-
-
-def get_pdf_from_dropbox():
-    """Scarica tutti i PDF presenti nella cartella Dropbox"""
+def get_urls_from_dropbox():
     dbx = crea_dropbox_client()
-
     try:
-        result = dbx.files_list_folder(DROPBOX_FOLDER)
+        metadata, response = dbx.files_download(DROPBOX_URLS_FILE)
+        content = response.content.decode("utf-8")
+        urls = [line.strip() for line in content.splitlines() if line.strip()]
+        print(f"Trovati {len(urls)} URL da elaborare.")
+        return urls
     except dropbox.exceptions.ApiError as e:
-        print(f"Errore accesso cartella Dropbox: {e}")
-        return [], []
-
-    pdf_files = [f for f in result.entries if isinstance(f, dropbox.files.FileMetadata) and f.name.lower().endswith(".pdf")]
-
-    if not pdf_files:
-        print("Nessun PDF trovato su Dropbox.")
-        return [], []
-
-    print(f"Trovati {len(pdf_files)} PDF su Dropbox.")
-    pdf_paths = []
-    dropbox_paths = []
-
-    for idx, file in enumerate(pdf_files):
-        local_filename = f"giornale_{idx}.pdf"
-        try:
-            print(f"Download {file.name}...")
-            metadata, response = dbx.files_download(file.path_lower)
-            with open(local_filename, "wb") as f:
-                f.write(response.content)
-            pdf_paths.append(local_filename)
-            dropbox_paths.append(file.path_lower)
-            print(f"Scaricato: {file.name}")
-        except Exception as e:
-            print(f"Errore download {file.name}: {e}")
-
-    return pdf_paths, dropbox_paths
+        print(f"Nessun file URL trovato su Dropbox (o errore): {e}")
+        return []
 
 
-def delete_files_from_dropbox(dropbox_paths):
-    """Cancella i PDF da Dropbox dopo l'elaborazione"""
+def delete_urls_file_from_dropbox():
     dbx = crea_dropbox_client()
-    for path in dropbox_paths:
-        try:
-            dbx.files_delete_v2(path)
-            print(f"File {path} cancellato da Dropbox.")
-        except Exception as e:
-            print(f"Errore cancellazione {path}: {e}")
-
-
-def extract_text_from_single_pdf(path):
-    text = ""
     try:
-        reader = PdfReader(path)
-        for page in reader.pages:
-            p = page.extract_text()
-            if p:
-                text += p + "\n"
+        dbx.files_delete_v2(DROPBOX_URLS_FILE)
+        print(f"File {DROPBOX_URLS_FILE} cancellato da Dropbox.")
     except Exception as e:
-        print(f"Errore lettura {path}: {e}")
-    return text
+        print(f"Errore cancellazione file: {e}")
 
 
-def generate_news_with_gemini(text):
-    prompt = """Sei un estrattore di notizie calcistiche estremamente preciso. Il tuo compito è analizzare il testo e riportare SOLO le notizie riguardanti la Juventus.
-    
-    REGOLA TASSATIVA ED IMPERATIVI: 
-    - NON USARE MAI GLI ASTERISCHI (**) per il grassetto.
-    - Usa SOLO ed esclusivamente i tag HTML <b> e </b> per applicare il grassetto.
-    
-    Formattazione richiesta:
-    1. Applica il grassetto HTML usando <b> e </b> sui nomi di battesimo e cognomi dei giocatori, allenatori, dirigenti (es: <b>Damien Comolli</b>) e squadre di calcio.
-    2. Inserisci tassativamente uno di questi tre tag alla fine di ogni notizia per indicare la fonte: [FONTE_TUTTO], [FONTE_GAZZETTA] o [FONTE_CORRIERE].
-    3. Struttura: [NOTIZIA][Emoji] Testo continuo senza titoli... [TAG_FONTE]
-    4. Sii sintetico (max 280 caratteri a notizia).
-    5. Per le cifre in milioni di euro usa SEMPRE il formato compatto: 1M€, 50M€, 100M€. Mai scrivere "milioni di euro" o "mln" o "M di euro".
-    """
-    response = client.models.generate_content(
-        model='gemini-3.5-flash',
-        contents=f"{prompt}\n\nTesto del quotidiano:\n{text}",
+def pulisci_url(url):
+    from urllib.parse import urlparse, urlencode, parse_qs, urlunparse
+    parsed = urlparse(url)
+    params = parse_qs(parsed.query)
+    params_puliti = {k: v for k, v in params.items() if k == "v"}
+    nuovo_query = urlencode(params_puliti, doseq=True)
+    return urlunparse(parsed._replace(query=nuovo_query, netloc="www.youtube.com"))
+
+
+def generate_news_from_youtube(url):
+    url = pulisci_url(url)
+    print(f"URL pulito: {url}")
+    prompt = (
+        "Sei un estrattore di notizie calcistiche estremamente preciso. "
+        "Analizza il video e riporta SOLO le notizie riguardanti la Juventus.\n\n"
+        "REGOLE TASSATIVE:\n"
+        "- NON USARE MAI GLI ASTERISCHI (**) per il grassetto.\n"
+        "- Usa SOLO i tag HTML <b> e </b> per il grassetto.\n"
+        "- Se nel video non ci sono notizie sulla Juventus, rispondi SOLO con: NESSUNA_NOTIZIA\n"
+        "- FEDELTA ASSOLUTA AI NOMI: riporta nomi di giocatori, allenatori e squadre ESATTAMENTE come vengono detti nel video. NON tradurre, NON modificare, NON italianizzare nomi stranieri.\n\n"
+        "Formattazione:\n"
+        "1. Metti in grassetto con <b></b> i nomi di giocatori, allenatori, dirigenti e squadre.\n"
+        "2. Alla fine di OGNI notizia metti il tag del giornalista che parla nel video, scegliendo tra:\n"
+        "   [FONTE_ROMEO_AGRESTI], [FONTE_MATTEO_MORETTO], [FONTE_FABRIZIO_ROMANO],\n"
+        "   [FONTE_NICOLO_SCHIRA], [FONTE_ALFREDO_PEDULLA], [FONTE_ALTRO]\n"
+        "3. Struttura obbligatoria: [NOTIZIA][Emoji] Testo... [FONTE_X]\n"
+        "4. Max 280 caratteri a notizia.\n"
+        "5. Cifre in milioni: 1M euro, 50M euro, 100M euro.\n"
+        "6. Ogni notizia inizia con [NOTIZIA] + emoji pertinente."
     )
-    return response.text
+
+    for tentativo in range(3):
+        try:
+            response = client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=gtypes.Content(
+                    role="user",
+                    parts=[
+                        gtypes.Part(text=prompt),
+                        gtypes.Part(
+                            file_data=gtypes.FileData(file_uri=url)
+                        )
+                    ]
+                )
+            )
+            return response.text
+        except Exception as e:
+            print(f"Errore Gemini tentativo {tentativo+1}/3: {e}")
+            if tentativo < 2:
+                print("Riprovo tra 30 secondi...")
+                time.sleep(30)
+    return None
+
+
+FONTE_MAPPING = {
+    "[FONTE_ROMEO_AGRESTI]":   ("5784902446098685755", "Romeo Agresti - YouTube"),
+    "[FONTE_MATTEO_MORETTO]":  ("5785259727248170398", "Matteo Moretto - YouTube"),
+    "[FONTE_FABRIZIO_ROMANO]": ("5785366354106261925", "Fabrizio Romano - YouTube"),
+    "[FONTE_NICOLO_SCHIRA]":   ("5785305056333012850", "Nicolo Schira - YouTube"),
+    "[FONTE_ALFREDO_PEDULLA]": ("5785322627044220734", "Alfredo Pedulla - YouTube"),
+    "[FONTE_ALTRO]":           ("5784902446098685755", "YouTube"),
+}
 
 
 def send_to_telegram(news_list):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-
-    emoji_mapping = {
-        "[FONTE_TUTTO]": ('<tg-emoji emoji-id="6032834612990841221">📰</tg-emoji>', "TuttoSport"),
-        "[FONTE_GAZZETTA]": ('<tg-emoji emoji-id="6032862491623559282">📰</tg-emoji>', "Gazzetta dello Sport"),
-        "[FONTE_CORRIERE]": ('<tg-emoji emoji-id="6030691308346019878">📰</tg-emoji>', "Corriere dello Sport")
-    }
+    url_api = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     tg_reborn = '<tg-emoji emoji-id="5985659276327132147">👉</tg-emoji>'
 
     for news in news_list:
@@ -141,41 +122,57 @@ def send_to_telegram(news_list):
 
         clean = clean.replace("**", "")
 
-        tag = next((t for t in emoji_mapping if t in clean), "[FONTE_TUTTO]")
-        clean = clean.replace(tag, "").strip()
+        tag_trovato = "[FONTE_ALTRO]"
+        for tag in FONTE_MAPPING:
+            if tag in clean:
+                tag_trovato = tag
+                break
 
-        emoji_fonte, nome_fonte = emoji_mapping[tag]
+        emoji_id, nome_fonte = FONTE_MAPPING[tag_trovato]
+        emoji_fonte = f'<tg-emoji emoji-id="{emoji_id}">📲</tg-emoji>'
+        clean = clean.replace(tag_trovato, "").strip()
 
         testo = f"{clean}\n\n{emoji_fonte} <i>{nome_fonte}</i>\n\n{tg_reborn} @Juventus_Reborn"
 
-        requests.post(url, json={"chat_id": CHAT_ID, "text": testo, "parse_mode": "HTML"})
+        try:
+            requests.post(
+                url_api,
+                json={"chat_id": CHAT_ID, "text": testo, "parse_mode": "HTML"},
+                timeout=10
+            )
+            time.sleep(1)
+        except Exception as e:
+            print(f"Errore invio Telegram: {e}")
 
 
 if __name__ == "__main__":
-    pdfs, dropbox_paths = get_pdf_from_dropbox()
+    urls = get_urls_from_dropbox()
 
-    if len(pdfs) == 0:
-        print("Nessun PDF nuovo. Chiusura.")
+    if not urls:
+        print("Nessun URL da elaborare. Chiusura.")
     else:
-        for i, path in enumerate(pdfs):
-            print(f"Elaborazione {path}...")
-            testo = extract_text_from_single_pdf(path)
-            if testo.strip():
-                try:
-                    raw = generate_news_with_gemini(testo)
-                    lista = [n.strip() for n in raw.split("[NOTIZIA]") if n.strip()]
-                    send_to_telegram(lista)
-                except Exception as e:
-                    print(f"Errore Gemini: {e}")
+        for i, url in enumerate(urls):
+            print(f"\nElaborazione URL {i+1}/{len(urls)}: {url}")
 
-            if os.path.exists(path):
-                os.remove(path)
+            raw = generate_news_from_youtube(url)
 
-            if i < len(pdfs) - 1:
-                print("In attesa di 20 secondi prima del prossimo giornale...")
-                time.sleep(20)
+            if not raw:
+                print("Nessuna risposta da Gemini, salto.")
+                continue
 
-        print("Cancellazione PDF da Dropbox...")
-        delete_files_from_dropbox(dropbox_paths)
+            if "NESSUNA_NOTIZIA" in raw:
+                print("Nessuna notizia Juventus trovata nel video.")
+                continue
+
+            lista = [n.strip() for n in raw.split("[NOTIZIA]") if n.strip()]
+            print(f"Notizie trovate: {len(lista)}")
+            send_to_telegram(lista)
+
+            if i < len(urls) - 1:
+                print("Attesa 15 secondi prima del prossimo video...")
+                time.sleep(15)
+
+        print("\nCancellazione file URL da Dropbox...")
+        delete_urls_file_from_dropbox()
 
         print("Operazione completata.")
