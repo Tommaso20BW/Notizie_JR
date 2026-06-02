@@ -101,7 +101,7 @@ def extract_text_from_single_pdf(path):
 
 
 def generate_news_with_gemini(text):
-    prompt = """Sei un estrattore di notizie calcistiche estremamente preciso. Il tuo compito è analizzare il testo e riportare SOLO le notizie riguardanti la Juventus.
+    prompt = """Sei un estrattore di notizie calcistiche estremamente preciso. Analizza il testo e riporta SOLO le notizie riguardanti la Juventus, in modo fedele, scorrevole e senza inventare nulla.
     
     REGOLA TASSATIVA ED IMPERATIVI: 
     - NON USARE MAI GLI ASTERISCHI (**) per il grassetto.
