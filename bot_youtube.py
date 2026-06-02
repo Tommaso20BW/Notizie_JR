@@ -47,7 +47,18 @@ def delete_urls_file_from_dropbox():
         print(f"Errore cancellazione file: {e}")
 
 
+def pulisci_url(url):
+    from urllib.parse import urlparse, urlencode, parse_qs, urlunparse
+    parsed = urlparse(url)
+    params = parse_qs(parsed.query)
+    params_puliti = {k: v for k, v in params.items() if k == "v"}
+    nuovo_query = urlencode(params_puliti, doseq=True)
+    return urlunparse(parsed._replace(query=nuovo_query, netloc="www.youtube.com"))
+
+
 def generate_news_from_youtube(url):
+    url = pulisci_url(url)
+    print(f"URL pulito: {url}")
     prompt = (
         "Sei un estrattore di notizie calcistiche estremamente preciso. "
         "Analizza il video e riporta SOLO le notizie riguardanti la Juventus.\n\n"
