@@ -2,6 +2,7 @@ import os
 import requests
 import time
 import dropbox
+from dropbox.oauth import DropboxOAuth2FlowNoRedirect
 from pypdf import PdfReader
 from google import genai
 from requests.adapters import HTTPAdapter
@@ -11,15 +12,25 @@ from urllib3.util import Retry
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-DROPBOX_TOKEN = os.getenv("DROPBOX_TOKEN")
+DROPBOX_APP_KEY = os.getenv("DROPBOX_APP_KEY")
+DROPBOX_APP_SECRET = os.getenv("DROPBOX_APP_SECRET")
+DROPBOX_REFRESH_TOKEN = os.getenv("DROPBOX_REFRESH_TOKEN")
 DROPBOX_FOLDER = "/NotizieJR"
 
 # Inizializzazione del client ufficiale Google GenAI
 client = genai.Client(api_key=GEMINI_API_KEY)
 
 
+def crea_dropbox_client():
+    """Crea il client Dropbox con refresh token (non scade mai)"""
+    return dropbox.Dropbox(
+        app_key=DROPBOX_APP_KEY,
+        app_secret=DROPBOX_APP_SECRET,
+        oauth2_refresh_token=DROPBOX_REFRESH_TOKEN
+    )
+
+
 def crea_sessione_robusta():
-    """Crea una sessione HTTP con tentativi di ripescaggio automatico"""
     session = requests.Session()
     retry = Retry(
         total=5,
@@ -34,15 +45,7 @@ def crea_sessione_robusta():
 
 def get_pdf_from_dropbox():
     """Scarica tutti i PDF presenti nella cartella Dropbox"""
-    dbx = dropbox.Dropbox(DROPBOX_TOKEN)
-
-    # DEBUG: lista cartelle nella root
-    try:
-        root = dbx.files_list_folder("")
-        for entry in root.entries:
-            print(f"Trovato in root: {entry.path_lower}")
-    except Exception as e:
-        print(f"Errore debug root: {e}")
+    dbx = crea_dropbox_client()
 
     try:
         result = dbx.files_list_folder(DROPBOX_FOLDER)
@@ -78,7 +81,7 @@ def get_pdf_from_dropbox():
 
 def delete_files_from_dropbox(dropbox_paths):
     """Cancella i PDF da Dropbox dopo l'elaborazione"""
-    dbx = dropbox.Dropbox(DROPBOX_TOKEN)
+    dbx = crea_dropbox_client()
     for path in dropbox_paths:
         try:
             dbx.files_delete_v2(path)
@@ -101,19 +104,16 @@ def extract_text_from_single_pdf(path):
 
 
 def generate_news_with_gemini(text):
-    prompt = """Sei un estrattore di notizie calcistiche estremamente preciso. Analizza il testo e riporta SOLO le notizie riguardanti la Juventus, in modo fedele, scorrevole e senza inventare nulla.
+    prompt = """Sei un estrattore di notizie calcistiche estremamente preciso. Il tuo compito è analizzare il testo e riportare SOLO le notizie riguardanti la Juventus.
     
     REGOLA TASSATIVA ED IMPERATIVI: 
     - NON USARE MAI GLI ASTERISCHI (**) per il grassetto.
     - Usa SOLO ed esclusivamente i tag HTML <b> e </b> per applicare il grassetto.
-    - Ogni notizia DEVE iniziare OBBLIGATORIAMENTE con il token ---NOTIZIA--- su una riga separata.
     
     Formattazione richiesta:
     1. Applica il grassetto HTML usando <b> e </b> sui nomi di battesimo e cognomi dei giocatori, allenatori, dirigenti (es: <b>Damien Comolli</b>) e squadre di calcio.
     2. Inserisci tassativamente uno di questi tre tag alla fine di ogni notizia per indicare la fonte: [FONTE_TUTTO], [FONTE_GAZZETTA] o [FONTE_CORRIERE].
-    3. Struttura OBBLIGATORIA per ogni notizia:
-       ---NOTIZIA---
-       [Emoji] Testo continuo senza titoli... [TAG_FONTE]
+    3. Struttura: [NOTIZIA][Emoji] Testo continuo senza titoli... [TAG_FONTE]
     4. Sii sintetico (max 280 caratteri a notizia).
     """
     response = client.models.generate_content(
@@ -154,7 +154,7 @@ if __name__ == "__main__":
     pdfs, dropbox_paths = get_pdf_from_dropbox()
 
     if len(pdfs) == 0:
-        print("Chiusura BOT.")
+        print("Nessun PDF nuovo. Chiusura.")
     else:
         for i, path in enumerate(pdfs):
             print(f"Elaborazione {path}...")
@@ -162,8 +162,7 @@ if __name__ == "__main__":
             if testo.strip():
                 try:
                     raw = generate_news_with_gemini(testo)
-                    # Split sul delimitatore univoco ---NOTIZIA---
-                    lista = [n.strip() for n in raw.split("---NOTIZIA---") if n.strip()]
+                    lista = [n.strip() for n in raw.split("[NOTIZIA]") if n.strip()]
                     send_to_telegram(lista)
                 except Exception as e:
                     print(f"Errore Gemini: {e}")
