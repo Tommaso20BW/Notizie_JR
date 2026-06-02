@@ -3,7 +3,6 @@ import requests
 import time
 import dropbox
 from google import genai
-from google.genai import types as gtypes
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -47,20 +46,10 @@ def delete_urls_file_from_dropbox():
         print(f"Errore cancellazione file: {e}")
 
 
-def normalizza_url(url):
-    """Converte URL YouTube abbreviati nel formato completo www.youtube.com"""
-    url = url.replace("https://youtube.com", "https://www.youtube.com")
-    url = url.replace("https://youtu.be/", "https://www.youtube.com/watch?v=")
-    return url
-
-
 def generate_news_from_youtube(url):
-    url = normalizza_url(url)
-    print(f"URL normalizzato: {url}")
-
-    prompt = (
-        "Sei un estrattore di notizie calcistiche estremamente preciso. "
-        "Analizza il video e riporta SOLO le notizie riguardanti la Juventus.\n\n"
+    testo = (
+        "Cosa viene detto in questo video: " + url + "\n\n"
+        "Riporta SOLO le notizie riguardanti la Juventus.\n\n"
         "REGOLE TASSATIVE:\n"
         "- NON USARE MAI GLI ASTERISCHI (**) per il grassetto.\n"
         "- Usa SOLO i tag HTML <b> e </b> per il grassetto.\n"
@@ -80,21 +69,11 @@ def generate_news_from_youtube(url):
         try:
             response = client.models.generate_content(
                 model="gemini-3.5-flash",
-                contents=gtypes.Content(
-                    role="user",
-                    parts=[
-                        gtypes.Part(
-                            file_data=gtypes.FileData(
-                                file_uri=url,
-                            )
-                        ),
-                        gtypes.Part(text=prompt)
-                    ]
-                )
+                contents=testo
             )
             return response.text
         except Exception as e:
-            print(f"Errore Gemini tentativo {tentativo+1}/3 per {url}: {e}")
+            print(f"Errore Gemini tentativo {tentativo+1}/3: {e}")
             if tentativo < 2:
                 print("Riprovo tra 30 secondi...")
                 time.sleep(30)
