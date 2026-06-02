@@ -12,7 +12,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 DROPBOX_TOKEN = os.getenv("DROPBOX_TOKEN")
-DROPBOX_FOLDER = "/NotiziJR"
+DROPBOX_FOLDER = "/NotizieJR"
 
 # Inizializzazione del client ufficiale Google GenAI
 client = genai.Client(api_key=GEMINI_API_KEY)
@@ -35,6 +35,14 @@ def crea_sessione_robusta():
 def get_pdf_from_dropbox():
     """Scarica tutti i PDF presenti nella cartella Dropbox"""
     dbx = dropbox.Dropbox(DROPBOX_TOKEN)
+
+    # DEBUG: lista cartelle nella root
+    try:
+        root = dbx.files_list_folder("")
+        for entry in root.entries:
+            print(f"Trovato in root: {entry.path_lower}")
+    except Exception as e:
+        print(f"Errore debug root: {e}")
 
     try:
         result = dbx.files_list_folder(DROPBOX_FOLDER)
@@ -127,7 +135,6 @@ def send_to_telegram(news_list):
         if not clean:
             continue
 
-        # Rimuove forzatamente gli asterischi se presenti
         clean = clean.replace("**", "")
 
         tag = next((t for t in emoji_mapping if t in clean), "[FONTE_TUTTO]")
@@ -157,7 +164,6 @@ if __name__ == "__main__":
                 except Exception as e:
                     print(f"Errore Gemini: {e}")
 
-            # Rimuove il file locale
             if os.path.exists(path):
                 os.remove(path)
 
@@ -165,7 +171,6 @@ if __name__ == "__main__":
                 print("In attesa di 20 secondi prima del prossimo giornale...")
                 time.sleep(20)
 
-        # Cancella tutti i PDF da Dropbox
         print("Cancellazione PDF da Dropbox...")
         delete_files_from_dropbox(dropbox_paths)
 
