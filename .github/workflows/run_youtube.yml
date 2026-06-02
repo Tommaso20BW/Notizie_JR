@@ -1,26 +1,25 @@
 name: Avvio Estrazione Notizie - YouTube
 
 on:
-  workflow_dispatch:           # Permette esecuzione manuale
+  workflow_dispatch: # Solo attivazione manuale con bottone
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repository
+      - name: Checkout del codice
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Imposta Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.10'
 
-      - name: Install dependencies
+      - name: Installa dipendenze
         run: |
-          pip install requests dropbox google-genai
+          pip install -r requirements.txt
 
-      - name: Run YouTube bot
+      - name: Esegui il Bot
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
@@ -28,4 +27,4 @@ jobs:
           DROPBOX_APP_KEY: ${{ secrets.DROPBOX_APP_KEY }}
           DROPBOX_APP_SECRET: ${{ secrets.DROPBOX_APP_SECRET }}
           DROPBOX_REFRESH_TOKEN: ${{ secrets.DROPBOX_REFRESH_TOKEN }}
-        run: python bot_youtube.py
+        run: python -u bot_youtube.py
