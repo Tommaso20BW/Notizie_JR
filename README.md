@@ -1,17 +1,14 @@
 # 📰 Notizie JR
-
 > Bot Telegram per l'estrazione e pubblicazione automatica delle **notizie sulla Juventus** dai quotidiani sportivi — alimentato da AI e GitHub Actions.
 
 ---
 
 ## 📌 Panoramica
-
-**Notizie JR** legge i PDF dei quotidiani sportivi italiani (Tuttosport, Gazzetta dello Sport, Corriere dello Sport) inviati direttamente al bot Telegram, estrae il testo, lo analizza con **Google Gemini** per isolare solo le notizie riguardanti la Juventus, e le pubblica sul canale **@Juventus_Reborn** con formattazione e fonte corretta.
+**Notizie JR** legge i PDF dei quotidiani sportivi italiani (Tuttosport, Gazzetta dello Sport, Corriere dello Sport) caricati su **Dropbox**, estrae il testo, lo analizza con **Google Gemini** per isolare solo le notizie riguardanti la Juventus, e le pubblica sul canale **@Juventus_Reborn** con formattazione e fonte corretta. Dopo l'elaborazione, i PDF vengono cancellati automaticamente da Dropbox.
 
 ---
 
 ## 🗂️ Struttura del repository
-
 ```
 Notizie_JR/
 ├── bot.py                    # Script principale
@@ -23,9 +20,8 @@ Notizie_JR/
 ---
 
 ## ✨ Funzionalità
-
-- **Ricezione PDF da Telegram** — i PDF dei giornali vengono inviati direttamente al bot; il bot li recupera tramite `getUpdates` e li scarica automaticamente (fino a 3 PDF per esecuzione)
-- **Svuotamento coda automatico** — dopo ogni lettura, la coda di aggiornamenti Telegram viene resettata tramite offset per evitare di rielaborare i PDF già processati
+- **Ricezione PDF da Dropbox** — i PDF dei giornali vengono caricati in una cartella Dropbox dedicata (`NotizieJR`); il bot li scarica automaticamente senza limiti di dimensione
+- **Cancellazione automatica** — dopo l'elaborazione, i PDF vengono cancellati da Dropbox; la cartella è sempre pulita per il giorno successivo
 - **Estrazione testo** — il testo viene estratto da ogni pagina del PDF con `pypdf`
 - **Analisi AI con Gemini** — `gemini-3.5-flash` identifica e sintetizza solo le notizie relative alla Juventus, assegnando la fonte corretta a ogni notizia
 - **Formattazione HTML** — nomi di giocatori, allenatori, dirigenti e squadre vengono evidenziati in grassetto `<b>`; ogni notizia è limitata a 280 caratteri
@@ -36,50 +32,47 @@ Notizie_JR/
 ---
 
 ## 📐 Formato del messaggio
-
 ```
 [Emoji notizia] Testo della notizia con Giocatore in grassetto...
-
 📰 TuttoSport
-
 👉 @Juventus_Reborn
 ```
 
 ---
 
 ## ⚙️ Configurazione dei Secrets
-
 Aggiungi i seguenti secret nelle impostazioni della repository (`Settings → Secrets and variables → Actions`):
 
 | Secret | Descrizione |
 |---|---|
-| `TELEGRAM_TOKEN` | Token del bot Telegram (deve ricevere i PDF) |
+| `TELEGRAM_TOKEN` | Token del bot Telegram |
 | `CHAT_ID` | Chat ID del canale di destinazione per le notizie |
 | `GEMINI_API_KEY` | Chiave API Google Gemini |
+| `DROPBOX_APP_KEY` | App key dell'app Dropbox |
+| `DROPBOX_APP_SECRET` | App secret dell'app Dropbox |
+| `DROPBOX_REFRESH_TOKEN` | Refresh token OAuth2 Dropbox (non scade) |
 
 ---
 
 ## 🚀 Utilizzo
-
 1. Fai il **fork** del repository
 2. Configura i secret elencati sopra
-3. Invia i PDF dei quotidiani al bot Telegram (come documento)
-4. Avvia il workflow da `Actions → Avvio Estrazione Notizie → Run workflow`
+3. Crea una cartella chiamata `NotizieJR` su Dropbox e condividila con il service account
+4. Carica i PDF dei quotidiani nella cartella `NotizieJR` su Dropbox
+5. Avvia il workflow da `Actions → Avvio Estrazione Notizie → Run workflow`
 
-> Il bot legge i PDF presenti nella coda del bot Telegram al momento dell'esecuzione. Invia i giornali **prima** di avviare il workflow.
+> Carica i PDF su Dropbox **prima** di avviare il workflow. Dopo l'elaborazione verranno cancellati automaticamente.
 
 ---
 
 ## 🛠️ Stack tecnico
-
-`Python 3.10` · `pypdf` · `google-genai` · `requests` · `GitHub Actions`
+`Python 3.10` · `pypdf` · `google-genai` · `dropbox` · `requests` · `GitHub Actions`
 
 ---
 
 ## 🤖 Modello AI
-
 [Google Gemini](https://ai.google.dev/) — modello `gemini-3.5-flash` per l'estrazione e sintesi delle notizie.
 
 ---
 
-*Progetto amatoriale. Non affiliato con la Juventus FC, Telegram, Google o i quotidiani citati.*
+*Progetto amatoriale. Non affiliato con la Juventus FC, Telegram, Google, Dropbox o i quotidiani citati.*
