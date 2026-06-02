@@ -1,4 +1,4 @@
-name: Avvio Estrazione Notizie
+name: Avvio Estrazione Notizie - GIORNALI
 
 on:
   workflow_dispatch: # Solo attivazione manuale con bottone
