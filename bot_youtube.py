@@ -81,7 +81,7 @@ def generate_news_from_youtube(url):
     for tentativo in range(3):
         try:
             response = client.models.generate_content(
-                model="gemini-2.5-flash",
+                model="gemini-3.5-flash",
                 contents=gtypes.Content(
                     role="user",
                     parts=[
