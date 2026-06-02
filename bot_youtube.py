@@ -3,6 +3,7 @@ import requests
 import time
 import dropbox
 from google import genai
+from google.genai import types as gtypes
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -47,9 +48,9 @@ def delete_urls_file_from_dropbox():
 
 
 def generate_news_from_youtube(url):
-    testo = (
-        "Cosa viene detto in questo video: " + url + "\n\n"
-        "Riporta SOLO le notizie riguardanti la Juventus.\n\n"
+    prompt = (
+        "Sei un estrattore di notizie calcistiche estremamente preciso. "
+        "Analizza il video e riporta SOLO le notizie riguardanti la Juventus.\n\n"
         "REGOLE TASSATIVE:\n"
         "- NON USARE MAI GLI ASTERISCHI (**) per il grassetto.\n"
         "- Usa SOLO i tag HTML <b> e </b> per il grassetto.\n"
@@ -69,7 +70,15 @@ def generate_news_from_youtube(url):
         try:
             response = client.models.generate_content(
                 model="gemini-3.5-flash",
-                contents=testo
+                contents=gtypes.Content(
+                    role="user",
+                    parts=[
+                        gtypes.Part(text=prompt),
+                        gtypes.Part(
+                            file_data=gtypes.FileData(file_uri=url)
+                        )
+                    ]
+                )
             )
             return response.text
         except Exception as e:
