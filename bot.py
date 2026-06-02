@@ -115,6 +115,7 @@ def generate_news_with_gemini(text):
     2. Inserisci tassativamente uno di questi tre tag alla fine di ogni notizia per indicare la fonte: [FONTE_TUTTO], [FONTE_GAZZETTA] o [FONTE_CORRIERE].
     3. Struttura: [NOTIZIA][Emoji] Testo continuo senza titoli... [TAG_FONTE]
     4. Sii sintetico (max 280 caratteri a notizia).
+    5. Per le cifre in milioni di euro usa SEMPRE il formato compatto: 1M€, 50M€, 100M€. Mai scrivere "milioni di euro" o "mln" o "M di euro".
     """
     response = client.models.generate_content(
         model='gemini-3.5-flash',
