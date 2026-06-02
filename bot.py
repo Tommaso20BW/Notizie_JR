@@ -1,18 +1,26 @@
 import os
+import json
 import requests
 import time
 from pypdf import PdfReader
 from google import genai
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseDownload
+from google.oauth2.service_account import Credentials
 from requests.adapters import HTTPAdapter
 from urllib3.util import Retry
+import io
 
 # Configurazione variabili d'ambiente da GitHub Secrets
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GDRIVE_FOLDER_ID = os.getenv("GDRIVE_FOLDER_ID")
+GDRIVE_CREDENTIALS = os.getenv("GDRIVE_CREDENTIALS")
 
 # Inizializzazione del client ufficiale Google GenAI
 client = genai.Client(api_key=GEMINI_API_KEY)
+
 
 def crea_sessione_robusta():
     """Crea una sessione HTTP con tentativi di ripescaggio automatico"""
@@ -27,72 +35,72 @@ def crea_sessione_robusta():
     session.mount("https://", adapter)
     return session
 
-def extract_pdf_info(message):
-    """Intercetta il file_id del PDF"""
-    if "document" in message:
-        doc = message["document"]
-        if doc.get("mime_type") == "application/pdf" or doc.get("file_name", "").lower().endswith(".pdf"):
-            return doc.get("file_id")
-    return None
 
-def get_pdf_from_telegram():
-    """Recupera PDF e svuota la coda di Telegram tramite offset"""
-    session = crea_sessione_robusta()
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates?limit=100"
-    
-    try:
-        response = session.get(url, timeout=30).json()
-    except Exception as e:
-        print(f"Errore di connessione a Telegram: {e}")
-        return []
-    
-    updates = response.get("result", [])
-    if not updates:
-        return []
-        
-    file_ids = []
-    highest_update_id = 0
-    
-    for update in reversed(updates):
-        u_id = update.get("update_id")
-        if u_id > highest_update_id:
-            highest_update_id = u_id
-            
-        message = update.get("message") or update.get("channel_post")
-        if not message: continue
-            
-        file_id = extract_pdf_info(message)
-        if not file_id and "reply_to_message" in message:
-            file_id = extract_pdf_info(message["reply_to_message"])
-            
-        if file_id and file_id not in file_ids:
-            file_ids.append(file_id)
-            if len(file_ids) == 3: break
-                
+def crea_drive_service():
+    """Crea il client Google Drive tramite Service Account"""
+    creds_dict = json.loads(GDRIVE_CREDENTIALS)
+    creds = Credentials.from_service_account_info(
+        creds_dict,
+        scopes=["https://www.googleapis.com/auth/drive"]
+    )
+    return build("drive", "v3", credentials=creds)
+
+
+def get_pdf_from_drive():
+    """Scarica tutti i PDF presenti nella cartella Google Drive"""
+    service = crea_drive_service()
+
+    # Cerca tutti i PDF nella cartella
+    query = f"'{GDRIVE_FOLDER_ID}' in parents and mimeType='application/pdf' and trashed=false"
+    results = service.files().list(
+        q=query,
+        fields="files(id, name)",
+        pageSize=10
+    ).execute()
+
+    files = results.get("files", [])
+    if not files:
+        print("Nessun PDF trovato su Google Drive.")
+        return [], []
+
+    print(f"Trovati {len(files)} PDF su Google Drive.")
     pdf_paths = []
-    if file_ids:
-        print(f"Trovati {len(file_ids)} PDF. Avvio download...")
-        for idx, file_id in enumerate(file_ids):
-            try:
-                file_info = session.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getFile?file_id={file_id}", timeout=30).json()
-                if "result" in file_info:
-                    file_path = file_info["result"]["file_path"]
-                    download_url = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file_path}"
-                    local_filename = f"giornale_{idx}.pdf"
-                    
-                    with session.get(download_url, stream=True, timeout=120) as r:
-                        if r.status_code == 200:
-                            with open(local_filename, "wb") as f:
-                                for chunk in r.iter_content(chunk_size=65536):
-                                    if chunk: f.write(chunk)
-                            pdf_paths.append(local_filename)
-            except Exception as e:
-                print(f"Errore file {idx+1}: {e}")
-                
-    # Svuotamento coda per non rileggere gli stessi file al prossimo avvio
-    if highest_update_id > 0:
-        session.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates?offset={highest_update_id + 1}&limit=1", timeout=10)
-    return pdf_paths
+    file_ids = []
+
+    for idx, file in enumerate(files):
+        file_id = file["id"]
+        file_name = file["name"]
+        local_filename = f"giornale_{idx}.pdf"
+
+        try:
+            request = service.files().get_media(fileId=file_id)
+            with io.FileIO(local_filename, "wb") as fh:
+                downloader = MediaIoBaseDownload(fh, request, chunksize=1024*1024)
+                done = False
+                while not done:
+                    status, done = downloader.next_chunk()
+                    print(f"Download {file_name}: {int(status.progress() * 100)}%")
+
+            pdf_paths.append(local_filename)
+            file_ids.append(file_id)
+            print(f"Scaricato: {file_name}")
+
+        except Exception as e:
+            print(f"Errore download {file_name}: {e}")
+
+    return pdf_paths, file_ids
+
+
+def delete_files_from_drive(file_ids):
+    """Cancella i PDF da Google Drive dopo l'elaborazione"""
+    service = crea_drive_service()
+    for file_id in file_ids:
+        try:
+            service.files().delete(fileId=file_id).execute()
+            print(f"File {file_id} cancellato da Drive.")
+        except Exception as e:
+            print(f"Errore cancellazione file {file_id}: {e}")
+
 
 def extract_text_from_single_pdf(path):
     text = ""
@@ -100,10 +108,12 @@ def extract_text_from_single_pdf(path):
         reader = PdfReader(path)
         for page in reader.pages:
             p = page.extract_text()
-            if p: text += p + "\n"
+            if p:
+                text += p + "\n"
     except Exception as e:
         print(f"Errore lettura {path}: {e}")
     return text
+
 
 def generate_news_with_gemini(text):
     prompt = """Sei un estrattore di notizie calcistiche estremamente preciso. Il tuo compito è analizzare il testo e riportare SOLO le notizie riguardanti la Juventus.
@@ -124,9 +134,10 @@ def generate_news_with_gemini(text):
     )
     return response.text
 
+
 def send_to_telegram(news_list):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    
+
     emoji_mapping = {
         "[FONTE_TUTTO]": ('<tg-emoji emoji-id="6032834612990841221">📰</tg-emoji>', "TuttoSport"),
         "[FONTE_GAZZETTA]": ('<tg-emoji emoji-id="6032862491623559282">📰</tg-emoji>', "Gazzetta dello Sport"),
@@ -136,22 +147,25 @@ def send_to_telegram(news_list):
 
     for news in news_list:
         clean = news.strip()
-        if not clean: continue
-        
-        # ASSICURAZIONE CONTRO I BUG DI GEMINI: Rimuove forzatamente gli asterischi se presenti
+        if not clean:
+            continue
+
+        # Rimuove forzatamente gli asterischi se presenti
         clean = clean.replace("**", "")
-        
+
         tag = next((t for t in emoji_mapping if t in clean), "[FONTE_TUTTO]")
         clean = clean.replace(tag, "").strip()
-        
+
         emoji_fonte, nome_fonte = emoji_mapping[tag]
-        
+
         testo = f"{clean}\n\n{emoji_fonte} <i>{nome_fonte}</i>\n\n{tg_reborn} @Juventus_Reborn"
-        
+
         requests.post(url, json={"chat_id": CHAT_ID, "text": testo, "parse_mode": "HTML"})
 
+
 if __name__ == "__main__":
-    pdfs = get_pdf_from_telegram()
+    pdfs, drive_file_ids = get_pdf_from_drive()
+
     if len(pdfs) == 0:
         print("Nessun PDF nuovo. Chiusura.")
     else:
@@ -165,8 +179,17 @@ if __name__ == "__main__":
                     send_to_telegram(lista)
                 except Exception as e:
                     print(f"Errore Gemini: {e}")
-            if os.path.exists(path): os.remove(path)
+
+            # Rimuove il file locale
+            if os.path.exists(path):
+                os.remove(path)
+
             if i < len(pdfs) - 1:
                 print("In attesa di 20 secondi prima del prossimo giornale...")
                 time.sleep(20)
+
+        # Cancella tutti i PDF da Google Drive
+        print("Cancellazione PDF da Google Drive...")
+        delete_files_from_drive(drive_file_ids)
+
         print("Operazione completata.")
