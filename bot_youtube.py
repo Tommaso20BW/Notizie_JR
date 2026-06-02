@@ -14,7 +14,6 @@ DROPBOX_REFRESH_TOKEN = os.getenv("DROPBOX_REFRESH_TOKEN")
 
 DROPBOX_URLS_FILE = "/NotizieJR/youtube_urls.txt"
 
-# Inizializzazione client Gemini
 client = genai.Client(api_key=GEMINI_API_KEY)
 
 
@@ -50,23 +49,22 @@ def delete_urls_file_from_dropbox():
 
 def generate_news_from_youtube(url):
     prompt = (
+        "Guarda questo video e dimmi cosa viene detto: " + url + "\n\n"
         "Sei un estrattore di notizie calcistiche estremamente preciso. "
-        "Il tuo compito e analizzare il contenuto audio/video e riportare SOLO le notizie riguardanti la Juventus.\n\n"
-        "REGOLE TASSATIVE E IMPERATIVE:\n"
+        "Riporta SOLO le notizie riguardanti la Juventus presenti nel video.\n\n"
+        "REGOLE TASSATIVE:\n"
         "- NON USARE MAI GLI ASTERISCHI (**) per il grassetto.\n"
-        "- Usa SOLO ed esclusivamente i tag HTML <b> e </b> per applicare il grassetto.\n"
+        "- Usa SOLO i tag HTML <b> e </b> per il grassetto.\n"
         "- Se nel video non ci sono notizie sulla Juventus, rispondi SOLO con: NESSUNA_NOTIZIA\n\n"
-        "Formattazione richiesta:\n"
-        "1. Applica il grassetto HTML usando <b> e </b> sui nomi di giocatori, allenatori, dirigenti e squadre di calcio.\n"
-        "2. Alla fine di OGNI notizia inserisci il tag del giornalista, scegliendo ESATTAMENTE uno tra:\n"
+        "Formattazione:\n"
+        "1. Metti in grassetto con <b></b> i nomi di giocatori, allenatori, dirigenti e squadre.\n"
+        "2. Alla fine di OGNI notizia metti il tag del giornalista che parla nel video, scegliendo tra:\n"
         "   [FONTE_ROMEO_AGRESTI], [FONTE_MATTEO_MORETTO], [FONTE_FABRIZIO_ROMANO],\n"
         "   [FONTE_NICOLO_SCHIRA], [FONTE_ALFREDO_PEDULLA], [FONTE_ALTRO]\n"
-        "   Se non riesci a identificare il giornalista, usa [FONTE_ALTRO].\n"
-        "3. Struttura: [NOTIZIA][Emoji] Testo continuo senza titoli... [FONTE_X]\n"
-        "4. Sii sintetico (max 280 caratteri a notizia).\n"
-        "5. Per le cifre in milioni di euro usa SEMPRE il formato compatto: 1M, 50M, 100M euro.\n"
-        "6. Ogni notizia deve iniziare con [NOTIZIA] seguito da un emoji pertinente al contenuto.\n\n"
-        "Video YouTube da analizzare: " + url
+        "3. Struttura obbligatoria: [NOTIZIA][Emoji] Testo... [FONTE_X]\n"
+        "4. Max 280 caratteri a notizia.\n"
+        "5. Cifre in milioni: 1M euro, 50M euro, 100M euro.\n"
+        "6. Ogni notizia inizia con [NOTIZIA] + emoji pertinente."
     )
 
     try:
