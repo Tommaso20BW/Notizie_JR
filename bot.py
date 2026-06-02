@@ -1,22 +1,18 @@
 import os
-import json
 import requests
 import time
+import dropbox
 from pypdf import PdfReader
 from google import genai
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseDownload
-from google.oauth2.service_account import Credentials
 from requests.adapters import HTTPAdapter
 from urllib3.util import Retry
-import io
 
 # Configurazione variabili d'ambiente da GitHub Secrets
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GDRIVE_FOLDER_ID = os.getenv("GDRIVE_FOLDER_ID")
-GDRIVE_CREDENTIALS = os.getenv("GDRIVE_CREDENTIALS")
+DROPBOX_TOKEN = os.getenv("DROPBOX_TOKEN")
+DROPBOX_FOLDER = "/NotiziJR"
 
 # Inizializzazione del client ufficiale Google GenAI
 client = genai.Client(api_key=GEMINI_API_KEY)
@@ -36,70 +32,51 @@ def crea_sessione_robusta():
     return session
 
 
-def crea_drive_service():
-    """Crea il client Google Drive tramite Service Account"""
-    creds_dict = json.loads(GDRIVE_CREDENTIALS)
-    creds = Credentials.from_service_account_info(
-        creds_dict,
-        scopes=["https://www.googleapis.com/auth/drive"]
-    )
-    return build("drive", "v3", credentials=creds)
+def get_pdf_from_dropbox():
+    """Scarica tutti i PDF presenti nella cartella Dropbox"""
+    dbx = dropbox.Dropbox(DROPBOX_TOKEN)
 
-
-def get_pdf_from_drive():
-    """Scarica tutti i PDF presenti nella cartella Google Drive"""
-    service = crea_drive_service()
-
-    # Cerca tutti i PDF nella cartella
-    query = f"'{GDRIVE_FOLDER_ID}' in parents and mimeType='application/pdf' and trashed=false"
-    results = service.files().list(
-        q=query,
-        fields="files(id, name)",
-        pageSize=10
-    ).execute()
-
-    files = results.get("files", [])
-    if not files:
-        print("Nessun PDF trovato su Google Drive.")
+    try:
+        result = dbx.files_list_folder(DROPBOX_FOLDER)
+    except dropbox.exceptions.ApiError as e:
+        print(f"Errore accesso cartella Dropbox: {e}")
         return [], []
 
-    print(f"Trovati {len(files)} PDF su Google Drive.")
+    pdf_files = [f for f in result.entries if isinstance(f, dropbox.files.FileMetadata) and f.name.lower().endswith(".pdf")]
+
+    if not pdf_files:
+        print("Nessun PDF trovato su Dropbox.")
+        return [], []
+
+    print(f"Trovati {len(pdf_files)} PDF su Dropbox.")
     pdf_paths = []
-    file_ids = []
+    dropbox_paths = []
 
-    for idx, file in enumerate(files):
-        file_id = file["id"]
-        file_name = file["name"]
+    for idx, file in enumerate(pdf_files):
         local_filename = f"giornale_{idx}.pdf"
-
         try:
-            request = service.files().get_media(fileId=file_id)
-            with io.FileIO(local_filename, "wb") as fh:
-                downloader = MediaIoBaseDownload(fh, request, chunksize=1024*1024)
-                done = False
-                while not done:
-                    status, done = downloader.next_chunk()
-                    print(f"Download {file_name}: {int(status.progress() * 100)}%")
-
+            print(f"Download {file.name}...")
+            metadata, response = dbx.files_download(file.path_lower)
+            with open(local_filename, "wb") as f:
+                f.write(response.content)
             pdf_paths.append(local_filename)
-            file_ids.append(file_id)
-            print(f"Scaricato: {file_name}")
-
+            dropbox_paths.append(file.path_lower)
+            print(f"Scaricato: {file.name}")
         except Exception as e:
-            print(f"Errore download {file_name}: {e}")
+            print(f"Errore download {file.name}: {e}")
 
-    return pdf_paths, file_ids
+    return pdf_paths, dropbox_paths
 
 
-def delete_files_from_drive(file_ids):
-    """Sposta i PDF nel cestino di Google Drive dopo l'elaborazione"""
-    service = crea_drive_service()
-    for file_id in file_ids:
+def delete_files_from_dropbox(dropbox_paths):
+    """Cancella i PDF da Dropbox dopo l'elaborazione"""
+    dbx = dropbox.Dropbox(DROPBOX_TOKEN)
+    for path in dropbox_paths:
         try:
-            service.files().update(fileId=file_id, body={"trashed": True}).execute()
-            print(f"File {file_id} spostato nel cestino.")
+            dbx.files_delete_v2(path)
+            print(f"File {path} cancellato da Dropbox.")
         except Exception as e:
-            print(f"Errore cancellazione file {file_id}: {e}")
+            print(f"Errore cancellazione {path}: {e}")
 
 
 def extract_text_from_single_pdf(path):
@@ -164,7 +141,7 @@ def send_to_telegram(news_list):
 
 
 if __name__ == "__main__":
-    pdfs, drive_file_ids = get_pdf_from_drive()
+    pdfs, dropbox_paths = get_pdf_from_dropbox()
 
     if len(pdfs) == 0:
         print("Nessun PDF nuovo. Chiusura.")
@@ -188,8 +165,8 @@ if __name__ == "__main__":
                 print("In attesa di 20 secondi prima del prossimo giornale...")
                 time.sleep(20)
 
-        # Cancella tutti i PDF da Google Drive
-        print("Cancellazione PDF da Google Drive...")
-        delete_files_from_drive(drive_file_ids)
+        # Cancella tutti i PDF da Dropbox
+        print("Cancellazione PDF da Dropbox...")
+        delete_files_from_dropbox(dropbox_paths)
 
         print("Operazione completata.")
