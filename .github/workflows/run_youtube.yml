@@ -1,8 +1,6 @@
-name: Bot YouTube Juventus
+name: Avvio Estrazione Notizie - YouTube
 
 on:
-  schedule:
-    - cron: '*/30 * * * *'   # Ogni 30 minuti
   workflow_dispatch:           # Permette esecuzione manuale
 
 jobs:
