@@ -92,12 +92,12 @@ def get_pdf_from_drive():
 
 
 def delete_files_from_drive(file_ids):
-    """Cancella i PDF da Google Drive dopo l'elaborazione"""
+    """Sposta i PDF nel cestino di Google Drive dopo l'elaborazione"""
     service = crea_drive_service()
     for file_id in file_ids:
         try:
-            service.files().delete(fileId=file_id).execute()
-            print(f"File {file_id} cancellato da Drive.")
+            service.files().update(fileId=file_id, body={"trashed": True}).execute()
+            print(f"File {file_id} spostato nel cestino.")
         except Exception as e:
             print(f"Errore cancellazione file {file_id}: {e}")
 
