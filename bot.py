@@ -106,11 +106,14 @@ def generate_news_with_gemini(text):
     REGOLA TASSATIVA ED IMPERATIVI: 
     - NON USARE MAI GLI ASTERISCHI (**) per il grassetto.
     - Usa SOLO ed esclusivamente i tag HTML <b> e </b> per applicare il grassetto.
+    - Ogni notizia DEVE iniziare OBBLIGATORIAMENTE con il token ---NOTIZIA--- su una riga separata.
     
     Formattazione richiesta:
     1. Applica il grassetto HTML usando <b> e </b> sui nomi di battesimo e cognomi dei giocatori, allenatori, dirigenti (es: <b>Damien Comolli</b>) e squadre di calcio.
     2. Inserisci tassativamente uno di questi tre tag alla fine di ogni notizia per indicare la fonte: [FONTE_TUTTO], [FONTE_GAZZETTA] o [FONTE_CORRIERE].
-    3. Struttura: [NOTIZIA][Emoji] Testo continuo senza titoli... [TAG_FONTE]
+    3. Struttura OBBLIGATORIA per ogni notizia:
+       ---NOTIZIA---
+       [Emoji] Testo continuo senza titoli... [TAG_FONTE]
     4. Sii sintetico (max 280 caratteri a notizia).
     """
     response = client.models.generate_content(
@@ -159,7 +162,8 @@ if __name__ == "__main__":
             if testo.strip():
                 try:
                     raw = generate_news_with_gemini(testo)
-                    lista = [n.strip() for n in raw.split("[NOTIZIA]") if n.strip()]
+                    # Split sul delimitatore univoco ---NOTIZIA---
+                    lista = [n.strip() for n in raw.split("---NOTIZIA---") if n.strip()]
                     send_to_telegram(lista)
                 except Exception as e:
                     print(f"Errore Gemini: {e}")
