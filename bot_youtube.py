@@ -75,20 +75,9 @@ def generate_news_from_youtube(url):
     try:
         response = client.models.generate_content(
             model="gemini-2.5-flash",
-            contents=[
-                genai.types.Content(
-                    role="user",
-                    parts=[
-                        genai.types.Part(
-                            file_data=genai.types.FileData(
-                                file_uri=url,
-                                mime_type="video/*"
-                            )
-                        ),
-                        genai.types.Part(text=prompt)
-                    ]
-                )
-            ]
+            contents=f"{prompt}
+
+Video YouTube da analizzare: {url}"
         )
         return response.text
     except Exception as e:
