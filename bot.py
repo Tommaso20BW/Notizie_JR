@@ -154,7 +154,7 @@ if __name__ == "__main__":
     pdfs, dropbox_paths = get_pdf_from_dropbox()
 
     if len(pdfs) == 0:
-        print("Nessun PDF nuovo. Chiusura.")
+        print("Chiusura BOT.")
     else:
         for i, path in enumerate(pdfs):
             print(f"Elaborazione {path}...")
