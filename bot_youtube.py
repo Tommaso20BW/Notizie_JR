@@ -76,13 +76,18 @@ def generate_news_from_youtube(url):
         response = client.models.generate_content(
             model="gemini-2.5-flash",
             contents=[
-                {
-                    "role": "user",
-                    "parts": [
-                        {"uri": url, "mime_type": "video/*"},
-                        {"text": prompt}
+                genai.types.Content(
+                    role="user",
+                    parts=[
+                        genai.types.Part(
+                            file_data=genai.types.FileData(
+                                file_uri=url,
+                                mime_type="video/*"
+                            )
+                        ),
+                        genai.types.Part(text=prompt)
                     ]
-                }
+                )
             ]
         )
         return response.text
@@ -140,7 +145,7 @@ def send_to_telegram(news_list):
                 },
                 timeout=10
             )
-            time.sleep(1)  # Pausa tra un messaggio e l'altro
+            time.sleep(1)
         except Exception as e:
             print(f"Errore invio Telegram: {e}")
 
