@@ -67,15 +67,19 @@ def generate_news_from_youtube(url):
         "6. Ogni notizia inizia con [NOTIZIA] + emoji pertinente."
     )
 
-    try:
-        response = client.models.generate_content(
-            model="gemini-3.5-flash",
-            contents=prompt
-        )
-        return response.text
-    except Exception as e:
-        print(f"Errore Gemini per {url}: {e}")
-        return None
+    for tentativo in range(3):
+        try:
+            response = client.models.generate_content(
+                model="gemini-3.5-flash",
+                contents=prompt
+            )
+            return response.text
+        except Exception as e:
+            print(f"Errore Gemini tentativo {tentativo+1}/3 per {url}: {e}")
+            if tentativo < 2:
+                print("Riprovo tra 30 secondi...")
+                time.sleep(30)
+    return None
 
 
 # Mapping fonte -> (custom_emoji_id, nome visualizzato)
