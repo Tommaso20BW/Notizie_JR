@@ -53,7 +53,10 @@ def get_pdf_from_dropbox():
         print(f"Errore accesso cartella Dropbox: {e}")
         return [], []
 
-    pdf_files = [f for f in result.entries if isinstance(f, dropbox.files.FileMetadata) and f.name.lower().endswith(".pdf")]
+    pdf_files = [
+        f for f in result.entries
+        if isinstance(f, dropbox.files.FileMetadata) and f.name.lower().endswith(".pdf")
+    ]
 
     if not pdf_files:
         print("Nessun PDF trovato su Dropbox.")
@@ -116,12 +119,28 @@ def generate_news_with_gemini(text):
     3. Struttura: [NOTIZIA][Emoji] Testo continuo senza titoli... [TAG_FONTE]
     4. Sii sintetico (max 280 caratteri a notizia).
     5. Per le cifre in milioni di euro usa SEMPRE il formato compatto: 1M€, 50M€, 100M€. Mai scrivere "milioni di euro" o "mln" o "M di euro".
+    6. Separa ogni notizia con una riga vuota.
     """
     response = client.models.generate_content(
         model='gemini-3.5-flash',
         contents=f"{prompt}\n\nTesto del quotidiano:\n{text}",
     )
     return response.text
+
+
+def split_notizie(raw):
+    """
+    Divide il testo di Gemini in singole notizie.
+    Prova prima con [NOTIZIA], poi con doppio newline (paragrafi).
+    """
+    # Caso 1: Gemini ha usato il tag [NOTIZIA]
+    if "[NOTIZIA]" in raw:
+        lista = [n.strip() for n in raw.split("[NOTIZIA]") if n.strip()]
+    else:
+        # Caso 2: Gemini ha separato le notizie con righe vuote
+        lista = [n.strip() for n in raw.split("\n\n") if n.strip()]
+
+    return lista
 
 
 def send_to_telegram(news_list):
@@ -139,8 +158,10 @@ def send_to_telegram(news_list):
         if not clean:
             continue
 
+        # Rimuove eventuali asterischi residui
         clean = clean.replace("**", "")
 
+        # Individua il tag fonte, default TuttoSport
         tag = next((t for t in emoji_mapping if t in clean), "[FONTE_TUTTO]")
         clean = clean.replace(tag, "").strip()
 
@@ -148,7 +169,19 @@ def send_to_telegram(news_list):
 
         testo = f"{clean}\n\n{emoji_fonte} <i>{nome_fonte}</i>\n\n{tg_reborn} @Juventus_Reborn"
 
-        requests.post(url, json={"chat_id": CHAT_ID, "text": testo, "parse_mode": "HTML"})
+        try:
+            resp = requests.post(
+                url,
+                json={"chat_id": CHAT_ID, "text": testo, "parse_mode": "HTML"},
+                timeout=10
+            )
+            if not resp.ok:
+                print(f"Errore Telegram: {resp.status_code} - {resp.text}")
+        except Exception as e:
+            print(f"Errore invio Telegram: {e}")
+
+        # Piccola pausa tra un messaggio e l'altro per evitare rate limit
+        time.sleep(1)
 
 
 if __name__ == "__main__":
@@ -163,7 +196,8 @@ if __name__ == "__main__":
             if testo.strip():
                 try:
                     raw = generate_news_with_gemini(testo)
-                    lista = [n.strip() for n in raw.split("[NOTIZIA]") if n.strip()]
+                    lista = split_notizie(raw)
+                    print(f"Notizie trovate: {len(lista)}")
                     send_to_telegram(lista)
                 except Exception as e:
                     print(f"Errore Gemini: {e}")
