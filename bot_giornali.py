@@ -2,11 +2,7 @@ import os
 import requests
 import time
 import dropbox
-from dropbox.oauth import DropboxOAuth2FlowNoRedirect
-from pypdf import PdfReader
 from google import genai
-from requests.adapters import HTTPAdapter
-from urllib3.util import Retry
 
 # Configurazione variabili d'ambiente da GitHub Secrets
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -28,19 +24,6 @@ def crea_dropbox_client():
         app_secret=DROPBOX_APP_SECRET,
         oauth2_refresh_token=DROPBOX_REFRESH_TOKEN
     )
-
-
-def crea_sessione_robusta():
-    session = requests.Session()
-    retry = Retry(
-        total=5,
-        backoff_factor=1,
-        status_forcelist=[500, 502, 503, 504]
-    )
-    adapter = HTTPAdapter(max_retries=retry)
-    session.mount("http://", adapter)
-    session.mount("https://", adapter)
-    return session
 
 
 def get_pdf_from_dropbox():
@@ -93,26 +76,18 @@ def delete_files_from_dropbox(dropbox_paths):
             print(f"Errore cancellazione {path}: {e}")
 
 
-def extract_text_from_single_pdf(path):
-    text = ""
-    try:
-        reader = PdfReader(path)
-        for page in reader.pages:
-            p = page.extract_text()
-            if p:
-                text += p + "\n"
-    except Exception as e:
-        print(f"Errore lettura {path}: {e}")
-    return text
+def generate_news_from_pdf(path):
+    """
+    Invia il PDF DIRETTAMENTE a Gemini, che lo legge da solo.
+    Funziona anche se il PDF e' una scansione (foto delle pagine),
+    perche' Gemini "guarda" anche le immagini e non solo il testo.
+    """
+    prompt = """Sei un estrattore di notizie calcistiche estremamente preciso. Analizza il PDF del quotidiano allegato e riporta SOLO le notizie riguardanti la Juventus.
 
-
-def generate_news_with_gemini(text):
-    prompt = """Sei un estrattore di notizie calcistiche estremamente preciso. Il tuo compito è analizzare il testo e riportare SOLO le notizie riguardanti la Juventus.
-    
-    REGOLA TASSATIVA ED IMPERATIVI: 
+    REGOLA TASSATIVA ED IMPERATIVA:
     - NON USARE MAI GLI ASTERISCHI (**) per il grassetto.
     - Usa SOLO ed esclusivamente i tag HTML <b> e </b> per applicare il grassetto.
-    
+
     Formattazione richiesta:
     1. Applica il grassetto HTML usando <b> e </b> sui nomi di battesimo e cognomi dei giocatori, allenatori, dirigenti (es: <b>Damien Comolli</b>) e squadre di calcio.
     2. Inserisci tassativamente uno di questi tre tag alla fine di ogni notizia per indicare la fonte: [FONTE_TUTTO], [FONTE_GAZZETTA] o [FONTE_CORRIERE].
@@ -121,11 +96,24 @@ def generate_news_with_gemini(text):
     5. Per le cifre in milioni di euro usa SEMPRE il formato compatto: 1M€, 50M€, 100M€. Mai scrivere "milioni di euro" o "mln" o "M di euro".
     6. Separa ogni notizia con una riga vuota.
     """
-    response = client.models.generate_content(
-        model='gemini-3.5-flash',
-        contents=f"{prompt}\n\nTesto del quotidiano:\n{text}",
-    )
-    return response.text
+
+    # 1) Carica il PDF su Gemini (gestisce anche file grandi e scansioni)
+    print(f"Caricamento di {path} su Gemini...")
+    uploaded = client.files.upload(file=path)
+
+    try:
+        # 2) Chiede a Gemini di leggere il PDF ed estrarre le notizie
+        response = client.models.generate_content(
+            model='gemini-3.5-flash',
+            contents=[uploaded, prompt],
+        )
+        return response.text
+    finally:
+        # 3) Pulisce il file temporaneo caricato su Gemini
+        try:
+            client.files.delete(name=uploaded.name)
+        except Exception as e:
+            print(f"Impossibile cancellare il file Gemini: {e}")
 
 
 def split_notizie(raw):
@@ -192,15 +180,16 @@ if __name__ == "__main__":
     else:
         for i, path in enumerate(pdfs):
             print(f"Elaborazione {path}...")
-            testo = extract_text_from_single_pdf(path)
-            if testo.strip():
-                try:
-                    raw = generate_news_with_gemini(testo)
+            try:
+                raw = generate_news_from_pdf(path)
+                if raw and raw.strip():
                     lista = split_notizie(raw)
                     print(f"Notizie trovate: {len(lista)}")
                     send_to_telegram(lista)
-                except Exception as e:
-                    print(f"Errore Gemini: {e}")
+                else:
+                    print(f"Nessuna notizia estratta da {path}.")
+            except Exception as e:
+                print(f"Errore Gemini: {e}")
 
             if os.path.exists(path):
                 os.remove(path)
