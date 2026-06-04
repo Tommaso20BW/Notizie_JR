@@ -4,17 +4,17 @@
 ---
 
 ## 📌 Panoramica
-**Notizie JR** legge i PDF dei quotidiani sportivi italiani (Tuttosport, Gazzetta dello Sport, Corriere dello Sport) caricati su **Dropbox**, estrae il testo, lo analizza con **Google Gemini** per isolare solo le notizie riguardanti la Juventus, e le pubblica sul canale **@Juventus_Reborn** con formattazione e fonte corretta. Dopo l'elaborazione, i PDF vengono cancellati automaticamente da Dropbox.
+**Notizie JR** legge i PDF dei quotidiani sportivi italiani (Tuttosport, Gazzetta dello Sport, Corriere dello Sport) caricati su **Dropbox** e li invia direttamente a **Google Gemini**, che li analizza per isolare solo le notizie riguardanti la Juventus e le pubblica sul canale **@Juventus_Reborn** con formattazione e fonte corretta. Dopo l'elaborazione, i PDF vengono cancellati automaticamente da Dropbox.
 
 ---
 
 ## 🗂️ Struttura del repository
 ```
 Notizie_JR/
-├── bot.py                    # Script principale
+├── bot_giornali.py           # Script principale
 ├── requirements.txt          # Dipendenze Python
 └── .github/workflows/
-    └── run_bot.yml           # Workflow GitHub Actions
+    └── run_giornali.yml      # Workflow GitHub Actions
 ```
 
 ---
@@ -22,11 +22,10 @@ Notizie_JR/
 ## ✨ Funzionalità
 - **Ricezione PDF da Dropbox** — i PDF dei giornali vengono caricati in una cartella Dropbox dedicata (`NotizieJR`); il bot li scarica automaticamente senza limiti di dimensione
 - **Cancellazione automatica** — dopo l'elaborazione, i PDF vengono cancellati da Dropbox; la cartella è sempre pulita per il giorno successivo
-- **Estrazione testo** — il testo viene estratto da ogni pagina del PDF con `pypdf`
+- **Lettura PDF con AI** — il PDF viene inviato direttamente a **Google Gemini**, che lo legge da solo. Funziona anche con i PDF scansionati (foto delle pagine), perché Gemini è multimodale e "vede" anche le immagini, non solo il testo
 - **Analisi AI con Gemini** — `gemini-3.5-flash` identifica e sintetizza solo le notizie relative alla Juventus, assegnando la fonte corretta a ogni notizia
 - **Formattazione HTML** — nomi di giocatori, allenatori, dirigenti e squadre vengono evidenziati in grassetto `<b>`; ogni notizia è limitata a 280 caratteri
 - **Tag fonte automatico** — ogni notizia riporta un'emoji e il nome del quotidiano di provenienza (`TuttoSport`, `Gazzetta dello Sport`, `Corriere dello Sport`)
-- **Sessione HTTP robusta** — le richieste usano `urllib3.Retry` con backoff automatico su errori 5xx
 - **Pausa tra giornali** — attesa di 20 secondi tra l'elaborazione di un quotidiano e il successivo per non sovraccaricare l'API Gemini
 
 ---
@@ -59,19 +58,19 @@ Aggiungi i seguenti secret nelle impostazioni della repository (`Settings → Se
 2. Configura i secret elencati sopra
 3. Crea una cartella chiamata `NotizieJR` su Dropbox e condividila con il service account
 4. Carica i PDF dei quotidiani nella cartella `NotizieJR` su Dropbox
-5. Avvia il workflow da `Actions → Avvio Estrazione Notizie → Run workflow`
+5. Avvia il workflow da `Actions → Avvio Estrazione Notizie - Giornali → Run workflow`
 
 > Carica i PDF su Dropbox **prima** di avviare il workflow. Dopo l'elaborazione verranno cancellati automaticamente.
 
 ---
 
 ## 🛠️ Stack tecnico
-`Python 3.10` · `pypdf` · `google-genai` · `dropbox` · `requests` · `GitHub Actions`
+`Python 3.10` · `google-genai` · `dropbox` · `requests` · `GitHub Actions`
 
 ---
 
 ## 🤖 Modello AI
-[Google Gemini](https://ai.google.dev/) — modello `gemini-3.5-flash` per l'estrazione e sintesi delle notizie.
+[Google Gemini](https://ai.google.dev/) — modello `gemini-3.5-flash` per la lettura dei PDF e la sintesi delle notizie.
 
 ---
 
