@@ -1,4 +1,4 @@
-name: Avvio Estrazione Notizie - URL
+name: Avvio Estrazione Notizie - YouTube
 
 on:
   workflow_dispatch: # Solo attivazione manuale con bottone
