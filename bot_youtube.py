@@ -16,7 +16,7 @@ DROPBOX_REFRESH_TOKEN = os.getenv("DROPBOX_REFRESH_TOKEN")
 DROPBOX_FOLDER = "/NotizieJR"
 TXT_FILENAME = "link.txt"
 
-MODEL = "gemini-3.5-flash"
+MODEL = "gemini-2.5-flash"
 
 client = genai.Client(api_key=GEMINI_API_KEY)
 
