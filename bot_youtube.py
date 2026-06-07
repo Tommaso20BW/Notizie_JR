@@ -1,11 +1,12 @@
 import os
 import re
 import time
+import json
 import requests
 import dropbox
+import yt_dlp
 from google import genai
 from google.genai import types
-from youtube_transcript_api import YouTubeTranscriptApi, NoTranscriptFound, TranscriptsDisabled
 
 # Configurazione variabili d'ambiente da GitHub Secrets
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -17,7 +18,7 @@ DROPBOX_REFRESH_TOKEN = os.getenv("DROPBOX_REFRESH_TOKEN")
 DROPBOX_FOLDER = "/NotizieJR"
 TXT_FILENAME = "link.txt"
 
-MODEL = "gemini-2.5-flash"
+MODEL = "gemini-3.5-flash"
 
 client = genai.Client(api_key=GEMINI_API_KEY)
 
@@ -133,13 +134,6 @@ def normalize_youtube_url(url):
     return url
 
 
-def get_video_id(url):
-    m = re.search(r'[?&]v=([A-Za-z0-9_-]{11})', url)
-    if m:
-        return m.group(1)
-    return None
-
-
 def get_youtube_meta(url):
     try:
         r = requests.get(
@@ -156,42 +150,80 @@ def get_youtube_meta(url):
     return "", ""
 
 
-def get_transcript(video_id):
-    """Scarica la trascrizione del video. Prova italiano, poi inglese, poi qualsiasi."""
+def get_transcript(video_url):
+    """Scarica i sottotitoli automatici con yt-dlp. Prova it -> en -> qualsiasi."""
+    ydl_opts = {
+        "writeautomaticsub": True,
+        "writesubtitles": True,
+        "subtitleslangs": ["it", "en"],
+        "skip_download": True,
+        "quiet": True,
+        "no_warnings": True,
+    }
     try:
-        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(video_url, download=False)
 
-        # Prova prima italiano (generato automaticamente o manuale)
-        for lang in ["it", "en"]:
-            try:
-                t = transcript_list.find_transcript([lang])
-                entries = t.fetch()
-                testo = " ".join(e.text for e in entries)
-                print(f"Trascrizione scaricata (lingua: {lang}, {len(testo)} caratteri).")
-                return testo
-            except Exception:
-                continue
+        # Cerca prima sottotitoli automatici, poi manuali
+        for subs_key in ("automatic_captions", "subtitles"):
+            subs = info.get(subs_key, {})
+            for lang in ["it", "en"] + list(subs.keys()):
+                if lang not in subs:
+                    continue
+                # Prende il formato json3 o srv3 o ttml o vtt
+                formati = subs[lang]
+                url_sub = None
+                for fmt in formati:
+                    if fmt.get("ext") in ("json3", "srv3", "ttml", "vtt"):
+                        url_sub = fmt["url"]
+                        break
+                if not url_sub and formati:
+                    url_sub = formati[0]["url"]
+                if not url_sub:
+                    continue
 
-        # Fallback: prende qualsiasi trascrizione disponibile
-        t = next(iter(transcript_list))
-        entries = t.fetch()
-        testo = " ".join(e.text for e in entries)
-        print(f"Trascrizione scaricata (lingua: {t.language_code}, {len(testo)} caratteri).")
-        return testo
+                r = requests.get(url_sub, timeout=15)
+                if not r.ok:
+                    continue
 
-    except TranscriptsDisabled:
-        print("Sottotitoli disabilitati per questo video.")
+                testo = estrai_testo_sottotitoli(r.text, formati[0].get("ext", ""))
+                if testo:
+                    print(f"Trascrizione scaricata (lingua: {lang}, {len(testo)} caratteri).")
+                    return testo
+
+        print("Nessun sottotitolo trovato.")
         return None
-    except NoTranscriptFound:
-        print("Nessuna trascrizione disponibile per questo video.")
-        return None
+
     except Exception as e:
         print(f"Errore scaricamento trascrizione: {e}")
         return None
 
 
+def estrai_testo_sottotitoli(contenuto, ext):
+    """Estrae testo puro da json3, vtt o altri formati."""
+    try:
+        if ext == "json3":
+            data = json.loads(contenuto)
+            testi = []
+            for evento in data.get("events", []):
+                for seg in evento.get("segs", []):
+                    t = seg.get("utf8", "").strip()
+                    if t and t != "\n":
+                        testi.append(t)
+            return " ".join(testi)
+    except Exception:
+        pass
+
+    # Fallback: rimuove tag e righe di timing (funziona per vtt, ttml, srv)
+    testo = re.sub(r'<[^>]+>', ' ', contenuto)
+    testo = re.sub(r'\d{2}:\d{2}[^\n]*', '', testo)
+    testo = re.sub(r'WEBVTT.*', '', testo, flags=re.DOTALL | re.IGNORECASE)
+    testo = re.sub(r'[\r\n]+', ' ', testo)
+    testo = re.sub(r'\s{2,}', ' ', testo)
+    return testo.strip()
+
+
 def generate_news_from_transcript(titolo, autore, trascrizione):
-    """Passa titolo + trascrizione a Gemini come testo puro."""
     contenuto = (
         f"{PROMPT}\n\n"
         f"TITOLO VIDEO: {titolo}\n"
@@ -210,7 +242,7 @@ def generate_news_from_transcript(titolo, autore, trascrizione):
 
 
 def generate_news_from_url(url):
-    """Fallback per URL non YouTube: usa url_context."""
+    """Fallback per URL non YouTube."""
     print(f"Invio pagina web a Gemini (URL context): {url}")
     response = client.models.generate_content(
         model=MODEL,
@@ -229,10 +261,8 @@ def estrai_meta(raw):
     for tag, key in TAG_FONTE.items():
         if tag in raw and found_key is None:
             found_key = key
-
     for tag in list(TAG_FONTE.keys()) + ["[FONTE_ALTRO]"]:
         raw = raw.replace(tag, "")
-
     return found_key, raw.strip()
 
 
@@ -260,9 +290,7 @@ def send_to_telegram(news_list, emoji_fonte, nome_fonte):
         clean = news.strip()
         if not clean:
             continue
-
         testo = f"{clean}\n\n{emoji_fonte} <i>{nome_fonte}</i>\n\n{tg_reborn} @Juventus_Reborn"
-
         try:
             resp = requests.post(
                 url,
@@ -273,7 +301,6 @@ def send_to_telegram(news_list, emoji_fonte, nome_fonte):
                 print(f"Errore Telegram: {resp.status_code} - {resp.text}")
         except Exception as e:
             print(f"Errore invio Telegram: {e}")
-
         time.sleep(1)
 
 
@@ -281,32 +308,25 @@ def elabora_url(link):
     clean_link = normalize_youtube_url(link) if is_youtube(link) else link
 
     if not is_youtube(link):
-        # Fallback pagina web
         try:
             raw = generate_news_from_url(link)
         except Exception as e:
             print(f"Errore Gemini: {e}")
             return
         found_key, testo = estrai_meta(raw)
-        emoji_fonte = DEFAULT_EMOJI
-        nome_fonte = "Web"
+        emoji_fonte, nome_fonte = DEFAULT_EMOJI, "Web"
         lista = [pulisci_notizia(n) for n in split_notizie(testo)]
         lista = [n for n in lista if n]
         if lista:
             send_to_telegram(lista, emoji_fonte, nome_fonte)
         return
 
-    # YouTube: titolo reale + trascrizione
+    # YouTube
     titolo_reale, autore_reale = get_youtube_meta(clean_link)
     print(f"Titolo video: {titolo_reale!r}")
     print(f"Canale: {autore_reale!r}")
 
-    video_id = get_video_id(clean_link)
-    if not video_id:
-        print("Impossibile estrarre video ID. Salto.")
-        return
-
-    trascrizione = get_transcript(video_id)
+    trascrizione = get_transcript(clean_link)
     if not trascrizione:
         print("Nessuna trascrizione disponibile. Salto.")
         return
@@ -323,7 +343,6 @@ def elabora_url(link):
 
     found_key, testo = estrai_meta(raw)
 
-    # Fonte
     if found_key:
         emoji_fonte, nome = CANALI[found_key]
         nome_fonte = f"{nome} - YouTube"
