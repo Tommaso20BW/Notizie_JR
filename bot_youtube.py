@@ -16,14 +16,15 @@ DROPBOX_REFRESH_TOKEN = os.getenv("DROPBOX_REFRESH_TOKEN")
 DROPBOX_FOLDER = "/NotizieJR"
 TXT_FILENAME = "link.txt"  # Nome fisso del file da cui leggere i link
 
+# Modello Gemini. Se le allucinazioni continuano, prova un modello Pro
+# (cambia solo questa riga, il resto del codice non si tocca).
+MODEL = "gemini-3.5-flash"
+
 # Inizializzazione del client ufficiale Google GenAI
 client = genai.Client(api_key=GEMINI_API_KEY)
 
 # ---------------------------------------------------------------------------
 # MAPPATURA FONTI (giornalista che parla -> emoji personalizzata + nome)
-#
-# La chiave deve combaciare con il tag che Gemini scrive (vedi PROMPT).
-# Per aggiungere un giornalista: aggiungi la voce qui E il relativo tag nel PROMPT.
 # ---------------------------------------------------------------------------
 CANALI = {
     "agresti": ('<tg-emoji emoji-id="5784902446098685755">📲</tg-emoji>', "Romeo Agresti"),
@@ -42,32 +43,38 @@ TAG_FONTE = {
     "[FONTE_PEDULLA]": "pedull",
 }
 
-# Emoji usata quando il giornalista NON e' tra quelli mappati sopra
+# Emoji usata quando il giornalista NON e' tra quelli mappati
 DEFAULT_EMOJI = "📲"
 
-# Prompt: stesse regole di formattazione del bot giornali, adattato ai video
-# YouTube. Gemini prima identifica CHI PARLA, poi estrae le notizie sulla Juve.
-PROMPT = """Sei un estrattore di notizie calcistiche estremamente preciso. Analizza il video YouTube allegato (puo' essere un video normale oppure una diretta live ormai terminata) e riporta SOLO le notizie riguardanti la Juventus.
+# Parola che Gemini deve usare se non riesce a leggere il video
+SENTINEL_NO_VIDEO = "VIDEO_NON_LEGGIBILE"
 
-PRIMA DI TUTTO, identifica QUALE giornalista sta parlando nel video. Basati sui nomi mostrati a schermo, su come si presenta, sul nome del canale o sul contesto del discorso. Scrivi come PRIMISSIMA RIGA della risposta UNO solo di questi tag, da solo su una riga:
-[FONTE_AGRESTI] se parla Romeo Agresti
-[FONTE_MORETTO] se parla Matteo Moretto
-[FONTE_ROMANO] se parla Fabrizio Romano
-[FONTE_SCHIRA] se parla Nicolò Schira
-[FONTE_PEDULLA] se parla Alfredo Pedullà
-[FONTE_ALTRO] se non e' nessuno di loro
+# Prompt ad alta veridicita': Gemini deve basarsi SOLO sul video, dimostrare di
+# averlo visto (titolo) e dichiarare se non ci riesce.
+PROMPT = f"""Stai analizzando UNO SPECIFICO video di YouTube. Il tuo compito e' estrarre SOLO le notizie sulla Juventus che vengono dette ESPLICITAMENTE in QUESTO video.
 
-REGOLA TASSATIVA ED IMPERATIVA:
-- NON USARE MAI GLI ASTERISCHI (**) per il grassetto.
-- Usa SOLO ed esclusivamente i tag HTML <b> e </b> per applicare il grassetto.
+REGOLE DI VERIDICITA' (LE PIU' IMPORTANTI):
+- Riporta SOLO ed esclusivamente cio' che viene detto a voce o mostrato in QUESTO video.
+- NON usare MAI tue conoscenze pregresse, voci di mercato o notizie che conosci da altre fonti. Se una cosa non viene detta nel video, NON scriverla.
+- Non inventare, non dedurre, non "completare" con cio' che ti sembra plausibile.
+- Se non riesci ad accedere al video, ad ascoltarne l'audio o a capirne il contenuto, rispondi ESATTAMENTE con questa sola parola e nient'altro: {SENTINEL_NO_VIDEO}
 
-Formattazione richiesta:
-1. Applica il grassetto HTML usando <b> e </b> sui nomi di battesimo e cognomi dei giocatori, allenatori, dirigenti (es: <b>Damien Comolli</b>) e squadre di calcio.
-2. Struttura: [NOTIZIA][Emoji] Testo continuo senza titoli...
-3. Sii sintetico (max 280 caratteri a notizia).
-4. Per le cifre in milioni di euro usa SEMPRE il formato compatto: 1M€, 50M€, 100M€. Mai scrivere "milioni di euro" o "mln" o "M di euro".
-5. Separa ogni notizia con una riga vuota.
-6. Se nel video non si parla della Juventus, scrivi solo il tag della fonte e nessuna notizia.
+PROVA DI VISIONE (obbligatoria, da scrivere PRIMA di tutto):
+[TITOLO] il titolo esatto del video come appare su YouTube
+[DURATA] durata totale del video
+[FONTE_X] chi parla, scegliendo UNO tra: [FONTE_AGRESTI] Romeo Agresti, [FONTE_MORETTO] Matteo Moretto, [FONTE_ROMANO] Fabrizio Romano, [FONTE_SCHIRA] Nicolò Schira, [FONTE_PEDULLA] Alfredo Pedullà, oppure [FONTE_ALTRO] se non e' nessuno di loro
+
+POI le notizie sulla Juventus, una per riga in questo formato:
+[NOTIZIA][Emoji] (mm:ss) Testo continuo della notizia
+dove (mm:ss) e' il minuto del video in cui se ne parla.
+
+REGOLE DI FORMATTAZIONE:
+- NON USARE MAI GLI ASTERISCHI (**). Usa SOLO i tag HTML <b> e </b> per il grassetto.
+- Metti in grassetto <b>...</b> nomi e cognomi di giocatori, allenatori, dirigenti e i nomi delle squadre.
+- Massimo 280 caratteri a notizia, sii sintetico.
+- Cifre in milioni sempre in formato compatto: 1M€, 50M€, 100M€. Mai "milioni di euro" ne' "mln".
+- Separa ogni notizia con una riga vuota.
+- Se nel video non si parla della Juventus, scrivi solo le righe [TITOLO]/[DURATA]/[FONTE_X] e nessuna notizia.
 """
 
 
@@ -93,11 +100,9 @@ def get_urls_from_dropbox():
         return [], []
 
     content = response.content.decode("utf-8", errors="ignore")
-    # Estrae ogni URL presente nel file (uno per riga o anche con testo intorno)
     found = re.findall(r'https?://[^\s<>"\']+', content)
     found = [u.rstrip(').,;') for u in found]
 
-    # Rimuove eventuali duplicati mantenendo l'ordine
     seen = set()
     urls = []
     for u in found:
@@ -121,19 +126,13 @@ def delete_files_from_dropbox(dropbox_paths):
 
 
 def is_youtube(url):
-    """True se l'URL e' un video YouTube."""
     u = url.lower()
     return "youtube.com" in u or "youtu.be" in u
 
 
 def normalize_youtube_url(url):
-    """
-    Estrae l'ID del video e restituisce un URL YouTube CANONICO
-    (https://www.youtube.com/watch?v=ID), senza parametri di tracciamento.
-    Necessario perche' Gemini accetta solo il formato canonico.
-    """
+    """Restituisce un URL YouTube canonico (https://www.youtube.com/watch?v=ID)."""
     video_id = None
-
     m = re.search(r'youtu\.be/([A-Za-z0-9_-]{11})', url)
     if m:
         video_id = m.group(1)
@@ -145,14 +144,13 @@ def normalize_youtube_url(url):
         m = re.search(r'youtube\.com/(?:live|shorts|embed)/([A-Za-z0-9_-]{11})', url)
         if m:
             video_id = m.group(1)
-
     if video_id:
         return f"https://www.youtube.com/watch?v={video_id}"
-    return url  # se non riconosciuto, restituisce l'originale
+    return url
 
 
-def get_youtube_author(url):
-    """Recupera il nome del canale YouTube tramite oEmbed (solo come ripiego)."""
+def get_youtube_meta(url):
+    """Recupera (titolo, nome_canale) del video via oEmbed. ('', '') se non disponibile."""
     try:
         r = requests.get(
             "https://www.youtube.com/oembed",
@@ -161,80 +159,96 @@ def get_youtube_author(url):
         )
         if r.ok:
             data = r.json()
-            return data.get("author_name", "")
+            return data.get("title", ""), data.get("author_name", "")
         print(f"oEmbed non ok ({r.status_code}) per {url}")
     except Exception as e:
         print(f"Errore oEmbed per {url}: {e}")
-    return ""
+    return "", ""
 
 
 def generate_news_from_url(url):
-    """
-    Invia l'URL a Gemini.
-    - Video YouTube: Gemini "guarda" il video (anche le dirette terminate).
-    - Altre pagine web: Gemini le legge con lo strumento URL context.
-    """
+    """Invia l'URL a Gemini (video YouTube o, in ripiego, pagina web)."""
     if is_youtube(url):
         clean_url = normalize_youtube_url(url)
         print(f"Invio video YouTube a Gemini: {clean_url}")
         response = client.models.generate_content(
-            model="gemini-3.5-flash",
+            model=MODEL,
             contents=types.Content(
                 parts=[
                     types.Part(file_data=types.FileData(file_uri=clean_url)),
                     types.Part(text=PROMPT),
                 ]
             ),
+            config=types.GenerateContentConfig(temperature=0.2),
         )
         return response.text
 
     print(f"Invio pagina web a Gemini (URL context): {url}")
     response = client.models.generate_content(
-        model="gemini-3.5-flash",
+        model=MODEL,
         contents=f"{PROMPT}\n\nContenuto da analizzare a questo indirizzo: {url}",
-        config=types.GenerateContentConfig(tools=[{"url_context": {}}]),
+        config=types.GenerateContentConfig(temperature=0.2, tools=[{"url_context": {}}]),
     )
     return response.text
 
 
-def determina_fonte(raw, url):
+def estrai_meta(raw):
     """
-    Determina chi parla nel video dal tag inserito da Gemini e ripulisce il
-    testo dai tag. Se Gemini non riconosce nessuno (FONTE_ALTRO o niente),
-    ripiega sul nome del canale YouTube via oEmbed.
-    Restituisce: (emoji, nome_fonte, testo_pulito)
+    Estrae titolo riportato e fonte dalle righe di intestazione,
+    e restituisce il testo notizie ripulito dai tag.
     """
+    titolo = ""
+    m = re.search(r'\[TITOLO\]\s*(.+)', raw)
+    if m:
+        titolo = m.group(1).strip()
+
     found_key = None
     for tag, key in TAG_FONTE.items():
-        if tag in raw:
-            if found_key is None:
-                found_key = key
-            raw = raw.replace(tag, "")
-    raw = raw.replace("[FONTE_ALTRO]", "").strip()
+        if tag in raw and found_key is None:
+            found_key = key
 
-    if found_key:
-        emoji, nome = CANALI[found_key]
-        return emoji, f"{nome} - YouTube", raw
+    # Rimuove le righe di intestazione e tutti i tag fonte
+    raw = re.sub(r'\[TITOLO\].*', '', raw)
+    raw = re.sub(r'\[DURATA\].*', '', raw)
+    raw = re.sub(r'\[CANALE\].*', '', raw)
+    for tag in list(TAG_FONTE.keys()) + ["[FONTE_ALTRO]"]:
+        raw = raw.replace(tag, "")
 
-    # Ripiego: nome del canale (uploader) via oEmbed
-    author_name = ""
-    if is_youtube(url):
-        author_name = get_youtube_author(normalize_youtube_url(url))
-    if author_name.strip():
-        return DEFAULT_EMOJI, f"{author_name.strip()} - YouTube", raw
-    return DEFAULT_EMOJI, "YouTube", raw
+    return titolo, found_key, raw.strip()
+
+
+def titoli_combaciano(titolo_gemini, titolo_reale):
+    """Confronto tollerante: True se i due titoli condividono abbastanza parole."""
+    def parole(s):
+        return set(re.sub(r'[^a-z0-9]+', ' ', s.lower()).split())
+
+    a = parole(titolo_gemini)
+    b = parole(titolo_reale)
+    if not a or not b:
+        return False
+
+    # Considera solo parole "significative" (3+ lettere) del titolo reale
+    b_sig = {w for w in b if len(w) >= 3} or b
+    comuni = a & b_sig
+    return (len(comuni) / len(b_sig)) >= 0.4
 
 
 def split_notizie(raw):
-    """
-    Divide il testo di Gemini in singole notizie.
-    Prova prima con [NOTIZIA], poi con doppio newline (paragrafi).
-    """
+    """Divide il testo di Gemini in singole notizie."""
     if "[NOTIZIA]" in raw:
         lista = [n.strip() for n in raw.split("[NOTIZIA]") if n.strip()]
     else:
         lista = [n.strip() for n in raw.split("\n\n") if n.strip()]
     return lista
+
+
+def pulisci_notizia(testo):
+    """Toglie timestamp (mm:ss), asterischi, tag residui e spazi doppi."""
+    testo = testo.replace("**", "")
+    testo = re.sub(r'\[FONTE[^\]]*\]', '', testo)
+    testo = re.sub(r'\(\d{1,2}:\d{2}(?::\d{2})?\)', '', testo)
+    testo = re.sub(r'\s{2,}', ' ', testo)
+    return testo.strip()
 
 
 def send_to_telegram(news_list, emoji_fonte, nome_fonte):
@@ -243,12 +257,6 @@ def send_to_telegram(news_list, emoji_fonte, nome_fonte):
 
     for news in news_list:
         clean = news.strip()
-        if not clean:
-            continue
-
-        # Rimuove eventuali asterischi e tag fonte residui
-        clean = clean.replace("**", "")
-        clean = re.sub(r'\[FONTE[^\]]*\]', '', clean).strip()
         if not clean:
             continue
 
@@ -265,8 +273,64 @@ def send_to_telegram(news_list, emoji_fonte, nome_fonte):
         except Exception as e:
             print(f"Errore invio Telegram: {e}")
 
-        # Piccola pausa tra un messaggio e l'altro per evitare rate limit
         time.sleep(1)
+
+
+def elabora_url(link):
+    """Elabora un singolo URL con tutte le verifiche anti-allucinazione."""
+    clean_link = normalize_youtube_url(link) if is_youtube(link) else link
+
+    # Titolo + canale reali da YouTube (servono per la verifica e per il ripiego fonte)
+    titolo_reale, autore_reale = ("", "")
+    if is_youtube(link):
+        titolo_reale, autore_reale = get_youtube_meta(clean_link)
+
+    try:
+        raw = generate_news_from_url(link)
+    except Exception as e:
+        print(f"Errore Gemini: {e}")
+        return
+
+    if not raw or not raw.strip():
+        print("Risposta vuota da Gemini. Non invio nulla.")
+        return
+
+    # 1) Gemini dichiara di non aver letto il video
+    if SENTINEL_NO_VIDEO in raw.upper():
+        print(f"Gemini non e' riuscito a leggere il video ({SENTINEL_NO_VIDEO}). NON invio nulla.")
+        return
+
+    titolo_g, found_key, testo = estrai_meta(raw)
+
+    # 2) Verifica anti-allucinazione: il titolo riportato deve combaciare con quello vero
+    if titolo_reale:
+        if not titoli_combaciano(titolo_g, titolo_reale):
+            print("ATTENZIONE: probabile allucinazione, il video non risulta letto davvero.")
+            print(f"  Titolo riportato da Gemini: {titolo_g!r}")
+            print(f"  Titolo reale del video:     {titolo_reale!r}")
+            print("  NON invio nulla.")
+            return
+    else:
+        print("Impossibile verificare il titolo via oEmbed: procedo con cautela.")
+
+    # 3) Fonte (chi parla)
+    if found_key:
+        emoji_fonte, nome = CANALI[found_key]
+        nome_fonte = f"{nome} - YouTube"
+    elif autore_reale.strip():
+        emoji_fonte, nome_fonte = DEFAULT_EMOJI, f"{autore_reale.strip()} - YouTube"
+    else:
+        emoji_fonte, nome_fonte = DEFAULT_EMOJI, "YouTube"
+    print(f"Fonte rilevata: {nome_fonte}")
+
+    # 4) Pulizia e invio
+    lista = [pulisci_notizia(n) for n in split_notizie(testo)]
+    lista = [n for n in lista if n]
+    print(f"Notizie trovate: {len(lista)}")
+    if lista:
+        send_to_telegram(lista, emoji_fonte, nome_fonte)
+    else:
+        print("Nessuna notizia sulla Juventus in questo video.")
 
 
 if __name__ == "__main__":
@@ -278,24 +342,7 @@ if __name__ == "__main__":
         print(f"Trovati {len(urls)} URL da elaborare.")
         for i, link in enumerate(urls):
             print(f"\nElaborazione URL: {link}")
-
-            try:
-                # 1) Gemini guarda il video, identifica chi parla ed estrae le notizie
-                raw = generate_news_from_url(link)
-
-                if raw and raw.strip():
-                    # 2) Determina la fonte (chi parla) dal tag e pulisce il testo
-                    emoji_fonte, nome_fonte, raw = determina_fonte(raw, link)
-                    print(f"Fonte rilevata: {nome_fonte}")
-
-                    # 3) Spezza e invia
-                    lista = split_notizie(raw)
-                    print(f"Notizie trovate: {len(lista)}")
-                    send_to_telegram(lista, emoji_fonte, nome_fonte)
-                else:
-                    print("Nessuna notizia estratta da questo URL.")
-            except Exception as e:
-                print(f"Errore Gemini: {e}")
+            elabora_url(link)
 
             if i < len(urls) - 1:
                 print("In attesa di 20 secondi prima del prossimo URL...")
