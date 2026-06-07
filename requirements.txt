@@ -2,4 +2,3 @@ requests
 pypdf
 google-genai
 dropbox
-yt-dlp
