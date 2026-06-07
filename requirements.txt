@@ -2,4 +2,4 @@ requests
 pypdf
 google-genai
 dropbox
-youtube-transcript-api
+yt-dlp
