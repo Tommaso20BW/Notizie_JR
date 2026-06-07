@@ -20,14 +20,10 @@ TXT_FILENAME = "link.txt"  # Nome fisso del file da cui leggere i link
 client = genai.Client(api_key=GEMINI_API_KEY)
 
 # ---------------------------------------------------------------------------
-# MAPPATURA FONTI (canali YouTube -> emoji personalizzata + nome mostrato)
+# MAPPATURA FONTI (giornalista che parla -> emoji personalizzata + nome)
 #
-# Come aggiungere/modificare un canale:
-#   "parola_chiave": ('<tg-emoji emoji-id="ID">📲</tg-emoji>', "Nome Mostrato")
-#
-# La "parola_chiave" (in minuscolo) viene cercata dentro il nome e l'handle
-# del canale restituiti da YouTube. Es: il canale "Romeo Agresti" contiene
-# "agresti", quindi basta usare "agresti" come chiave.
+# La chiave deve combaciare con il tag che Gemini scrive (vedi PROMPT).
+# Per aggiungere un giornalista: aggiungi la voce qui E il relativo tag nel PROMPT.
 # ---------------------------------------------------------------------------
 CANALI = {
     "agresti": ('<tg-emoji emoji-id="5784902446098685755">📲</tg-emoji>', "Romeo Agresti"),
@@ -37,12 +33,29 @@ CANALI = {
     "pedull":  ('<tg-emoji emoji-id="5785322627044220734">📲</tg-emoji>', "Alfredo Pedullà"),
 }
 
-# Emoji usata quando il canale NON è tra quelli mappati sopra
+# Tag che Gemini puo' scrivere -> chiave in CANALI
+TAG_FONTE = {
+    "[FONTE_AGRESTI]": "agresti",
+    "[FONTE_MORETTO]": "moretto",
+    "[FONTE_ROMANO]":  "romano",
+    "[FONTE_SCHIRA]":  "schira",
+    "[FONTE_PEDULLA]": "pedull",
+}
+
+# Emoji usata quando il giornalista NON e' tra quelli mappati sopra
 DEFAULT_EMOJI = "📲"
 
-# Prompt: stesse regole di formattazione del bot giornali, ma adattato ai
-# video YouTube e SENZA i tag fonte (la fonte la determiniamo noi via oEmbed).
-PROMPT = """Sei un estrattore di notizie calcistiche estremamente preciso. Analizza il video YouTube allegato (può essere un video normale oppure una diretta live ormai terminata) e riporta SOLO le notizie riguardanti la Juventus.
+# Prompt: stesse regole di formattazione del bot giornali, adattato ai video
+# YouTube. Gemini prima identifica CHI PARLA, poi estrae le notizie sulla Juve.
+PROMPT = """Sei un estrattore di notizie calcistiche estremamente preciso. Analizza il video YouTube allegato (puo' essere un video normale oppure una diretta live ormai terminata) e riporta SOLO le notizie riguardanti la Juventus.
+
+PRIMA DI TUTTO, identifica QUALE giornalista sta parlando nel video. Basati sui nomi mostrati a schermo, su come si presenta, sul nome del canale o sul contesto del discorso. Scrivi come PRIMISSIMA RIGA della risposta UNO solo di questi tag, da solo su una riga:
+[FONTE_AGRESTI] se parla Romeo Agresti
+[FONTE_MORETTO] se parla Matteo Moretto
+[FONTE_ROMANO] se parla Fabrizio Romano
+[FONTE_SCHIRA] se parla Nicolò Schira
+[FONTE_PEDULLA] se parla Alfredo Pedullà
+[FONTE_ALTRO] se non e' nessuno di loro
 
 REGOLA TASSATIVA ED IMPERATIVA:
 - NON USARE MAI GLI ASTERISCHI (**) per il grassetto.
@@ -54,7 +67,7 @@ Formattazione richiesta:
 3. Sii sintetico (max 280 caratteri a notizia).
 4. Per le cifre in milioni di euro usa SEMPRE il formato compatto: 1M€, 50M€, 100M€. Mai scrivere "milioni di euro" o "mln" o "M di euro".
 5. Separa ogni notizia con una riga vuota.
-6. Se nel video non si parla della Juventus, non scrivere nulla.
+6. Se nel video non si parla della Juventus, scrivi solo il tag della fonte e nessuna notizia.
 """
 
 
@@ -97,7 +110,7 @@ def get_urls_from_dropbox():
 
 
 def delete_files_from_dropbox(dropbox_paths):
-    """Cancella i file txt da Dropbox dopo l'elaborazione."""
+    """Cancella i file da Dropbox dopo l'elaborazione."""
     dbx = crea_dropbox_client()
     for path in dropbox_paths:
         try:
@@ -108,13 +121,38 @@ def delete_files_from_dropbox(dropbox_paths):
 
 
 def is_youtube(url):
-    """True se l'URL è un video YouTube."""
+    """True se l'URL e' un video YouTube."""
     u = url.lower()
     return "youtube.com" in u or "youtu.be" in u
 
 
+def normalize_youtube_url(url):
+    """
+    Estrae l'ID del video e restituisce un URL YouTube CANONICO
+    (https://www.youtube.com/watch?v=ID), senza parametri di tracciamento.
+    Necessario perche' Gemini accetta solo il formato canonico.
+    """
+    video_id = None
+
+    m = re.search(r'youtu\.be/([A-Za-z0-9_-]{11})', url)
+    if m:
+        video_id = m.group(1)
+    if not video_id:
+        m = re.search(r'[?&]v=([A-Za-z0-9_-]{11})', url)
+        if m:
+            video_id = m.group(1)
+    if not video_id:
+        m = re.search(r'youtube\.com/(?:live|shorts|embed)/([A-Za-z0-9_-]{11})', url)
+        if m:
+            video_id = m.group(1)
+
+    if video_id:
+        return f"https://www.youtube.com/watch?v={video_id}"
+    return url  # se non riconosciuto, restituisce l'originale
+
+
 def get_youtube_author(url):
-    """Recupera nome e handle del canale YouTube tramite oEmbed (nessuna API key)."""
+    """Recupera il nome del canale YouTube tramite oEmbed (solo come ripiego)."""
     try:
         r = requests.get(
             "https://www.youtube.com/oembed",
@@ -123,23 +161,11 @@ def get_youtube_author(url):
         )
         if r.ok:
             data = r.json()
-            return data.get("author_name", ""), data.get("author_url", "")
+            return data.get("author_name", "")
         print(f"oEmbed non ok ({r.status_code}) per {url}")
     except Exception as e:
         print(f"Errore oEmbed per {url}: {e}")
-    return "", ""
-
-
-def get_fonte(author_name, author_url):
-    """Sceglie emoji + nome fonte in base al canale YouTube rilevato."""
-    hay = f"{author_name} {author_url}".lower()
-    for key, (emoji, nome) in CANALI.items():
-        if key in hay:
-            return emoji, f"{nome} - YouTube"
-    # Canale non mappato: usa comunque il nome reale del canale
-    if author_name.strip():
-        return DEFAULT_EMOJI, f"{author_name.strip()} - YouTube"
-    return DEFAULT_EMOJI, "YouTube"
+    return ""
 
 
 def generate_news_from_url(url):
@@ -149,12 +175,13 @@ def generate_news_from_url(url):
     - Altre pagine web: Gemini le legge con lo strumento URL context.
     """
     if is_youtube(url):
-        print(f"Invio video YouTube a Gemini: {url}")
+        clean_url = normalize_youtube_url(url)
+        print(f"Invio video YouTube a Gemini: {clean_url}")
         response = client.models.generate_content(
             model="gemini-3.5-flash",
             contents=types.Content(
                 parts=[
-                    types.Part(file_data=types.FileData(file_uri=url)),
+                    types.Part(file_data=types.FileData(file_uri=clean_url)),
                     types.Part(text=PROMPT),
                 ]
             ),
@@ -168,6 +195,34 @@ def generate_news_from_url(url):
         config=types.GenerateContentConfig(tools=[{"url_context": {}}]),
     )
     return response.text
+
+
+def determina_fonte(raw, url):
+    """
+    Determina chi parla nel video dal tag inserito da Gemini e ripulisce il
+    testo dai tag. Se Gemini non riconosce nessuno (FONTE_ALTRO o niente),
+    ripiega sul nome del canale YouTube via oEmbed.
+    Restituisce: (emoji, nome_fonte, testo_pulito)
+    """
+    found_key = None
+    for tag, key in TAG_FONTE.items():
+        if tag in raw:
+            if found_key is None:
+                found_key = key
+            raw = raw.replace(tag, "")
+    raw = raw.replace("[FONTE_ALTRO]", "").strip()
+
+    if found_key:
+        emoji, nome = CANALI[found_key]
+        return emoji, f"{nome} - YouTube", raw
+
+    # Ripiego: nome del canale (uploader) via oEmbed
+    author_name = ""
+    if is_youtube(url):
+        author_name = get_youtube_author(normalize_youtube_url(url))
+    if author_name.strip():
+        return DEFAULT_EMOJI, f"{author_name.strip()} - YouTube", raw
+    return DEFAULT_EMOJI, "YouTube", raw
 
 
 def split_notizie(raw):
@@ -224,18 +279,16 @@ if __name__ == "__main__":
         for i, link in enumerate(urls):
             print(f"\nElaborazione URL: {link}")
 
-            # 1) Determina la fonte (canale YouTube) via oEmbed
-            if is_youtube(link):
-                author_name, author_url = get_youtube_author(link)
-            else:
-                author_name, author_url = "", ""
-            emoji_fonte, nome_fonte = get_fonte(author_name, author_url)
-            print(f"Fonte rilevata: {nome_fonte}")
-
-            # 2) Estrae le notizie con Gemini
             try:
+                # 1) Gemini guarda il video, identifica chi parla ed estrae le notizie
                 raw = generate_news_from_url(link)
+
                 if raw and raw.strip():
+                    # 2) Determina la fonte (chi parla) dal tag e pulisce il testo
+                    emoji_fonte, nome_fonte, raw = determina_fonte(raw, link)
+                    print(f"Fonte rilevata: {nome_fonte}")
+
+                    # 3) Spezza e invia
                     lista = split_notizie(raw)
                     print(f"Notizie trovate: {len(lista)}")
                     send_to_telegram(lista, emoji_fonte, nome_fonte)
