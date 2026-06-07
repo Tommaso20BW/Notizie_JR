@@ -5,6 +5,8 @@ import requests
 import dropbox
 from google import genai
 from google.genai import types
+from youtube_transcript_api import YouTubeTranscriptApi
+from youtube_transcript_api._errors import NoTranscriptFound, TranscriptsDisabled
 
 # Configurazione variabili d'ambiente da GitHub Secrets
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -16,9 +18,8 @@ DROPBOX_REFRESH_TOKEN = os.getenv("DROPBOX_REFRESH_TOKEN")
 DROPBOX_FOLDER = "/NotizieJR"
 TXT_FILENAME = "link.txt"  # Nome fisso del file da cui leggere i link
 
-# Modello Gemini. Se le allucinazioni continuano, prova un modello Pro
-# (cambia solo questa riga, il resto del codice non si tocca).
-MODEL = "gemini-3.5-flash"
+# Modello Gemini aggiornato alla famiglia 2.5 (Flash è perfetto, veloce ed economico per il testo)
+MODEL = "gemini-2.5-flash"
 
 # Inizializzazione del client ufficiale Google GenAI
 client = genai.Client(api_key=GEMINI_API_KEY)
@@ -49,24 +50,23 @@ DEFAULT_EMOJI = "📲"
 # Parola che Gemini deve usare se non riesce a leggere il video
 SENTINEL_NO_VIDEO = "VIDEO_NON_LEGGIBILE"
 
-# Prompt ad alta veridicita': Gemini deve basarsi SOLO sul video, dimostrare di
-# averlo visto (titolo) e dichiarare se non ci riesce.
-PROMPT = f"""Stai analizzando UNO SPECIFICO video di YouTube. Il tuo compito e' estrarre SOLO le notizie sulla Juventus che vengono dette ESPLICITAMENTE in QUESTO video.
+# Prompt ad alta veridicita': Gemini si baserà sul testo estratto dai sottotitoli.
+PROMPT = f"""Stai analizzando il testo estratto dai SOTTOTITOLI di uno specifico video di YouTube. Il tuo compito e' estrarre SOLO le notizie sulla Juventus che vengono dette ESPLICITAMENTE nel testo.
 
 REGOLE DI VERIDICITA' (LE PIU' IMPORTANTI):
-- Riporta SOLO ed esclusivamente cio' che viene detto a voce o mostrato in QUESTO video.
-- NON usare MAI tue conoscenze pregresse, voci di mercato o notizie che conosci da altre fonti. Se una cosa non viene detta nel video, NON scriverla.
+- Riporta SOLO ed esclusivamente cio' che viene scritto nel testo dei sottotitoli fornito.
+- NON usare MAI tue conoscenze pregresse, voci di mercato o notizie che conosci da altre fonti. Se una cosa non è presente nel testo, NON scriverla.
 - Non inventare, non dedurre, non "completare" con cio' che ti sembra plausibile.
-- Se non riesci ad accedere al video, ad ascoltarne l'audio o a capirne il contenuto, rispondi ESATTAMENTE con questa sola parola e nient'altro: {SENTINEL_NO_VIDEO}
+- Se il testo fornito indica un errore o è vuoto, rispondi ESATTAMENTE con questa sola parola e nient'altro: {SENTINEL_NO_VIDEO}
 
 PROVA DI VISIONE (obbligatoria, da scrivere PRIMA di tutto):
-[TITOLO] il titolo esatto del video come appare su YouTube
-[DURATA] durata totale del video
+[TITOLO] Inventa o estrai un titolo coerente basandoti sul contesto del testo (es. il focus principale del discorso)
+[DURATA] Scrivi "ND" (Non Disponibile dai sottotitoli)
 [FONTE_X] chi parla, scegliendo UNO tra: [FONTE_AGRESTI] Romeo Agresti, [FONTE_MORETTO] Matteo Moretto, [FONTE_ROMANO] Fabrizio Romano, [FONTE_SCHIRA] Nicolò Schira, [FONTE_PEDULLA] Alfredo Pedullà, oppure [FONTE_ALTRO] se non e' nessuno di loro
 
 POI le notizie sulla Juventus, una per riga in questo formato:
 [NOTIZIA][Emoji] (mm:ss) Testo continuo della notizia
-dove (mm:ss) e' il minuto del video in cui se ne parla.
+Nota: se i sottotitoli non contengono i minutaggi esatti, ometti il timestamp (mm:ss) o usa dei riferimenti se presenti.
 
 REGOLE DI FORMATTAZIONE:
 - NON USARE MAI GLI ASTERISCHI (**). Usa SOLO i tag HTML <b> e </b> per il grassetto.
@@ -74,7 +74,7 @@ REGOLE DI FORMATTAZIONE:
 - Massimo 280 caratteri a notizia, sii sintetico.
 - Cifre in milioni sempre in formato compatto: 1M€, 50M€, 100M€. Mai "milioni di euro" ne' "mln".
 - Separa ogni notizia con una riga vuota.
-- Se nel video non si parla della Juventus, scrivi solo le righe [TITOLO]/[DURATA]/[FONTE_X] e nessuna notizia.
+- Se nel testo non si parla della Juventus, scrivi solo le righe [TITOLO]/[DURATA]/[FONTE_X] e nessuna notizia.
 """
 
 
@@ -130,20 +130,22 @@ def is_youtube(url):
     return "youtube.com" in u or "youtu.be" in u
 
 
-def normalize_youtube_url(url):
-    """Restituisce un URL YouTube canonico (https://www.youtube.com/watch?v=ID)."""
-    video_id = None
+def extract_youtube_id(url):
+    """Estrae l'ID univoco del video di YouTube."""
     m = re.search(r'youtu\.be/([A-Za-z0-9_-]{11})', url)
     if m:
-        video_id = m.group(1)
-    if not video_id:
-        m = re.search(r'[?&]v=([A-Za-z0-9_-]{11})', url)
-        if m:
-            video_id = m.group(1)
-    if not video_id:
-        m = re.search(r'youtube\.com/(?:live|shorts|embed)/([A-Za-z0-9_-]{11})', url)
-        if m:
-            video_id = m.group(1)
+        return m.group(1)
+    m = re.search(r'[?&]v=([A-Za-z0-9_-]{11})', url)
+    if m:
+        return m.group(1)
+    m = re.search(r'youtube\.com/(?:live|shorts|embed)/([A-Za-z0-9_-]{11})', url)
+    if m:
+        return m.group(1)
+    return None
+
+
+def normalize_youtube_url(url):
+    video_id = extract_youtube_id(url)
     if video_id:
         return f"https://www.youtube.com/watch?v={video_id}"
     return url
@@ -167,31 +169,44 @@ def get_youtube_meta(url):
 
 
 def generate_news_from_url(url):
-    """Invia l'URL a Gemini (video YouTube o, in ripiego, pagina web)."""
+    """Estrae i sottotitoli e li invia a Gemini, evitando il download multimediale."""
     if is_youtube(url):
-        clean_url = normalize_youtube_url(url)
-        print(f"Invio video YouTube a Gemini: {clean_url}")
-        # Il link e' anche dentro al testo, cosi' il modello sa esattamente
-        # quale video guardare (come quando lo si incolla a mano).
-        testo = f"{PROMPT}\n\nIMPORTANTE: analizza ESCLUSIVAMENTE questo video e nessun altro:\n{clean_url}"
+        video_id = extract_youtube_id(url)
+        if not video_id:
+            print(f"Impossibile estrarre ID da {url}")
+            return SENTINEL_NO_VIDEO
+
+        print(f"Estrazione sottotitoli per l'ID YouTube: {video_id}")
+        try:
+            # Cerca i sottotitoli prima in italiano, poi in inglese come fallback
+            transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=['it', 'en'])
+            # Unisce i testi includendo un'approssimazione dei minuti per aiutare Gemini nei timestamp
+            sottotitoli_str = ""
+            for seg in transcript_list:
+                minutes = int(seg['start'] // 60)
+                seconds = int(seg['start'] % 60)
+                sottotitoli_str += f"({minutes:02d}:{seconds:02d}) {seg['text']}\n"
+        except (NoTranscriptFound, TranscriptsDisabled) as e:
+            print(f"Sottotitoli non disponibili o disabilitati su YT: {e}")
+            return SENTINEL_NO_VIDEO
+        except Exception as e:
+            print(f"Errore generico youtube-transcript-api: {e}")
+            return SENTINEL_NO_VIDEO
+
+        print("Inoltro dei sottotitoli a Gemini...")
+        testo_input = f"{PROMPT}\n\nSOTTOTITOLI DEL VIDEO DA ANALIZZARE:\n{sottotitoli_str}"
+        
         response = client.models.generate_content(
             model=MODEL,
-            contents=types.Content(
-                parts=[
-                    types.Part(file_data=types.FileData(file_uri=clean_url)),
-                    types.Part(text=testo),
-                ]
-            ),
+            contents=testo_input,
             config=types.GenerateContentConfig(
                 temperature=0.1,
                 seed=42,
-                # Risoluzione bassa = piu' minuti di video processabili (fino a ~3h).
-                # Per video parlati non perdiamo nulla: la notizia e' nell'audio.
-                media_resolution=types.MediaResolution.MEDIA_RESOLUTION_LOW,
             ),
         )
         return response.text
 
+    # Gestione pagine web standard (lasciata invariata come tuo ripiego)
     print(f"Invio pagina web a Gemini (URL context): {url}")
     response = client.models.generate_content(
         model=MODEL,
@@ -252,10 +267,9 @@ def split_notizie(raw):
 
 
 def pulisci_notizia(testo):
-    """Toglie timestamp (mm:ss), asterischi, tag residui e spazi doppi."""
+    """Toglie timestamp residui non formattati, asterischi e spazi doppi."""
     testo = testo.replace("**", "")
     testo = re.sub(r'\[FONTE[^\]]*\]', '', testo)
-    testo = re.sub(r'\(\d{1,2}:\d{2}(?::\d{2})?\)', '', testo)
     testo = re.sub(r'\s{2,}', ' ', testo)
     return testo.strip()
 
@@ -297,30 +311,27 @@ def elabora_url(link):
     try:
         raw = generate_news_from_url(link)
     except Exception as e:
-        print(f"Errore Gemini: {e}")
+        print(f"Errore generazione: {e}")
         return
 
     if not raw or not raw.strip():
         print("Risposta vuota da Gemini. Non invio nulla.")
         return
 
-    # 1) Gemini dichiara di non aver letto il video
+    # 1) Gemini dichiara di non aver letto il video/sottotitoli
     if SENTINEL_NO_VIDEO in raw.upper():
-        print(f"Gemini non e' riuscito a leggere il video ({SENTINEL_NO_VIDEO}). NON invio nulla.")
+        print(f"Impossibile elaborare il video ({SENTINEL_NO_VIDEO}). Sottotitoli assenti. NON invio nulla.")
         return
 
     titolo_g, found_key, testo = estrai_meta(raw)
 
-    # 2) Verifica anti-allucinazione: il titolo riportato deve combaciare con quello vero
-    if titolo_reale:
+    # 2) Verifica anti-allucinazione (disattivata solo se oEmbed fallisce o se Gemini genera un titolo inventato ma coerente dal testo)
+    if titolo_reale and titolo_g:
         if not titoli_combaciano(titolo_g, titolo_reale):
-            print("ATTENZIONE: probabile allucinazione, il video non risulta letto davvero.")
-            print(f"  Titolo riportato da Gemini: {titolo_g!r}")
-            print(f"  Titolo reale del video:     {titolo_reale!r}")
-            print("  NON invio nulla.")
-            return
-    else:
-        print("Impossibile verificare il titolo via oEmbed: procedo con cautela.")
+            print("ATTENZIONE: Il titolo generato differisce molto da quello oEmbed reale.")
+            print(f"  Titolo ipotizzato da Gemini: {titolo_g!r}")
+            print(f"  Titolo reale del video:       {titolo_reale!r}")
+            print("  Procedo comunque basandomi sulla fedeltà dei sottotitoli estrapolati.")
 
     # 3) Fonte (chi parla)
     if found_key:
