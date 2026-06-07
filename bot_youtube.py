@@ -14,6 +14,7 @@ DROPBOX_APP_KEY = os.getenv("DROPBOX_APP_KEY")
 DROPBOX_APP_SECRET = os.getenv("DROPBOX_APP_SECRET")
 DROPBOX_REFRESH_TOKEN = os.getenv("DROPBOX_REFRESH_TOKEN")
 DROPBOX_FOLDER = "/NotizieJR"
+TXT_FILENAME = "link.txt"  # Nome fisso del file da cui leggere i link
 
 # Inizializzazione del client ufficiale Google GenAI
 client = genai.Client(api_key=GEMINI_API_KEY)
@@ -67,51 +68,32 @@ def crea_dropbox_client():
 
 
 def get_urls_from_dropbox():
-    """Legge tutti i file .txt nella cartella Dropbox ed estrae gli URL contenuti."""
+    """Legge il file link.txt nella cartella Dropbox ed estrae gli URL contenuti."""
     dbx = crea_dropbox_client()
+    file_path = f"{DROPBOX_FOLDER}/{TXT_FILENAME}"
 
     try:
-        result = dbx.files_list_folder(DROPBOX_FOLDER)
+        print(f"Lettura {file_path}...")
+        metadata, response = dbx.files_download(file_path)
     except dropbox.exceptions.ApiError as e:
-        print(f"Errore accesso cartella Dropbox: {e}")
+        print(f"Nessun file {TXT_FILENAME} trovato su Dropbox: {e}")
         return [], []
 
-    txt_files = [
-        f for f in result.entries
-        if isinstance(f, dropbox.files.FileMetadata) and f.name.lower().endswith(".txt")
-    ]
-
-    if not txt_files:
-        print("Nessun file .txt trovato su Dropbox.")
-        return [], []
-
-    print(f"Trovati {len(txt_files)} file .txt su Dropbox.")
-    urls = []
-    dropbox_paths = []
-
-    for file in txt_files:
-        try:
-            print(f"Lettura {file.name}...")
-            metadata, response = dbx.files_download(file.path_lower)
-            content = response.content.decode("utf-8", errors="ignore")
-            # Estrae ogni URL presente nel file (uno per riga o anche con testo intorno)
-            found = re.findall(r'https?://[^\s<>"\']+', content)
-            found = [u.rstrip(').,;') for u in found]
-            urls.extend(found)
-            dropbox_paths.append(file.path_lower)
-            print(f"Trovati {len(found)} URL in {file.name}.")
-        except Exception as e:
-            print(f"Errore lettura {file.name}: {e}")
+    content = response.content.decode("utf-8", errors="ignore")
+    # Estrae ogni URL presente nel file (uno per riga o anche con testo intorno)
+    found = re.findall(r'https?://[^\s<>"\']+', content)
+    found = [u.rstrip(').,;') for u in found]
 
     # Rimuove eventuali duplicati mantenendo l'ordine
     seen = set()
-    unique_urls = []
-    for u in urls:
+    urls = []
+    for u in found:
         if u not in seen:
             seen.add(u)
-            unique_urls.append(u)
+            urls.append(u)
 
-    return unique_urls, dropbox_paths
+    print(f"Trovati {len(urls)} URL in {TXT_FILENAME}.")
+    return urls, [metadata.path_lower]
 
 
 def delete_files_from_dropbox(dropbox_paths):
