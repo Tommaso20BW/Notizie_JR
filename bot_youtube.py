@@ -14,16 +14,14 @@ DROPBOX_APP_KEY = os.getenv("DROPBOX_APP_KEY")
 DROPBOX_APP_SECRET = os.getenv("DROPBOX_APP_SECRET")
 DROPBOX_REFRESH_TOKEN = os.getenv("DROPBOX_REFRESH_TOKEN")
 DROPBOX_FOLDER = "/NotizieJR"
-TXT_FILENAME = "link.txt"  # Nome fisso del file da cui leggere i link
+TXT_FILENAME = "link.txt"
 
-# Modello Gemini.
 MODEL = "gemini-3.5-flash"
 
-# Inizializzazione del client ufficiale Google GenAI
 client = genai.Client(api_key=GEMINI_API_KEY)
 
 # ---------------------------------------------------------------------------
-# MAPPATURA FONTI (giornalista che parla -> emoji personalizzata + nome)
+# MAPPATURA FONTI
 # ---------------------------------------------------------------------------
 CANALI = {
     "agresti": ('<tg-emoji emoji-id="5784902446098685755">📲</tg-emoji>', "Romeo Agresti"),
@@ -33,7 +31,6 @@ CANALI = {
     "pedull":  ('<tg-emoji emoji-id="5785322627044220734">📲</tg-emoji>', "Alfredo Pedullà"),
 }
 
-# Tag che Gemini puo' scrivere -> chiave in CANALI
 TAG_FONTE = {
     "[FONTE_AGRESTI]": "agresti",
     "[FONTE_MORETTO]": "moretto",
@@ -42,13 +39,9 @@ TAG_FONTE = {
     "[FONTE_PEDULLA]": "pedull",
 }
 
-# Emoji usata quando il giornalista NON e' tra quelli mappati
 DEFAULT_EMOJI = "📲"
-
-# Parola che Gemini deve usare se non riesce a leggere il video
 SENTINEL_NO_VIDEO = "VIDEO_NON_LEGGIBILE"
 
-# Prompt ad alta veridicita'
 PROMPT = f"""Stai analizzando UNO SPECIFICO video di YouTube. Il tuo compito e' estrarre SOLO le notizie sulla Juventus che vengono dette ESPLICITAMENTE in QUESTO video.
 
 REGOLE DI VERIDICITA' (LE PIU' IMPORTANTI):
@@ -77,7 +70,6 @@ REGOLE DI FORMATTAZIONE:
 
 
 def crea_dropbox_client():
-    """Crea il client Dropbox con refresh token (non scade mai)"""
     return dropbox.Dropbox(
         app_key=DROPBOX_APP_KEY,
         app_secret=DROPBOX_APP_SECRET,
@@ -86,10 +78,8 @@ def crea_dropbox_client():
 
 
 def get_urls_from_dropbox():
-    """Legge il file link.txt nella cartella Dropbox ed estrae gli URL contenuti."""
     dbx = crea_dropbox_client()
     file_path = f"{DROPBOX_FOLDER}/{TXT_FILENAME}"
-
     try:
         print(f"Lettura {file_path}...")
         metadata, response = dbx.files_download(file_path)
@@ -113,7 +103,6 @@ def get_urls_from_dropbox():
 
 
 def delete_files_from_dropbox(dropbox_paths):
-    """Cancella i file da Dropbox dopo l'elaborazione."""
     dbx = crea_dropbox_client()
     for path in dropbox_paths:
         try:
@@ -129,7 +118,6 @@ def is_youtube(url):
 
 
 def normalize_youtube_url(url):
-    """Restituisce un URL YouTube canonico (https://www.youtube.com/watch?v=ID)."""
     video_id = None
     m = re.search(r'youtu\.be/([A-Za-z0-9_-]{11})', url)
     if m:
@@ -148,7 +136,6 @@ def normalize_youtube_url(url):
 
 
 def get_youtube_meta(url):
-    """Recupera (titolo, nome_canale) del video via oEmbed. ('', '') se non disponibile."""
     try:
         r = requests.get(
             "https://www.youtube.com/oembed",
@@ -165,16 +152,23 @@ def get_youtube_meta(url):
 
 
 def generate_news_from_url(url):
-    """Invia l'URL a Gemini (video YouTube o, in ripiego, pagina web)."""
     if is_youtube(url):
         clean_url = normalize_youtube_url(url)
         print(f"Invio video YouTube a Gemini: {clean_url}")
-        # L'URL viene passato come testo nel prompt: Gemini lo riconosce
-        # nativamente e analizza audio+video direttamente dai server Google.
         testo = f"{PROMPT}\n\nIMPORTANTE: analizza ESCLUSIVAMENTE questo video e nessun altro:\n{clean_url}"
         response = client.models.generate_content(
             model=MODEL,
-            contents=testo,
+            contents=types.Content(
+                parts=[
+                    types.Part(
+                        file_data=types.FileData(
+                            mime_type="video/*",
+                            file_uri=clean_url,
+                        )
+                    ),
+                    types.Part(text=testo),
+                ]
+            ),
             config=types.GenerateContentConfig(
                 temperature=0.1,
                 seed=42,
@@ -189,17 +183,13 @@ def generate_news_from_url(url):
         config=types.GenerateContentConfig(
             temperature=0.1,
             seed=42,
-            tools=[{"url_context": {}}]
+            tools=[{"url_context": {}}],
         ),
     )
     return response.text
 
 
 def estrai_meta(raw):
-    """
-    Estrae titolo riportato e fonte dalle righe di intestazione,
-    e restituisce il testo notizie ripulito dai tag.
-    """
     titolo = ""
     m = re.search(r'\[TITOLO\]\s*(.+)', raw)
     if m:
@@ -210,7 +200,6 @@ def estrai_meta(raw):
         if tag in raw and found_key is None:
             found_key = key
 
-    # Rimuove le righe di intestazione e tutti i tag fonte
     raw = re.sub(r'\[TITOLO\].*', '', raw)
     raw = re.sub(r'\[DURATA\].*', '', raw)
     raw = re.sub(r'\[CANALE\].*', '', raw)
@@ -221,7 +210,6 @@ def estrai_meta(raw):
 
 
 def titoli_combaciano(titolo_gemini, titolo_reale):
-    """Confronto tollerante: True se i due titoli condividono abbastanza parole."""
     def parole(s):
         return set(re.sub(r'[^a-z0-9]+', ' ', s.lower()).split())
 
@@ -230,14 +218,12 @@ def titoli_combaciano(titolo_gemini, titolo_reale):
     if not a or not b:
         return False
 
-    # Considera solo parole "significative" (3+ lettere) del titolo reale
     b_sig = {w for w in b if len(w) >= 3} or b
     comuni = a & b_sig
     return (len(comuni) / len(b_sig)) >= 0.4
 
 
 def split_notizie(raw):
-    """Divide il testo di Gemini in singole notizie."""
     if "[NOTIZIA]" in raw:
         lista = [n.strip() for n in raw.split("[NOTIZIA]") if n.strip()]
     else:
@@ -246,7 +232,6 @@ def split_notizie(raw):
 
 
 def pulisci_notizia(testo):
-    """Toglie timestamp (mm:ss), asterischi, tag residui e spazi doppi."""
     testo = testo.replace("**", "")
     testo = re.sub(r'\[FONTE[^\]]*\]', '', testo)
     testo = re.sub(r'\(\d{1,2}:\d{2}(?::\d{2})?\)', '', testo)
@@ -280,10 +265,8 @@ def send_to_telegram(news_list, emoji_fonte, nome_fonte):
 
 
 def elabora_url(link):
-    """Elabora un singolo URL con tutte le verifiche anti-allucinazione."""
     clean_link = normalize_youtube_url(link) if is_youtube(link) else link
 
-    # Titolo + canale reali da YouTube (servono per la verifica e per il ripiego fonte)
     titolo_reale, autore_reale = ("", "")
     if is_youtube(link):
         titolo_reale, autore_reale = get_youtube_meta(clean_link)
@@ -298,14 +281,12 @@ def elabora_url(link):
         print("Risposta vuota da Gemini. Non invio nulla.")
         return
 
-    # 1) Gemini dichiara di non aver letto il video
     if SENTINEL_NO_VIDEO in raw.upper():
         print(f"Gemini non e' riuscito a leggere il video ({SENTINEL_NO_VIDEO}). NON invio nulla.")
         return
 
     titolo_g, found_key, testo = estrai_meta(raw)
 
-    # 2) Verifica anti-allucinazione: il titolo riportato deve combaciare con quello vero
     if titolo_reale:
         if not titoli_combaciano(titolo_g, titolo_reale):
             print("ATTENZIONE: probabile allucinazione, il video non risulta letto davvero.")
@@ -316,7 +297,6 @@ def elabora_url(link):
     else:
         print("Impossibile verificare il titolo via oEmbed: procedo con cautela.")
 
-    # 3) Fonte (chi parla)
     if found_key:
         emoji_fonte, nome = CANALI[found_key]
         nome_fonte = f"{nome} - YouTube"
@@ -326,7 +306,6 @@ def elabora_url(link):
         emoji_fonte, nome_fonte = DEFAULT_EMOJI, "YouTube"
     print(f"Fonte rilevata: {nome_fonte}")
 
-    # 4) Pulizia e invio
     lista = [pulisci_notizia(n) for n in split_notizie(testo)]
     lista = [n for n in lista if n]
     print(f"Notizie trovate: {len(lista)}")
