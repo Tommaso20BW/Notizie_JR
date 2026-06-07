@@ -6,7 +6,7 @@ import dropbox
 from google import genai
 from google.genai import types
 from youtube_transcript_api import YouTubeTranscriptApi
-from youtube_transcript_api._errors import NoTranscriptFound, TranscriptsDisabled
+from youtube_transcript_api._errors import NoTranscriptFound, TranscriptsDisabled, YouTubeTranscriptApiException
 
 # Configurazione variabili d'ambiente da GitHub Secrets
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -178,25 +178,29 @@ def generate_news_from_url(url):
 
         print(f"Estrazione sottotitoli per l'ID YouTube: {video_id}")
         try:
-            # Recupera i sottotitoli usando il metodo corretto della classe
-            transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=['it', 'en'])
-            
+            ytt = YouTubeTranscriptApi()
+            transcript_list = ytt.fetch(video_id, languages=['it', 'en'])
+
             # Genera la stringa temporizzata inserendo i minuti iniziali del blocco
             sottotitoli_str = ""
             for seg in transcript_list:
                 minutes = int(seg['start'] // 60)
                 seconds = int(seg['start'] % 60)
                 sottotitoli_str += f"({minutes:02d}:{seconds:02d}) {seg['text']}\n"
+
         except (NoTranscriptFound, TranscriptsDisabled) as e:
             print(f"Sottotitoli non disponibili o disabilitati su YT: {e}")
             return SENTINEL_NO_VIDEO
+        except YouTubeTranscriptApiException as e:
+            print(f"Errore youtube-transcript-api: {e}")
+            return SENTINEL_NO_VIDEO
         except Exception as e:
-            print(f"Errore nell'uso di youtube-transcript-api: {e}")
+            print(f"Errore imprevisto nell'estrazione sottotitoli: {e}")
             return SENTINEL_NO_VIDEO
 
         print("Inoltro dei sottotitoli a Gemini...")
         testo_input = f"{PROMPT}\n\nSOTTOTITOLI DEL VIDEO DA ANALIZZARE:\n{sottotitoli_str}"
-        
+
         response = client.models.generate_content(
             model=MODEL,
             contents=testo_input,
@@ -347,7 +351,7 @@ def elabora_url(link):
     # 4) Pulizia e invio
     lista = [pulisci_notizia(n) for n in split_notizie(testo)]
     lista = [n for n in lista if n]
-    print(f"Notizie trouvate: {len(lista)}")
+    print(f"Notizie trovate: {len(lista)}")
     if lista:
         send_to_telegram(lista, emoji_fonte, nome_fonte)
     else:
