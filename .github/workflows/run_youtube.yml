@@ -1,6 +1,6 @@
 name: Avvio Estrazione Notizie - YouTube
 on:
-  workflow_dispatch:
+  workflow_dispatch: # Solo attivazione manuale con bottone
 jobs:
   run-bot:
     runs-on: ubuntu-latest
@@ -14,8 +14,6 @@ jobs:
       - name: Installa dipendenze
         run: |
           pip install -r requirements.txt
-      - name: Check versioni
-        run: pip show google-genai
       - name: Esegui il Bot
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
