@@ -18,7 +18,7 @@ DROPBOX_REFRESH_TOKEN = os.getenv("DROPBOX_REFRESH_TOKEN")
 DROPBOX_FOLDER = "/NotizieJR"
 TXT_FILENAME = "link.txt"  # Nome fisso del file da cui leggere i link
 
-# Modello Gemini aggiornato alla famiglia 2.5 (Flash è perfetto, veloce ed economico per il testo)
+# Modello Gemini ottimizzato per compiti testuali veloci ed economici
 MODEL = "gemini-2.5-flash"
 
 # Inizializzazione del client ufficiale Google GenAI
@@ -178,9 +178,10 @@ def generate_news_from_url(url):
 
         print(f"Estrazione sottotitoli per l'ID YouTube: {video_id}")
         try:
-            # Cerca i sottotitoli prima in italiano, poi in inglese come fallback
+            # Recupera i sottotitoli usando il metodo corretto della classe
             transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=['it', 'en'])
-            # Unisce i testi includendo un'approssimazione dei minuti per aiutare Gemini nei timestamp
+            
+            # Genera la stringa temporizzata inserendo i minuti iniziali del blocco
             sottotitoli_str = ""
             for seg in transcript_list:
                 minutes = int(seg['start'] // 60)
@@ -190,7 +191,7 @@ def generate_news_from_url(url):
             print(f"Sottotitoli non disponibili o disabilitati su YT: {e}")
             return SENTINEL_NO_VIDEO
         except Exception as e:
-            print(f"Errore generico youtube-transcript-api: {e}")
+            print(f"Errore nell'uso di youtube-transcript-api: {e}")
             return SENTINEL_NO_VIDEO
 
         print("Inoltro dei sottotitoli a Gemini...")
@@ -206,7 +207,7 @@ def generate_news_from_url(url):
         )
         return response.text
 
-    # Gestione pagine web standard (lasciata invariata come tuo ripiego)
+    # Gestione pagine web standard (lasciata invariata come ripiego)
     print(f"Invio pagina web a Gemini (URL context): {url}")
     response = client.models.generate_content(
         model=MODEL,
@@ -325,7 +326,7 @@ def elabora_url(link):
 
     titolo_g, found_key, testo = estrai_meta(raw)
 
-    # 2) Verifica anti-allucinazione (disattivata solo se oEmbed fallisce o se Gemini genera un titolo inventato ma coerente dal testo)
+    # 2) Verifica anti-allucinazione tollerante basata sul titolo reale
     if titolo_reale and titolo_g:
         if not titoli_combaciano(titolo_g, titolo_reale):
             print("ATTENZIONE: Il titolo generato differisce molto da quello oEmbed reale.")
@@ -346,7 +347,7 @@ def elabora_url(link):
     # 4) Pulizia e invio
     lista = [pulisci_notizia(n) for n in split_notizie(testo)]
     lista = [n for n in lista if n]
-    print(f"Notizie trovate: {len(lista)}")
+    print(f"Notizie trouvate: {len(lista)}")
     if lista:
         send_to_telegram(lista, emoji_fonte, nome_fonte)
     else:
