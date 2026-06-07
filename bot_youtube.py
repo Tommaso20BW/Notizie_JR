@@ -1,10 +1,8 @@
 import os
 import re
 import time
-import json
 import requests
 import dropbox
-import yt_dlp
 from google import genai
 from google.genai import types
 
@@ -16,14 +14,17 @@ DROPBOX_APP_KEY = os.getenv("DROPBOX_APP_KEY")
 DROPBOX_APP_SECRET = os.getenv("DROPBOX_APP_SECRET")
 DROPBOX_REFRESH_TOKEN = os.getenv("DROPBOX_REFRESH_TOKEN")
 DROPBOX_FOLDER = "/NotizieJR"
-TXT_FILENAME = "link.txt"
+TXT_FILENAME = "link.txt"  # Nome fisso del file da cui leggere i link
 
+# Modello Gemini. Se le allucinazioni continuano, prova un modello Pro
+# (cambia solo questa riga, il resto del codice non si tocca).
 MODEL = "gemini-3.5-flash"
 
+# Inizializzazione del client ufficiale Google GenAI
 client = genai.Client(api_key=GEMINI_API_KEY)
 
 # ---------------------------------------------------------------------------
-# MAPPATURA FONTI
+# MAPPATURA FONTI (giornalista che parla -> emoji personalizzata + nome)
 # ---------------------------------------------------------------------------
 CANALI = {
     "agresti": ('<tg-emoji emoji-id="5784902446098685755">📲</tg-emoji>', "Romeo Agresti"),
@@ -33,6 +34,7 @@ CANALI = {
     "pedull":  ('<tg-emoji emoji-id="5785322627044220734">📲</tg-emoji>', "Alfredo Pedullà"),
 }
 
+# Tag che Gemini puo' scrivere -> chiave in CANALI
 TAG_FONTE = {
     "[FONTE_AGRESTI]": "agresti",
     "[FONTE_MORETTO]": "moretto",
@@ -41,34 +43,43 @@ TAG_FONTE = {
     "[FONTE_PEDULLA]": "pedull",
 }
 
+# Emoji usata quando il giornalista NON e' tra quelli mappati
 DEFAULT_EMOJI = "📲"
 
-PROMPT = """Hai ricevuto la trascrizione completa di un video YouTube sulla Juventus.
-Il tuo compito e' estrarre SOLO le notizie sulla Juventus dette ESPLICITAMENTE nella trascrizione.
+# Parola che Gemini deve usare se non riesce a leggere il video
+SENTINEL_NO_VIDEO = "VIDEO_NON_LEGGIBILE"
 
-REGOLE DI VERIDICITA':
-- Riporta SOLO cio' che e' scritto nella trascrizione. NON aggiungere nulla.
-- Non inventare, non dedurre, non completare con conoscenze pregresse.
-- Se nella trascrizione non si parla della Juventus, non scrivere nessuna notizia.
+# Prompt ad alta veridicita': Gemini deve basarsi SOLO sul video, dimostrare di
+# averlo visto (titolo) e dichiarare se non ci riesce.
+PROMPT = f"""Stai analizzando UNO SPECIFICO video di YouTube. Il tuo compito e' estrarre SOLO le notizie sulla Juventus che vengono dette ESPLICITAMENTE in QUESTO video.
 
-FONTE: scegli UNO tra: [FONTE_AGRESTI] Romeo Agresti, [FONTE_MORETTO] Matteo Moretto,
-[FONTE_ROMANO] Fabrizio Romano, [FONTE_SCHIRA] Nicolò Schira, [FONTE_PEDULLA] Alfredo Pedullà,
-oppure [FONTE_ALTRO] se non e' nessuno di loro.
-Scrivi il tag fonte sulla prima riga.
+REGOLE DI VERIDICITA' (LE PIU' IMPORTANTI):
+- Riporta SOLO ed esclusivamente cio' che viene detto a voce o mostrato in QUESTO video.
+- NON usare MAI tue conoscenze pregresse, voci di mercato o notizie che conosci da altre fonti. Se una cosa non viene detta nel video, NON scriverla.
+- Non inventare, non dedurre, non "completare" con cio' che ti sembra plausibile.
+- Se non riesci ad accedere al video, ad ascoltarne l'audio o a capirne il contenuto, rispondi ESATTAMENTE con questa sola parola e nient'altro: {SENTINEL_NO_VIDEO}
+
+PROVA DI VISIONE (obbligatoria, da scrivere PRIMA di tutto):
+[TITOLO] il titolo esatto del video come appare su YouTube
+[DURATA] durata totale del video
+[FONTE_X] chi parla, scegliendo UNO tra: [FONTE_AGRESTI] Romeo Agresti, [FONTE_MORETTO] Matteo Moretto, [FONTE_ROMANO] Fabrizio Romano, [FONTE_SCHIRA] Nicolò Schira, [FONTE_PEDULLA] Alfredo Pedullà, oppure [FONTE_ALTRO] se non e' nessuno di loro
 
 POI le notizie sulla Juventus, una per riga in questo formato:
-[NOTIZIA][Emoji] Testo continuo della notizia
+[NOTIZIA][Emoji] (mm:ss) Testo continuo della notizia
+dove (mm:ss) e' il minuto del video in cui se ne parla.
 
 REGOLE DI FORMATTAZIONE:
 - NON USARE MAI GLI ASTERISCHI (**). Usa SOLO i tag HTML <b> e </b> per il grassetto.
-- Metti in grassetto <b>...</b> nomi e cognomi di giocatori, allenatori, dirigenti e nomi delle squadre.
+- Metti in grassetto <b>...</b> nomi e cognomi di giocatori, allenatori, dirigenti e i nomi delle squadre.
 - Massimo 280 caratteri a notizia, sii sintetico.
 - Cifre in milioni sempre in formato compatto: 1M€, 50M€, 100M€. Mai "milioni di euro" ne' "mln".
 - Separa ogni notizia con una riga vuota.
+- Se nel video non si parla della Juventus, scrivi solo le righe [TITOLO]/[DURATA]/[FONTE_X] e nessuna notizia.
 """
 
 
 def crea_dropbox_client():
+    """Crea il client Dropbox con refresh token (non scade mai)"""
     return dropbox.Dropbox(
         app_key=DROPBOX_APP_KEY,
         app_secret=DROPBOX_APP_SECRET,
@@ -77,8 +88,10 @@ def crea_dropbox_client():
 
 
 def get_urls_from_dropbox():
+    """Legge il file link.txt nella cartella Dropbox ed estrae gli URL contenuti."""
     dbx = crea_dropbox_client()
     file_path = f"{DROPBOX_FOLDER}/{TXT_FILENAME}"
+
     try:
         print(f"Lettura {file_path}...")
         metadata, response = dbx.files_download(file_path)
@@ -102,6 +115,7 @@ def get_urls_from_dropbox():
 
 
 def delete_files_from_dropbox(dropbox_paths):
+    """Cancella i file da Dropbox dopo l'elaborazione."""
     dbx = crea_dropbox_client()
     for path in dropbox_paths:
         try:
@@ -117,6 +131,7 @@ def is_youtube(url):
 
 
 def normalize_youtube_url(url):
+    """Restituisce un URL YouTube canonico (https://www.youtube.com/watch?v=ID)."""
     video_id = None
     m = re.search(r'youtu\.be/([A-Za-z0-9_-]{11})', url)
     if m:
@@ -135,6 +150,7 @@ def normalize_youtube_url(url):
 
 
 def get_youtube_meta(url):
+    """Recupera (titolo, nome_canale) del video via oEmbed. ('', '') se non disponibile."""
     try:
         r = requests.get(
             "https://www.youtube.com/oembed",
@@ -150,123 +166,86 @@ def get_youtube_meta(url):
     return "", ""
 
 
-def get_transcript(video_url):
-    """Scarica i sottotitoli automatici con yt-dlp. Prova it -> en -> qualsiasi."""
-    ydl_opts = {
-        "writeautomaticsub": True,
-        "writesubtitles": True,
-        "subtitleslangs": ["it", "en"],
-        "skip_download": True,
-        "quiet": True,
-        "no_warnings": True,
-    }
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(video_url, download=False)
-
-        # Cerca prima sottotitoli automatici, poi manuali
-        for subs_key in ("automatic_captions", "subtitles"):
-            subs = info.get(subs_key, {})
-            for lang in ["it", "en"] + list(subs.keys()):
-                if lang not in subs:
-                    continue
-                # Prende il formato json3 o srv3 o ttml o vtt
-                formati = subs[lang]
-                url_sub = None
-                for fmt in formati:
-                    if fmt.get("ext") in ("json3", "srv3", "ttml", "vtt"):
-                        url_sub = fmt["url"]
-                        break
-                if not url_sub and formati:
-                    url_sub = formati[0]["url"]
-                if not url_sub:
-                    continue
-
-                r = requests.get(url_sub, timeout=15)
-                if not r.ok:
-                    continue
-
-                testo = estrai_testo_sottotitoli(r.text, formati[0].get("ext", ""))
-                if testo:
-                    print(f"Trascrizione scaricata (lingua: {lang}, {len(testo)} caratteri).")
-                    return testo
-
-        print("Nessun sottotitolo trovato.")
-        return None
-
-    except Exception as e:
-        print(f"Errore scaricamento trascrizione: {e}")
-        return None
-
-
-def estrai_testo_sottotitoli(contenuto, ext):
-    """Estrae testo puro da json3, vtt o altri formati."""
-    try:
-        if ext == "json3":
-            data = json.loads(contenuto)
-            testi = []
-            for evento in data.get("events", []):
-                for seg in evento.get("segs", []):
-                    t = seg.get("utf8", "").strip()
-                    if t and t != "\n":
-                        testi.append(t)
-            return " ".join(testi)
-    except Exception:
-        pass
-
-    # Fallback: rimuove tag e righe di timing (funziona per vtt, ttml, srv)
-    testo = re.sub(r'<[^>]+>', ' ', contenuto)
-    testo = re.sub(r'\d{2}:\d{2}[^\n]*', '', testo)
-    testo = re.sub(r'WEBVTT.*', '', testo, flags=re.DOTALL | re.IGNORECASE)
-    testo = re.sub(r'[\r\n]+', ' ', testo)
-    testo = re.sub(r'\s{2,}', ' ', testo)
-    return testo.strip()
-
-
-def generate_news_from_transcript(titolo, autore, trascrizione):
-    contenuto = (
-        f"{PROMPT}\n\n"
-        f"TITOLO VIDEO: {titolo}\n"
-        f"CANALE: {autore}\n\n"
-        f"TRASCRIZIONE:\n{trascrizione}"
-    )
-    response = client.models.generate_content(
-        model=MODEL,
-        contents=contenuto,
-        config=types.GenerateContentConfig(
-            temperature=0.1,
-            seed=42,
-        ),
-    )
-    return response.text
-
-
 def generate_news_from_url(url):
-    """Fallback per URL non YouTube."""
+    """Invia l'URL a Gemini (video YouTube o, in ripiego, pagina web)."""
+    if is_youtube(url):
+        clean_url = normalize_youtube_url(url)
+        print(f"Invio video YouTube a Gemini: {clean_url}")
+        # IMPORTANTE: l'URL va passato SOLO tramite file_data, NON come testo.
+        # Se l'URL appare anche nel testo, Gemini lo interpreta come URL context
+        # (fetch della pagina HTML) e ignora il video passato via file_data,
+        # analizzando il video sbagliato o allucinando.
+        response = client.models.generate_content(
+            model=MODEL,
+            contents=types.Content(
+                role="user",
+                parts=[
+                    types.Part(file_data=types.FileData(file_uri=clean_url)),
+                    types.Part(text=PROMPT),   # solo le istruzioni, mai l'URL qui
+                ]
+            ),
+            config=types.GenerateContentConfig(
+                temperature=0.1,
+                seed=42,
+                # Risoluzione bassa = piu' minuti di video processabili (fino a ~3h).
+                # Per video parlati non perdiamo nulla: la notizia e' nell'audio.
+                media_resolution=types.MediaResolution.MEDIA_RESOLUTION_LOW,
+            ),
+        )
+        return response.text
+
     print(f"Invio pagina web a Gemini (URL context): {url}")
     response = client.models.generate_content(
         model=MODEL,
         contents=f"{PROMPT}\n\nContenuto da analizzare a questo indirizzo: {url}",
-        config=types.GenerateContentConfig(
-            temperature=0.1,
-            seed=42,
-            tools=[{"url_context": {}}],
-        ),
+        config=types.GenerateContentConfig(temperature=0.1, seed=42, tools=[{"url_context": {}}]),
     )
     return response.text
 
 
 def estrai_meta(raw):
+    """
+    Estrae titolo riportato e fonte dalle righe di intestazione,
+    e restituisce il testo notizie ripulito dai tag.
+    """
+    titolo = ""
+    m = re.search(r'\[TITOLO\]\s*(.+)', raw)
+    if m:
+        titolo = m.group(1).strip()
+
     found_key = None
     for tag, key in TAG_FONTE.items():
         if tag in raw and found_key is None:
             found_key = key
+
+    # Rimuove le righe di intestazione e tutti i tag fonte
+    raw = re.sub(r'\[TITOLO\].*', '', raw)
+    raw = re.sub(r'\[DURATA\].*', '', raw)
+    raw = re.sub(r'\[CANALE\].*', '', raw)
     for tag in list(TAG_FONTE.keys()) + ["[FONTE_ALTRO]"]:
         raw = raw.replace(tag, "")
-    return found_key, raw.strip()
+
+    return titolo, found_key, raw.strip()
+
+
+def titoli_combaciano(titolo_gemini, titolo_reale):
+    """Confronto tollerante: True se i due titoli condividono abbastanza parole."""
+    def parole(s):
+        return set(re.sub(r'[^a-z0-9]+', ' ', s.lower()).split())
+
+    a = parole(titolo_gemini)
+    b = parole(titolo_reale)
+    if not a or not b:
+        return False
+
+    # Considera solo parole "significative" (3+ lettere) del titolo reale
+    b_sig = {w for w in b if len(w) >= 3} or b
+    comuni = a & b_sig
+    return (len(comuni) / len(b_sig)) >= 0.4
 
 
 def split_notizie(raw):
+    """Divide il testo di Gemini in singole notizie."""
     if "[NOTIZIA]" in raw:
         lista = [n.strip() for n in raw.split("[NOTIZIA]") if n.strip()]
     else:
@@ -275,6 +254,7 @@ def split_notizie(raw):
 
 
 def pulisci_notizia(testo):
+    """Toglie timestamp (mm:ss), asterischi, tag residui e spazi doppi."""
     testo = testo.replace("**", "")
     testo = re.sub(r'\[FONTE[^\]]*\]', '', testo)
     testo = re.sub(r'\(\d{1,2}:\d{2}(?::\d{2})?\)', '', testo)
@@ -290,7 +270,9 @@ def send_to_telegram(news_list, emoji_fonte, nome_fonte):
         clean = news.strip()
         if not clean:
             continue
+
         testo = f"{clean}\n\n{emoji_fonte} <i>{nome_fonte}</i>\n\n{tg_reborn} @Juventus_Reborn"
+
         try:
             resp = requests.post(
                 url,
@@ -301,38 +283,21 @@ def send_to_telegram(news_list, emoji_fonte, nome_fonte):
                 print(f"Errore Telegram: {resp.status_code} - {resp.text}")
         except Exception as e:
             print(f"Errore invio Telegram: {e}")
+
         time.sleep(1)
 
 
 def elabora_url(link):
+    """Elabora un singolo URL con tutte le verifiche anti-allucinazione."""
     clean_link = normalize_youtube_url(link) if is_youtube(link) else link
 
-    if not is_youtube(link):
-        try:
-            raw = generate_news_from_url(link)
-        except Exception as e:
-            print(f"Errore Gemini: {e}")
-            return
-        found_key, testo = estrai_meta(raw)
-        emoji_fonte, nome_fonte = DEFAULT_EMOJI, "Web"
-        lista = [pulisci_notizia(n) for n in split_notizie(testo)]
-        lista = [n for n in lista if n]
-        if lista:
-            send_to_telegram(lista, emoji_fonte, nome_fonte)
-        return
-
-    # YouTube
-    titolo_reale, autore_reale = get_youtube_meta(clean_link)
-    print(f"Titolo video: {titolo_reale!r}")
-    print(f"Canale: {autore_reale!r}")
-
-    trascrizione = get_transcript(clean_link)
-    if not trascrizione:
-        print("Nessuna trascrizione disponibile. Salto.")
-        return
+    # Titolo + canale reali da YouTube (servono per la verifica e per il ripiego fonte)
+    titolo_reale, autore_reale = ("", "")
+    if is_youtube(link):
+        titolo_reale, autore_reale = get_youtube_meta(clean_link)
 
     try:
-        raw = generate_news_from_transcript(titolo_reale, autore_reale, trascrizione)
+        raw = generate_news_from_url(link)
     except Exception as e:
         print(f"Errore Gemini: {e}")
         return
@@ -341,8 +306,25 @@ def elabora_url(link):
         print("Risposta vuota da Gemini. Non invio nulla.")
         return
 
-    found_key, testo = estrai_meta(raw)
+    # 1) Gemini dichiara di non aver letto il video
+    if SENTINEL_NO_VIDEO in raw.upper():
+        print(f"Gemini non e' riuscito a leggere il video ({SENTINEL_NO_VIDEO}). NON invio nulla.")
+        return
 
+    titolo_g, found_key, testo = estrai_meta(raw)
+
+    # 2) Verifica anti-allucinazione: il titolo riportato deve combaciare con quello vero
+    if titolo_reale:
+        if not titoli_combaciano(titolo_g, titolo_reale):
+            print("ATTENZIONE: probabile allucinazione, il video non risulta letto davvero.")
+            print(f"  Titolo riportato da Gemini: {titolo_g!r}")
+            print(f"  Titolo reale del video:     {titolo_reale!r}")
+            print("  NON invio nulla.")
+            return
+    else:
+        print("Impossibile verificare il titolo via oEmbed: procedo con cautela.")
+
+    # 3) Fonte (chi parla)
     if found_key:
         emoji_fonte, nome = CANALI[found_key]
         nome_fonte = f"{nome} - YouTube"
@@ -352,6 +334,7 @@ def elabora_url(link):
         emoji_fonte, nome_fonte = DEFAULT_EMOJI, "YouTube"
     print(f"Fonte rilevata: {nome_fonte}")
 
+    # 4) Pulizia e invio
     lista = [pulisci_notizia(n) for n in split_notizie(testo)]
     lista = [n for n in lista if n]
     print(f"Notizie trovate: {len(lista)}")
