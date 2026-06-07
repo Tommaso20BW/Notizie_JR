@@ -171,15 +171,24 @@ def generate_news_from_url(url):
     if is_youtube(url):
         clean_url = normalize_youtube_url(url)
         print(f"Invio video YouTube a Gemini: {clean_url}")
+        # Il link e' anche dentro al testo, cosi' il modello sa esattamente
+        # quale video guardare (come quando lo si incolla a mano).
+        testo = f"{PROMPT}\n\nIMPORTANTE: analizza ESCLUSIVAMENTE questo video e nessun altro:\n{clean_url}"
         response = client.models.generate_content(
             model=MODEL,
             contents=types.Content(
                 parts=[
                     types.Part(file_data=types.FileData(file_uri=clean_url)),
-                    types.Part(text=PROMPT),
+                    types.Part(text=testo),
                 ]
             ),
-            config=types.GenerateContentConfig(temperature=0.2),
+            config=types.GenerateContentConfig(
+                temperature=0.1,
+                seed=42,
+                # Risoluzione bassa = piu' minuti di video processabili (fino a ~3h).
+                # Per video parlati non perdiamo nulla: la notizia e' nell'audio.
+                media_resolution=types.MediaResolution.MEDIA_RESOLUTION_LOW,
+            ),
         )
         return response.text
 
@@ -187,7 +196,7 @@ def generate_news_from_url(url):
     response = client.models.generate_content(
         model=MODEL,
         contents=f"{PROMPT}\n\nContenuto da analizzare a questo indirizzo: {url}",
-        config=types.GenerateContentConfig(temperature=0.2, tools=[{"url_context": {}}]),
+        config=types.GenerateContentConfig(temperature=0.1, seed=42, tools=[{"url_context": {}}]),
     )
     return response.text
 
