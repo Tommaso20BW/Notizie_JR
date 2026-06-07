@@ -171,25 +171,15 @@ def generate_news_from_url(url):
     if is_youtube(url):
         clean_url = normalize_youtube_url(url)
         print(f"Invio video YouTube a Gemini: {clean_url}")
-        # IMPORTANTE: l'URL va passato SOLO tramite file_data, NON come testo.
-        # Se l'URL appare anche nel testo, Gemini lo interpreta come URL context
-        # (fetch della pagina HTML) e ignora il video passato via file_data,
-        # analizzando il video sbagliato o allucinando.
+        # Approccio diretto: URL nel testo come farebbe un utente normale.
+        # Gemini riconosce nativamente i link YouTube e carica il video.
+        testo = f"Cosa dice nel video: {clean_url}\n\n{PROMPT}"
         response = client.models.generate_content(
             model=MODEL,
-            contents=types.Content(
-                role="user",
-                parts=[
-                    types.Part(file_data=types.FileData(file_uri=clean_url)),
-                    types.Part(text=PROMPT),   # solo le istruzioni, mai l'URL qui
-                ]
-            ),
+            contents=testo,
             config=types.GenerateContentConfig(
                 temperature=0.1,
                 seed=42,
-                # Risoluzione bassa = piu' minuti di video processabili (fino a ~3h).
-                # Per video parlati non perdiamo nulla: la notizia e' nell'audio.
-                media_resolution=types.MediaResolution.MEDIA_RESOLUTION_LOW,
             ),
         )
         return response.text
