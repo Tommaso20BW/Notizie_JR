@@ -138,9 +138,14 @@ def split_notizie(raw):
 
 def _hashtag_persona(testo):
     """
-    Persone: hashtag SOLO sull'ultima parola (il cognome).
-    - "Damien Comolli" -> "Damien #Comolli"
-    - "Vlahovic"       -> "#Vlahovic"
+    Persone: nome di battesimo staccato, tutto il cognome (anche composto)
+    attaccato in un unico hashtag.
+    - "Damien Comolli"      -> "Damien #Comolli"
+    - "Bernardo Silva"      -> "Bernardo #Silva"
+    - "Randal Kolo Muani"   -> "Randal #KoloMuani"
+    - "Michele Di Gregorio" -> "Michele #DiGregorio"
+    - "David De Gea"        -> "David #DeGea"
+    - "Vlahovic"            -> "#Vlahovic"
     """
     testo = " ".join(testo.split())  # normalizza spazi/newline
     if not testo:
@@ -148,7 +153,8 @@ def _hashtag_persona(testo):
     parole = testo.split(" ")
     if len(parole) == 1:
         return "#" + parole[0]
-    return " ".join(parole[:-1]) + " #" + parole[-1]
+    # primo nome normale, il resto (cognome) unito in un solo hashtag
+    return parole[0] + " #" + "".join(parole[1:])
 
 
 def _hashtag_squadra(testo):
