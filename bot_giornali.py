@@ -217,8 +217,17 @@ def render_v2(testo):
     return testo.strip()
 
 
+# Stato per il separatore: messo prima di ogni notizia tranne la primissima
+# (vale anche tra giornali diversi, dato che send_to_telegram viene chiamata piu' volte)
+_prima_notizia_inviata = False
+
+
 def send_to_telegram(news_list):
+    global _prima_notizia_inviata
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+
+    # Messaggio separatore tra una notizia (le sue 2 versioni) e la successiva
+    separatore = "———————————————"
 
     emoji_mapping = {
         "[FONTE_TUTTO]": ('<tg-emoji emoji-id="6032834612990841221">📰</tg-emoji>', "TuttoSport", "@tuttosport"),
@@ -259,6 +268,13 @@ def send_to_telegram(news_list):
 
         # VERSIONE 1: come adesso (con la riga @Juventus_Reborn)
         testo_v1 = f"{corpo_v1}\n\n{emoji_fonte} <i>{nome_fonte}</i>\n\n{tg_reborn} @Juventus_Reborn"
+
+        # Separatore prima di ogni notizia, tranne la primissima inviata
+        if _prima_notizia_inviata:
+            _post(separatore)
+            time.sleep(1)
+        _prima_notizia_inviata = True
+
         _post(testo_v1)
         # Piccola pausa tra un messaggio e l'altro per evitare rate limit
         time.sleep(1)
