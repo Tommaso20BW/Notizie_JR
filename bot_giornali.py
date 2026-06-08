@@ -221,9 +221,9 @@ def send_to_telegram(news_list):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
     emoji_mapping = {
-        "[FONTE_TUTTO]": ('<tg-emoji emoji-id="6032834612990841221">📰</tg-emoji>', "@tuttosport"),
-        "[FONTE_GAZZETTA]": ('<tg-emoji emoji-id="6032862491623559282">📰</tg-emoji>', "@Gazzetta_it"),
-        "[FONTE_CORRIERE]": ('<tg-emoji emoji-id="6030691308346019878">📰</tg-emoji>', "@CorSport")
+        "[FONTE_TUTTO]": ('<tg-emoji emoji-id="6032834612990841221">📰</tg-emoji>', "TuttoSport", "@tuttosport"),
+        "[FONTE_GAZZETTA]": ('<tg-emoji emoji-id="6032862491623559282">📰</tg-emoji>', "Gazzetta dello Sport", "@Gazzetta_it"),
+        "[FONTE_CORRIERE]": ('<tg-emoji emoji-id="6030691308346019878">📰</tg-emoji>', "Corriere dello Sport", "@CorSport")
     }
     tg_reborn = '<tg-emoji emoji-id="5985659276327132147">👉</tg-emoji>'
 
@@ -251,20 +251,20 @@ def send_to_telegram(news_list):
         tag = next((t for t in emoji_mapping if t in clean), "[FONTE_TUTTO]")
         clean = clean.replace(tag, "").strip()
 
-        emoji_fonte, handle_fonte = emoji_mapping[tag]
+        emoji_fonte, nome_fonte, handle_fonte = emoji_mapping[tag]
 
         # Costruisce i due corpi a partire dallo stesso testo (con i tag <b>/<t>/<c>)
         corpo_v1 = render_v1(clean)
         corpo_v2 = render_v2(clean)
 
         # VERSIONE 1: come adesso (con la riga @Juventus_Reborn)
-        testo_v1 = f"{corpo_v1}\n\n{emoji_fonte} {handle_fonte}\n\n{tg_reborn} @Juventus_Reborn"
+        testo_v1 = f"{corpo_v1}\n\n{emoji_fonte} <i>{nome_fonte}</i>\n\n{tg_reborn} @Juventus_Reborn"
         _post(testo_v1)
         # Piccola pausa tra un messaggio e l'altro per evitare rate limit
         time.sleep(1)
 
         # VERSIONE 2: con gli hashtag, SENZA la riga @Juventus_Reborn
-        testo_v2 = f"{corpo_v2}\n\n{emoji_fonte} {handle_fonte}"
+        testo_v2 = f"{corpo_v2}\n\n📲 {handle_fonte}"
         _post(testo_v2)
         time.sleep(1)
 
