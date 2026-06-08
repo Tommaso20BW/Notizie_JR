@@ -1,4 +1,5 @@
 import os
+import re
 import requests
 import time
 import dropbox
@@ -85,16 +86,20 @@ def generate_news_from_pdf(path):
     prompt = """Sei un estrattore di notizie calcistiche estremamente preciso. Analizza il PDF del quotidiano allegato e riporta SOLO le notizie riguardanti la Juventus.
 
     REGOLA TASSATIVA ED IMPERATIVA:
-    - NON USARE MAI GLI ASTERISCHI (**) per il grassetto.
-    - Usa SOLO ed esclusivamente i tag HTML <b> e </b> per applicare il grassetto.
+    - NON USARE MAI GLI ASTERISCHI (**).
+    - Per le formattazioni usa SOLO ed esclusivamente i tag indicati qui sotto.
 
-    Formattazione richiesta:
-    1. Applica il grassetto HTML usando <b> e </b> sui nomi di battesimo e cognomi dei giocatori, allenatori, dirigenti (es: <b>Damien Comolli</b>) e squadre di calcio.
-    2. Inserisci tassativamente uno di questi tre tag alla fine di ogni notizia per indicare la fonte: [FONTE_TUTTO], [FONTE_GAZZETTA] o [FONTE_CORRIERE].
-    3. Struttura: [NOTIZIA][Emoji] Testo continuo senza titoli... [TAG_FONTE]
-    4. Sii sintetico (max 280 caratteri a notizia).
-    5. Per le cifre in milioni di euro usa SEMPRE il formato compatto: 1M€, 50M€, 100M€. Mai scrivere "milioni di euro" o "mln" o "M di euro".
-    6. Separa ogni notizia con una riga vuota.
+    Tag da usare:
+    1. PERSONE (giocatori, allenatori, dirigenti): racchiudi nome e cognome tra <b> e </b>. Esempio: <b>Damien Comolli</b>, <b>Dusan Vlahovic</b>.
+    2. SQUADRE di calcio: racchiudile tra <t> e </t> (NON usare <b>). Esempio: <t>Juventus</t>, <t>Real Madrid</t>, <t>Atletico Madrid</t>.
+    3. CAMPIONATI e COMPETIZIONI: racchiudili tra <c> e </c> (NON usare <b>). Esempio: <c>Serie A</c>, <c>Champions League</c>, <c>Europa League</c>, <c>Coppa Italia</c>.
+
+    Altre regole di formattazione:
+    4. Inserisci tassativamente uno di questi tre tag alla fine di ogni notizia per indicare la fonte: [FONTE_TUTTO], [FONTE_GAZZETTA] o [FONTE_CORRIERE].
+    5. Struttura: [NOTIZIA][Emoji] Testo continuo senza titoli... [TAG_FONTE]
+    6. Sii sintetico (max 280 caratteri a notizia).
+    7. Per le cifre in milioni di euro usa SEMPRE il formato compatto: 1M€, 50M€, 100M€. Mai scrivere "milioni di euro" o "mln" o "M di euro".
+    8. Separa ogni notizia con una riga vuota.
     """
 
     # 1) Carica il PDF su Gemini (gestisce anche file grandi e scansioni)
@@ -131,15 +136,108 @@ def split_notizie(raw):
     return lista
 
 
+def _hashtag_persona(testo):
+    """
+    Persone: hashtag SOLO sull'ultima parola (il cognome).
+    - "Damien Comolli" -> "Damien #Comolli"
+    - "Vlahovic"       -> "#Vlahovic"
+    """
+    testo = " ".join(testo.split())  # normalizza spazi/newline
+    if not testo:
+        return ""
+    parole = testo.split(" ")
+    if len(parole) == 1:
+        return "#" + parole[0]
+    return " ".join(parole[:-1]) + " #" + parole[-1]
+
+
+def _hashtag_squadra(testo):
+    """
+    Squadre: hashtag unico, parole unite.
+    - "Real Madrid"     -> "#RealMadrid"
+    - "Juventus"        -> "#Juventus"
+    - "Atletico Madrid" -> "#Atleti" (alias speciale)
+    """
+    norm = " ".join(testo.split()).lower()
+    if "atletico" in norm or "atlético" in norm:
+        return "#Atleti"
+    return "#" + "".join(testo.split())
+
+
+def _hashtag_competizione(testo):
+    """
+    Campionati/competizioni: hashtag unico.
+    Competizioni UEFA con sigle dedicate:
+    - Champions League -> #UCL
+    - Europa League    -> #UEL
+    - Conference       -> #UECL
+    Le altre: parole unite (es. "Serie A" -> "#SerieA").
+    """
+    norm = " ".join(testo.split()).lower()
+    if "conference" in norm:
+        return "#UECL"
+    if "europa league" in norm or norm == "europa":
+        return "#UEL"
+    if "champions" in norm:
+        return "#UCL"
+    return "#" + "".join(testo.split())
+
+
+def render_v1(testo):
+    """
+    Versione ATTUALE (identica a prima):
+    - persone <b> e squadre <t> -> grassetto
+    - campionati <c> -> testo normale (niente grassetto)
+    """
+    # squadre -> grassetto, come adesso
+    testo = re.sub(r"<t>(.*?)</t>", lambda m: "<b>" + m.group(1) + "</b>",
+                   testo, flags=re.DOTALL | re.IGNORECASE)
+    # campionati -> testo normale
+    testo = re.sub(r"</?c>", "", testo, flags=re.IGNORECASE)
+    testo = testo.replace("**", "")
+    return testo.strip()
+
+
+def render_v2(testo):
+    """
+    Versione HASHTAG (niente grassetto):
+    - persone (<b>): hashtag sul cognome
+    - squadre (<t>): hashtag unito (con alias #Atleti)
+    - campionati (<c>): hashtag/sigla
+    """
+    testo = re.sub(r"<b>(.*?)</b>", lambda m: _hashtag_persona(m.group(1)),
+                   testo, flags=re.DOTALL | re.IGNORECASE)
+    testo = re.sub(r"<t>(.*?)</t>", lambda m: _hashtag_squadra(m.group(1)),
+                   testo, flags=re.DOTALL | re.IGNORECASE)
+    testo = re.sub(r"<c>(.*?)</c>", lambda m: _hashtag_competizione(m.group(1)),
+                   testo, flags=re.DOTALL | re.IGNORECASE)
+    # pulizia di eventuali tag residui (no grassetto in questa versione)
+    testo = re.sub(r"</?(b|t|c)>", "", testo, flags=re.IGNORECASE)
+    testo = testo.replace("**", "")
+    return testo.strip()
+
+
 def send_to_telegram(news_list):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
     emoji_mapping = {
-        "[FONTE_TUTTO]": ('<tg-emoji emoji-id="6032834612990841221">📰</tg-emoji>', "TuttoSport"),
-        "[FONTE_GAZZETTA]": ('<tg-emoji emoji-id="6032862491623559282">📰</tg-emoji>', "Gazzetta dello Sport"),
-        "[FONTE_CORRIERE]": ('<tg-emoji emoji-id="6030691308346019878">📰</tg-emoji>', "Corriere dello Sport")
+        "[FONTE_TUTTO]": ('<tg-emoji emoji-id="6032834612990841221">📰</tg-emoji>', "@tuttosport"),
+        "[FONTE_GAZZETTA]": ('<tg-emoji emoji-id="6032862491623559282">📰</tg-emoji>', "@Gazzetta_it"),
+        "[FONTE_CORRIERE]": ('<tg-emoji emoji-id="6030691308346019878">📰</tg-emoji>', "@CorSport")
     }
     tg_reborn = '<tg-emoji emoji-id="5985659276327132147">👉</tg-emoji>'
+
+    def _post(testo):
+        try:
+            resp = requests.post(
+                url,
+                json={"chat_id": CHAT_ID, "text": testo, "parse_mode": "HTML"},
+                timeout=10
+            )
+            if not resp.ok:
+                print(f"Errore Telegram: {resp.status_code} - {resp.text}")
+        except Exception as e:
+            print(f"Errore invio Telegram: {e}")
 
     for news in news_list:
         clean = news.strip()
@@ -153,22 +251,21 @@ def send_to_telegram(news_list):
         tag = next((t for t in emoji_mapping if t in clean), "[FONTE_TUTTO]")
         clean = clean.replace(tag, "").strip()
 
-        emoji_fonte, nome_fonte = emoji_mapping[tag]
+        emoji_fonte, handle_fonte = emoji_mapping[tag]
 
-        testo = f"{clean}\n\n{emoji_fonte} <i>{nome_fonte}</i>\n\n{tg_reborn} @Juventus_Reborn"
+        # Costruisce i due corpi a partire dallo stesso testo (con i tag <b>/<t>/<c>)
+        corpo_v1 = render_v1(clean)
+        corpo_v2 = render_v2(clean)
 
-        try:
-            resp = requests.post(
-                url,
-                json={"chat_id": CHAT_ID, "text": testo, "parse_mode": "HTML"},
-                timeout=10
-            )
-            if not resp.ok:
-                print(f"Errore Telegram: {resp.status_code} - {resp.text}")
-        except Exception as e:
-            print(f"Errore invio Telegram: {e}")
-
+        # VERSIONE 1: come adesso (con la riga @Juventus_Reborn)
+        testo_v1 = f"{corpo_v1}\n\n{emoji_fonte} {handle_fonte}\n\n{tg_reborn} @Juventus_Reborn"
+        _post(testo_v1)
         # Piccola pausa tra un messaggio e l'altro per evitare rate limit
+        time.sleep(1)
+
+        # VERSIONE 2: con gli hashtag, SENZA la riga @Juventus_Reborn
+        testo_v2 = f"{corpo_v2}\n\n{emoji_fonte} {handle_fonte}"
+        _post(testo_v2)
         time.sleep(1)
 
 
