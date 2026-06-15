@@ -85,7 +85,15 @@ def generate_news_from_pdf(path):
     """
     prompt = """Sei un estrattore di notizie calcistiche estremamente preciso. Analizza il PDF del quotidiano allegato e riporta SOLO le notizie riguardanti la Juventus.
 
-    REGOLA TASSATIVA ED IMPERATIVA:
+    ═══ REGOLA ASSOLUTA PRIORITARIA — FEDELTÀ AL TESTO ═══
+    Riporta ESCLUSIVAMENTE ciò che è scritto nel PDF.
+    - NON aggiungere MAI informazioni, cifre, nomi, percentuali o dettagli che non siano presenti in modo esplicito nel testo originale.
+    - NON fare inferenze, NON completare frasi, NON aggiungere contesto che non sia scritto.
+    - Se una cifra (es. prezzo di un trasferimento) o un dettaglio non compare nel PDF, NON includerlo. È obbligatorio ometterlo piuttosto che inventarlo o stimarlo.
+    - Se il PDF dice "potrebbe" o "si valuta", riportalo così com'è: non trasformarlo in un fatto certo.
+    - NON usare mai formule come "secondo alcune fonti", "si dice che", "pare che" se queste non sono presenti nel testo.
+
+    ═══ REGOLA TASSATIVA DI FORMATTAZIONE ═══
     - NON USARE MAI GLI ASTERISCHI (**).
     - Per le formattazioni usa SOLO ed esclusivamente i tag indicati qui sotto.
 
@@ -100,6 +108,12 @@ def generate_news_from_pdf(path):
     6. Sii sintetico (max 280 caratteri a notizia).
     7. Per le cifre in milioni di euro usa SEMPRE il formato compatto: 1M€, 50M€, 100M€. Mai scrivere "milioni di euro" o "mln" o "M di euro".
     8. Separa ogni notizia con una riga vuota.
+
+    ═══ VERIFICA FINALE OBBLIGATORIA ═══
+    Prima di restituire l'output, per ogni notizia controlla mentalmente:
+    - Ogni nome, cifra e fatto è ricavabile direttamente dal testo del PDF?
+    - Ho usato parole mie solo per riformulare, non per aggiungere informazioni?
+    Se la risposta a una di queste domande è NO, rimuovi il dettaglio incerto.
     """
 
     # 1) Carica il PDF su Gemini (gestisce anche file grandi e scansioni)
