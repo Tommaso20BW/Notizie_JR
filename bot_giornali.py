@@ -257,16 +257,26 @@ def send_to_telegram(news_list):
     tg_reborn = '<tg-emoji emoji-id="5985659276327132147">👉</tg-emoji>'
 
     def _post(testo):
-        try:
-            resp = requests.post(
-                url,
-                json={"chat_id": CHAT_ID, "text": testo, "parse_mode": "HTML"},
-                timeout=10
-            )
-            if not resp.ok:
-                print(f"Errore Telegram: {resp.status_code} - {resp.text}")
-        except Exception as e:
-            print(f"Errore invio Telegram: {e}")
+        for attempt in range(5):
+            try:
+                resp = requests.post(
+                    url,
+                    json={"chat_id": CHAT_ID, "text": testo, "parse_mode": "HTML"},
+                    timeout=10
+                )
+                if resp.ok:
+                    return
+                if resp.status_code == 429:
+                    retry_after = resp.json().get("parameters", {}).get("retry_after", 30)
+                    print(f"Rate limit Telegram, attendo {retry_after + 1}s (tentativo {attempt + 1}/5)...")
+                    time.sleep(retry_after + 1)
+                else:
+                    print(f"Errore Telegram: {resp.status_code} - {resp.text}")
+                    return
+            except Exception as e:
+                print(f"Errore invio Telegram: {e}")
+                return
+        print("Telegram: tentativi esauriti, messaggio saltato.")
 
     for news in news_list:
         clean = news.strip()
