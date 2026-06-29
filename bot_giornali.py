@@ -17,6 +17,10 @@ DROPBOX_FOLDER = "/NotizieJR"
 # Inizializzazione del client ufficiale Google GenAI
 client = genai.Client(api_key=GEMINI_API_KEY)
 
+# Modelli in ordine di priorità: si parte dal primo (3.5),
+# in caso di 503/sovraccarico si passa automaticamente al successivo (2.5)
+MODELLI = ["gemini-3.5-flash", "gemini-2.5-flash"]
+
 
 def crea_dropbox_client():
     """Crea il client Dropbox con refresh token (non scade mai)"""
@@ -121,12 +125,28 @@ def generate_news_from_pdf(path):
     uploaded = client.files.upload(file=path)
 
     try:
-        # 2) Chiede a Gemini di leggere il PDF ed estrarre le notizie
-        response = client.models.generate_content(
-            model='gemini-3.5-flash',
-            contents=[uploaded, prompt],
-        )
-        return response.text
+        # 2) Prova i modelli in ordine: se uno è sovraccarico (503), passa al successivo
+        ultimo_errore = None
+        for modello in MODELLI:
+            try:
+                print(f"Tentativo con il modello {modello}...")
+                response = client.models.generate_content(
+                    model=modello,
+                    contents=[uploaded, prompt],
+                )
+                return response.text
+            except Exception as e:
+                ultimo_errore = e
+                msg = str(e)
+                # Fallback SOLO se il modello è sovraccarico / non disponibile (503)
+                if "503" in msg or "UNAVAILABLE" in msg or "overloaded" in msg.lower():
+                    print(f"Modello {modello} non disponibile (503). Passo al modello successivo...")
+                    continue
+                # Qualsiasi altro errore (quota, PDF corrotto, ecc.): non ha senso
+                # ritentare con un altro modello, quindi rilancio subito.
+                raise
+        # Se arrivo qui, TUTTI i modelli erano sovraccarichi: rilancio l'ultimo errore
+        raise ultimo_errore
     finally:
         # 3) Pulisce il file temporaneo caricato su Gemini
         try:
