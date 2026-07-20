@@ -1,0 +1,55 @@
+name: Juventus press news
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: juventus-press-news
+  cancel-in-progress: false
+
+jobs:
+  check-news:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Scarica il repository
+        uses: actions/checkout@v5
+
+      - name: Configura Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-juve-press.txt
+
+      - name: Installa le dipendenze
+        run: pip install -r requirements-juve-press.txt
+
+      - name: Controlla le notizie di oggi
+        run: python juve_press_bot.py
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+
+      - name: Salva lo stato degli articoli notificati
+        run: |
+          if [ ! -f .seen_juve_press_news.json ]; then
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .seen_juve_press_news.json
+
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+
+          git commit -m "Aggiorna stato notizie Juventus [skip ci]"
+          git pull --rebase
+          git push
