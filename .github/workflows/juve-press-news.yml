@@ -1,8 +1,6 @@
 name: Juventus press news
 
 on:
-  schedule:
-    - cron: "*/15 * * * *"
   workflow_dispatch:
 
 permissions:
