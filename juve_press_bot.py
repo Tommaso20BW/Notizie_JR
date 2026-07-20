@@ -407,6 +407,19 @@ def run(dry_run: bool = False) -> None:
     seen = set(seen_list)
     print(f"[STATO] articoli già notificati: {len(seen)}")
 
+    baseline_if_missing = os.environ.get(
+        "BASELINE_IF_NO_STATE",
+        "",
+    ).lower() in {"1", "true", "yes"}
+    if baseline_if_missing and not STATE_FILE.exists():
+        seen_list = [article.url for article in articles]
+        save_seen(seen_list)
+        print(
+            "[STATO] cache iniziale assente: "
+            f"registrate {len(seen_list)} notizie correnti senza reinviarle."
+        )
+        return
+
     pending = [article for article in articles if article.url not in seen]
     if not pending:
         print("[NEWS] nessuna nuova notizia di oggi.")
