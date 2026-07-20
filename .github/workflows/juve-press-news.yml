@@ -1,4 +1,4 @@
-name: Juventus press news
+name: Notizie Giornali Web
 
 on:
   workflow_dispatch:
