@@ -308,7 +308,15 @@ Regole di contenuto:
   massimo {MAX_CARATTERI_NOTIZIA} caratteri visibili. Se non ci sta, elimina
   dettagli secondari senza cambiare il significato; non troncare frasi.
 - Non convertire o normalizzare le cifre se ciò può cambiarne il significato.
-  Puoi abbreviare soltanto "milioni di euro" in "M€".
+- Formatta gli importi in milioni di euro in modo compatto:
+  "10 milioni di euro" -> "10M€"; "100 milioni di euro" -> "100M€";
+  "tra 40 e 50 milioni di euro" -> "40-50M€";
+  "circa 50 milioni di euro" -> "circa 50M€".
+- Conserva sempre parole come "circa", "quasi", "oltre" e "almeno".
+  Crea un intervallo soltanto se entrambi gli estremi sono scritti nel PDF:
+  non trasformare mai "circa 50 milioni" in un intervallo inventato.
+- Usa M€ esclusivamente per importi in euro, non per altri valori espressi
+  in milioni.
 - Per la formattazione usa soltanto: <b>nome persona</b>,
   <t>nome squadra</t>, <c>competizione</c>. Non usare asterischi.
 - Il campo "riscontro" deve contenere un breve passaggio realmente leggibile
@@ -347,6 +355,9 @@ Per ciascun candidato:
   articolo;
 - mantieni una sola notizia per elemento e massimo
   {MAX_CARATTERI_NOTIZIA} caratteri visibili, senza troncare;
+- formatta "10 milioni di euro" come "10M€", un intervallo esplicito come
+  "40-50M€" e "circa 50 milioni di euro" come "circa 50M€"; non inventare
+  intervalli e non perdere parole come "circa", "quasi", "oltre" o "almeno";
 - usa esclusivamente i tag <b>, <t> e <c> previsti e nessun tag fonte nel
   testo;
 - restituisci un riscontro breve e fedele e la pagina corretta.
@@ -381,7 +392,10 @@ Riscrivi ciascun candidato rispettando tassativamente queste priorità:
 6. non introdurre informazioni assenti dal candidato e dal suo riscontro;
 7. produci una frase completa e autosufficiente: non troncare mai;
 8. resta entro {MAX_CARATTERI_NOTIZIA} caratteri visibili, esclusi i tag;
-9. conserva soltanto i tag <b>, <t> e <c> già previsti.
+9. conserva soltanto i tag <b>, <t> e <c> già previsti;
+10. usa il formato compatto 10M€, 100M€ e 40-50M€ per gli importi in
+    milioni di euro; conserva "circa" in forme come "circa 50M€" e non
+    trasformarlo in un intervallo.
 
 Restituisci esattamente un risultato per ciascun id ricevuto. Non eliminare,
 unire o dividere candidati. Restituisci soltanto id e nuovo testo: fonte,
@@ -401,6 +415,62 @@ def _tag_bilanciati(testo):
     return True
 
 
+def _normalizza_importi_euro(testo):
+    """
+    Compatta soltanto importi esplicitamente indicati in milioni di euro.
+
+    Non deduce la valuta dal contesto e conserva qualificatori come "circa".
+    Gli intervalli vengono creati soltanto quando nel testo sono presenti
+    entrambi gli estremi.
+    """
+    numero = r"\d+(?:[.,]\d+)?"
+    valuta = r"(?:milion(?:e|i)|mln)\s*(?:di\s+|d['’]\s*)?(?:euro|€)"
+
+    # "tra/fra i 40 e i 50 milioni di euro" -> "40-50M€"
+    testo = re.sub(
+        rf"\b(?:tra|fra)\s+(?:i\s+)?({numero})\s+e\s+(?:i\s+)?"
+        rf"({numero})\s+{valuta}(?!\w)",
+        lambda m: f"{m.group(1)}-{m.group(2)}M€",
+        testo,
+        flags=re.IGNORECASE,
+    )
+
+    # "da/dai 40 a/ai 50 milioni di euro" -> "40-50M€"
+    testo = re.sub(
+        rf"\bda(?:i)?\s+({numero})\s+a(?:i)?\s+({numero})\s+{valuta}(?!\w)",
+        lambda m: f"{m.group(1)}-{m.group(2)}M€",
+        testo,
+        flags=re.IGNORECASE,
+    )
+
+    # "40-50 milioni di euro" -> "40-50M€"
+    testo = re.sub(
+        rf"\b({numero})\s*[-–—]\s*({numero})\s+{valuta}(?!\w)",
+        lambda m: f"{m.group(1)}-{m.group(2)}M€",
+        testo,
+        flags=re.IGNORECASE,
+    )
+
+    # Conserva l'eventuale approssimazione: "circa 50 milioni" non diventa
+    # mai un intervallo deciso dal programma.
+    testo = re.sub(
+        rf"\b((?:circa|quasi|oltre|almeno|meno\s+di|più\s+di)\s+)?"
+        rf"({numero})\s+{valuta}(?!\w)",
+        lambda m: f"{m.group(1) or ''}{m.group(2)}M€",
+        testo,
+        flags=re.IGNORECASE,
+    )
+
+    # "un milione di euro" -> "1M€"
+    testo = re.sub(
+        rf"\bun\s+{valuta}(?!\w)",
+        "1M€",
+        testo,
+        flags=re.IGNORECASE,
+    )
+    return testo
+
+
 def _sanitizza_markup(testo):
     """
     Conserva soltanto i tag interni previsti ed esegue l'escape di tutto il
@@ -415,6 +485,7 @@ def _sanitizza_markup(testo):
         testo,
         flags=re.IGNORECASE,
     )
+    testo = _normalizza_importi_euro(testo)
     testo = " ".join(testo.split()).strip()
 
     if not _tag_bilanciati(testo):
