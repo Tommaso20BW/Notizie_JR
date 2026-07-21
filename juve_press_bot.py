@@ -5,8 +5,10 @@ Controlla le notizie Juventus pubblicate OGGI su:
 - Tuttosport
 - Corriere dello Sport
 - La Gazzetta dello Sport
+- Sky Sport Calciomercato (solo aggiornamenti con "Juve" o "Juventus")
+- Juventus.com
 
-Ogni URL viene inviato su Telegram una sola volta. Lo stato è salvato nel file
+Ogni notizia viene inviata su Telegram una sola volta. Lo stato è salvato nel file
 .seen_juve_press_news.json accanto allo script.
 """
 
@@ -52,8 +54,33 @@ GAZZETTA_PAGE_URL = (
 GAZZETTA_API_URL = (
     "https://appservice.gazzetta.it/gaz/app/api/mygazzetta/search"
 )
+SKY_URL_TEMPLATE = (
+    "https://sport.sky.it/calciomercato/{year}/{month:02d}/{day:02d}/"
+    "calciomercato-news-trattative-oggi-{day}-{month_name}"
+)
+JUVENTUS_NEWS_URL = "https://www.juventus.com/it/news/"
+JUVENTUS_FEED_TEMPLATE = (
+    "https://www.juventus.com/it/news/_libraries/"
+    "{date_value}/{date_value}/{page}/_news-list"
+)
+
+SKY_MONTH_NAMES = {
+    1: "gennaio",
+    2: "febbraio",
+    3: "marzo",
+    4: "aprile",
+    5: "maggio",
+    6: "giugno",
+    7: "luglio",
+    8: "agosto",
+    9: "settembre",
+    10: "ottobre",
+    11: "novembre",
+    12: "dicembre",
+}
 
 URL_DATE_RE = re.compile(r"/(\d{4})/(\d{2})/(\d{2})(?:-|/)")
+JUVE_KEYWORD_RE = re.compile(r"\b(?:juventus|juve)\b", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -63,6 +90,12 @@ class Article:
     url: str
     published: datetime
     summary: str = ""
+    state_key: str = ""
+
+    @property
+    def notification_key(self) -> str:
+        """Chiave usata per non inviare due volte la stessa notizia."""
+        return self.state_key or self.url
 
 
 def normalize_url(url: str) -> str:
@@ -260,6 +293,157 @@ def scrape_gazzetta(
     return articles
 
 
+def sky_url_for_date(today: date) -> str:
+    return SKY_URL_TEMPLATE.format(
+        year=today.year,
+        month=today.month,
+        day=today.day,
+        month_name=SKY_MONTH_NAMES[today.month],
+    )
+
+
+def scrape_sky_calciomercato(
+    session: requests.Session,
+    today: date,
+) -> list[Article]:
+    page_url = sky_url_for_date(today)
+    response = session.get(page_url, timeout=30)
+    response.raise_for_status()
+    soup = BeautifulSoup(response.text, "html.parser")
+
+    articles: list[Article] = []
+    keys_done: set[str] = set()
+    for post in soup.select("div.lvbg-post"):
+        title_tag = post.select_one("h2.lvbg-post__title-v2")
+        time_tag = post.select_one(
+            "time.lvbg-post__timestamp-time[datetime]"
+        )
+        if not title_tag or not time_tag:
+            continue
+
+        title = title_tag.get_text(" ", strip=True)
+        summary_tag = post.select_one(".lvbg-post__body")
+        summary = (
+            summary_tag.get_text(" ", strip=True)
+            if summary_tag
+            else ""
+        )
+        if not JUVE_KEYWORD_RE.search(f"{title} {summary}"):
+            continue
+
+        try:
+            published = parse_iso_datetime(time_tag["datetime"])
+        except (KeyError, ValueError):
+            continue
+        if not is_today(published, today):
+            continue
+
+        # Tutti gli aggiornamenti Sky condividono lo stesso URL. La chiave
+        # separata impedisce che il primo blocco faccia scartare tutti gli altri.
+        state_key = (
+            f"sky-live:{published.isoformat()}:{title.casefold()}"
+        )
+        if state_key in keys_done:
+            continue
+
+        keys_done.add(state_key)
+        articles.append(
+            Article(
+                source="Sky Sport - Calciomercato",
+                title=title,
+                url=normalize_url(page_url),
+                published=published,
+                summary=summary,
+                state_key=state_key,
+            )
+        )
+
+    return articles
+
+
+def juventus_feed_url(today: date, page: int = 1) -> str:
+    return JUVENTUS_FEED_TEMPLATE.format(
+        date_value=today.isoformat(),
+        page=page,
+    )
+
+
+def scrape_juventus_official(
+    session: requests.Session,
+    today: date,
+) -> list[Article]:
+    articles: list[Article] = []
+    urls_done: set[str] = set()
+    pages_done: set[str] = set()
+    page_url: str | None = juventus_feed_url(today)
+
+    # Il feed ufficiale è già filtrato per la data richiesta. Seguiamo
+    # comunque l'eventuale paginazione, così non perdiamo giornate molto ricche.
+    for _ in range(10):
+        if not page_url or page_url in pages_done:
+            break
+        pages_done.add(page_url)
+
+        response = session.get(page_url, timeout=30)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, "html.parser")
+
+        for content in soup.select(
+            ".grid-item-content[data-dateutc]"
+        ):
+            link = content.find_parent("a", href=True)
+            title_tag = content.select_one(".item-title")
+            raw_date = content.get("data-dateutc")
+            if not link or not title_tag or not raw_date:
+                continue
+
+            try:
+                published = parse_iso_datetime(raw_date)
+            except ValueError:
+                continue
+            if not is_today(published, today):
+                continue
+
+            url = normalize_url(urljoin(JUVENTUS_NEWS_URL, link["href"]))
+            if urlsplit(url).netloc.lower() != "www.juventus.com":
+                continue
+            if url in urls_done:
+                continue
+
+            title = title_tag.get_text(" ", strip=True)
+            if not title:
+                continue
+
+            urls_done.add(url)
+            articles.append(
+                Article(
+                    source="Juventus.com",
+                    title=title,
+                    url=url,
+                    published=published,
+                )
+            )
+
+        next_link = soup.select_one("[data-page-url]")
+        next_path = (
+            next_link.get("data-page-url")
+            if next_link
+            else None
+        )
+        next_url = (
+            normalize_url(urljoin(JUVENTUS_NEWS_URL, next_path))
+            if next_path
+            else None
+        )
+        if next_url and urlsplit(next_url).netloc.lower() != (
+            "www.juventus.com"
+        ):
+            next_url = None
+        page_url = next_url
+
+    return articles
+
+
 def load_seen() -> list[str]:
     if not STATE_FILE.exists():
         return []
@@ -355,8 +539,10 @@ def collect_today_articles(
         ("Tuttosport", scrape_tuttosport),
         ("Corriere dello Sport", scrape_corriere),
         ("La Gazzetta dello Sport", scrape_gazzetta),
+        ("Sky Sport - Calciomercato", scrape_sky_calciomercato),
+        ("Juventus.com", scrape_juventus_official),
     )
-    articles_by_url: dict[str, Article] = {}
+    articles_by_key: dict[str, Article] = {}
     errors: list[str] = []
 
     for source, scraper in scrapers:
@@ -369,9 +555,12 @@ def collect_today_articles(
 
         print(f"[{source}] notizie di oggi trovate: {len(source_articles)}")
         for article in source_articles:
-            articles_by_url.setdefault(article.url, article)
+            articles_by_key.setdefault(article.notification_key, article)
 
-    return list(articles_by_url.values()), errors
+    if len(errors) == len(scrapers):
+        raise RuntimeError("Nessuna fonte è stata recuperata correttamente.")
+
+    return list(articles_by_key.values()), errors
 
 
 def run(dry_run: bool = False) -> None:
@@ -379,9 +568,7 @@ def run(dry_run: bool = False) -> None:
     session = requests.Session()
     session.headers.update(HEADERS)
 
-    articles, errors = collect_today_articles(session, today)
-    if len(errors) == 3:
-        raise RuntimeError("Nessuna fonte è stata recuperata correttamente.")
+    articles, _ = collect_today_articles(session, today)
 
     # I siti mostrano prima le notizie più recenti. Telegram le riceve invece
     # dalla più vecchia alla più nuova, per mantenere l'ordine cronologico.
@@ -412,7 +599,7 @@ def run(dry_run: bool = False) -> None:
         "",
     ).lower() in {"1", "true", "yes"}
     if baseline_if_missing and not STATE_FILE.exists():
-        seen_list = [article.url for article in articles]
+        seen_list = [article.notification_key for article in articles]
         save_seen(seen_list)
         print(
             "[STATO] cache iniziale assente: "
@@ -420,7 +607,11 @@ def run(dry_run: bool = False) -> None:
         )
         return
 
-    pending = [article for article in articles if article.url not in seen]
+    pending = [
+        article
+        for article in articles
+        if article.notification_key not in seen
+    ]
     if not pending:
         print("[NEWS] nessuna nuova notizia di oggi.")
         return
@@ -429,8 +620,8 @@ def run(dry_run: bool = False) -> None:
     for article in pending:
         telegram.send_article(article)
         print(f"[NEWS] notificato da {article.source}: {article.title}")
-        seen.add(article.url)
-        seen_list.append(article.url)
+        seen.add(article.notification_key)
+        seen_list.append(article.notification_key)
         save_seen(seen_list)
         time.sleep(0.8)
 
