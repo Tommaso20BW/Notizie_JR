@@ -81,6 +81,10 @@ SKY_MONTH_NAMES = {
 
 URL_DATE_RE = re.compile(r"/(\d{4})/(\d{2})/(\d{2})(?:-|/)")
 JUVE_KEYWORD_RE = re.compile(r"\b(?:juventus|juve)\b", re.IGNORECASE)
+SKY_RECAP_TITLE_RE = re.compile(
+    r"^calciomercato,.*\bnews\b.*\boggi\b",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -322,11 +326,21 @@ def scrape_sky_calciomercato(
             continue
 
         title = title_tag.get_text(" ", strip=True)
+        if SKY_RECAP_TITLE_RE.search(title):
+            continue
+
         summary_tag = post.select_one(".lvbg-post__body")
-        summary = (
-            summary_tag.get_text(" ", strip=True)
+        # Considera solo i paragrafi del singolo aggiornamento. Usare tutto
+        # il contenitore includeva anche i TAG globali della pagina, dove
+        # "juventus" e "juve" compaiono sempre, generando falsi positivi.
+        paragraphs = (
+            summary_tag.select("p")
             if summary_tag
-            else ""
+            else []
+        )
+        summary = " ".join(
+            paragraph.get_text(" ", strip=True)
+            for paragraph in paragraphs
         )
         if not JUVE_KEYWORD_RE.search(f"{title} {summary}"):
             continue
