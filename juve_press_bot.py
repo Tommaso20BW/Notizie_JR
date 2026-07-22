@@ -22,6 +22,7 @@ import os
 import re
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from email.utils import parsedate_to_datetime
@@ -121,8 +122,25 @@ X_ACCOUNTS = (
     {"handle": "_Morik92_", "filter_juventus": False, "include_reposts": True},
     {"handle": "ilbianconerocom", "filter_juventus": False, "include_reposts": True},
 )
-NITTER_RSS_TEMPLATE = "https://nitter.net/{handle}/rss"
+X_RSS_MIRROR_TEMPLATES = (
+    "https://nitter.net/{handle}/rss",
+    "https://xcancel.com/{handle}/rss",
+)
+X_RSS_TIMEOUT_SECONDS = 12
 X_STATUS_PATH_RE = re.compile(r"^/([A-Za-z0-9_]+)/status/(\d+)$")
+
+TELEGRAM_SOURCE_EMOJIS = (
+    ("Sky Sport - Calciomercato", "6033058586945392520", "📰"),
+    ("La Gazzetta dello Sport", "6032862491623559282", "📰"),
+    ("Corriere dello Sport", "6030691308346019878", "📰"),
+    ("Tuttosport", "6032834612990841221", "📰"),
+    ("X - @", "5796663209016431644", "📲"),
+    ("YouTube - ", "6032683730789732131", "🖥"),
+    ("Gianluca Di Marzio", "5785253271912324677", "📲"),
+    ("Alfredo Pedullà", "5785322627044220734", "📲"),
+    ("Borsa Italiana", "5373001317042101552", "📈"),
+    ("Juventus.com", "6028591382870888482", "⚪️"),
+)
 
 SKY_MONTH_NAMES = {
     1: "gennaio",
@@ -902,77 +920,116 @@ def scrape_youtube_channels(
     return articles
 
 
+def _download_x_feed(
+    feed_url: str,
+    headers: dict[str, str],
+) -> bytes | None:
+    """Scarica un mirror RSS senza interrompere il controllo degli altri."""
+    try:
+        response = requests.get(
+            feed_url,
+            headers=headers,
+            timeout=X_RSS_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+    except requests.RequestException:
+        return None
+    return response.content
+
+
 def scrape_x_profiles(
     session: requests.Session,
     requested_dates: set[date],
 ) -> list[Article]:
-    """Recupera i post X odierni dagli account configurati."""
+    """Recupera i post X odierni da più mirror RSS indipendenti."""
     articles: list[Article] = []
     keys_done: set[str] = set()
+    feed_sources = [
+        (
+            account,
+            mirror_template.format(handle=account["handle"]),
+        )
+        for account in X_ACCOUNTS
+        for mirror_template in X_RSS_MIRROR_TEMPLATES
+    ]
+    headers = dict(session.headers)
 
-    for account in X_ACCOUNTS:
-        handle = account["handle"]
-        feed_url = NITTER_RSS_TEMPLATE.format(handle=handle)
-        response = session.get(feed_url, timeout=30)
-        response.raise_for_status()
-        root = ET.fromstring(response.content)
-        channel = root.find("channel")
-        if channel is None:
-            continue
-
-        for item in channel.findall("item"):
-            title = item.findtext("title", default="").strip()
-            raw_published = item.findtext("pubDate", default="")
-            tweet_id = item.findtext("guid", default="").strip()
-            raw_link = item.findtext("link", default="").strip()
-            if not title or not raw_published or not tweet_id:
-                continue
-
-            # Per gli account indicati dall'utente si mantengono anche i repost.
-            if (
-                not account["include_reposts"]
-                and title.startswith("RT by @")
-            ):
-                continue
-            if (
-                account["filter_juventus"]
-                and not is_juventus_title(title)
-            ):
+    with ThreadPoolExecutor(
+        max_workers=min(6, len(feed_sources)),
+    ) as executor:
+        future_sources = {
+            executor.submit(_download_x_feed, feed_url, headers): account
+            for account, feed_url in feed_sources
+        }
+        for future in as_completed(future_sources):
+            account = future_sources[future]
+            content = future.result()
+            if content is None:
                 continue
 
             try:
-                published = parsedate_to_datetime(raw_published)
-            except (TypeError, ValueError):
+                root = ET.fromstring(content)
+            except ET.ParseError:
                 continue
-            if published.tzinfo is None:
-                published = published.replace(tzinfo=ROME)
-            published = published.astimezone(ROME)
-            if not is_requested_date(published, requested_dates):
+            channel = root.find("channel")
+            if channel is None:
                 continue
 
-            link_match = X_STATUS_PATH_RE.match(urlsplit(raw_link).path)
-            if link_match:
-                tweet_url = (
-                    f"https://x.com/{link_match.group(1)}/status/"
-                    f"{link_match.group(2)}"
+            handle = account["handle"]
+            for item in channel.findall("item"):
+                title = item.findtext("title", default="").strip()
+                raw_published = item.findtext("pubDate", default="")
+                tweet_id = item.findtext("guid", default="").strip()
+                raw_link = item.findtext("link", default="").strip()
+                if not title or not raw_published or not tweet_id:
+                    continue
+
+                # Per gli account indicati dall'utente si mantengono anche i repost.
+                if (
+                    not account["include_reposts"]
+                    and title.startswith("RT by @")
+                ):
+                    continue
+                if (
+                    account["filter_juventus"]
+                    and not is_juventus_title(title)
+                ):
+                    continue
+
+                try:
+                    published = parsedate_to_datetime(raw_published)
+                except (TypeError, ValueError):
+                    continue
+                if published.tzinfo is None:
+                    published = published.replace(tzinfo=ROME)
+                published = published.astimezone(ROME)
+                if not is_requested_date(published, requested_dates):
+                    continue
+
+                link_match = X_STATUS_PATH_RE.match(urlsplit(raw_link).path)
+                if link_match:
+                    tweet_url = (
+                        f"https://x.com/{link_match.group(1)}/status/"
+                        f"{link_match.group(2)}"
+                    )
+                else:
+                    tweet_url = f"https://x.com/{handle}/status/{tweet_id}"
+
+                # Lo stesso tweet può arrivare da più mirror: una sola notifica.
+                state_key = f"x:{handle}:{tweet_id}"
+                if state_key in keys_done:
+                    continue
+
+                keys_done.add(state_key)
+                articles.append(
+                    Article(
+                        source=f"X - @{handle}",
+                        title=title,
+                        url=tweet_url,
+                        published=published,
+                        state_key=state_key,
+                    )
                 )
-            else:
-                tweet_url = f"https://x.com/{handle}/status/{tweet_id}"
-
-            state_key = f"x:{handle}:{tweet_id}"
-            if state_key in keys_done:
-                continue
-
-            keys_done.add(state_key)
-            articles.append(
-                Article(
-                    source=f"X - @{handle}",
-                    title=title,
-                    url=tweet_url,
-                    published=published,
-                    state_key=state_key,
-                )
-            )
 
     return articles
 
@@ -1007,6 +1064,17 @@ def save_seen(seen: Iterable[str]) -> None:
     os.replace(temporary, STATE_FILE)
 
 
+def telegram_source_emoji(source: str) -> str:
+    """Restituisce l'emoji premium associata alla fonte Telegram."""
+    for source_prefix, emoji_id, fallback_emoji in TELEGRAM_SOURCE_EMOJIS:
+        if source.startswith(source_prefix):
+            return (
+                f'<tg-emoji emoji-id="{emoji_id}">'
+                f"{fallback_emoji}</tg-emoji>"
+            )
+    return "📰"
+
+
 class TelegramClient:
     def __init__(self, token: str, chat_id: str):
         self.token = token
@@ -1017,8 +1085,9 @@ class TelegramClient:
         if article.summary:
             summary = f"\n\n{escape(article.summary)}"
 
+        source_emoji = telegram_source_emoji(article.source)
         text = (
-            f"📰 <b>{escape(article.source)}</b>\n\n"
+            f"{source_emoji} <b>{escape(article.source)}</b>\n\n"
             f"<b>{escape(article.title)}</b>"
             f"{summary}\n\n"
             f'<a href="{escape(article.url, quote=True)}">'
