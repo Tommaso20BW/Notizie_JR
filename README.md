@@ -1,143 +1,167 @@
-<div align="center">
-
 # 📰 Notizie JR
 
-**Bot Telegram che estrae e pubblica in automatico le notizie sulla Juventus dai quotidiani sportivi.**
+Repository con **due bot Telegram distinti** per le notizie sulla Juventus:
 
-Legge i PDF dei giornali, isola le notizie bianconere con l’AI e le pubblica su Telegram — senza server, senza database.
+1. `bot_giornali.py` legge i PDF dei quotidiani da Dropbox e usa Gemini per estrarre notizie verificate;
+2. `juve_press_bot.py` monitora otto fonti web e segnala soltanto gli articoli pubblicati oggi e non ancora notificati.
 
-`Python 3.10` · `Google Gemini` · `Dropbox API` · `Telegram Bot API` · `GitHub Actions`
+I due flussi hanno workflow, dipendenze e stato separati.
 
-</div>
+## Bot PDF: quotidiani sportivi
 
------
+### Flusso
 
-## Indice
-
-- [Cos’è](#cosè)
-- [Come funziona](#come-funziona)
-- [Funzionalità](#funzionalità)
-- [Formato del messaggio](#formato-del-messaggio)
-- [Struttura del repository](#struttura-del-repository)
-- [Configurazione](#configurazione)
-- [Avvio](#avvio)
-- [Stack tecnico](#stack-tecnico)
-- [Modello AI](#modello-ai)
-
------
-
-## Cos’è
-
-Notizie JR legge i PDF dei quotidiani sportivi italiani (Tuttosport, Gazzetta dello Sport, Corriere dello Sport) caricati su **Dropbox** e li invia direttamente a **Google Gemini**, che li analizza per isolare solo le notizie riguardanti la Juventus e le pubblica sul canale **@Juventus_Reborn** con formattazione e fonte corretta. Dopo l’elaborazione, i PDF vengono cancellati automaticamente da Dropbox.
-
------
-
-## Come funziona
-
-```
-                ┌──────────────────────┐
-                │   GitHub Actions      │  ← avvio manuale (workflow_dispatch)
-                │   run_giornali.yml    │
-                └──────────┬───────────┘
-                           │
-                           ▼
-        ┌──────────────────────────────────────┐
-        │            bot_giornali.py            │
-        │  1. scarica i PDF da Dropbox          │
-        │  2. invia ogni PDF a Gemini           │
-        │  3. pubblica solo le notizie Juve     │
-        │  4. cancella i PDF da Dropbox         │
-        └───┬────────────┬───────────┬──────────┘
-            │            │           │
-            ▼            ▼           ▼
-        ┌─────────┐  ┌────────┐  ┌──────────┐
-        │ Dropbox │  │ Gemini │  │ Telegram │
-        │  (PDF)  │  │  (AI)  │  │ (output) │
-        └─────────┘  └────────┘  └──────────┘
+```text
+Dropbox /NotizieJR
+        │
+        ▼
+download dei PDF
+        │
+        ▼
+Gemini: estrazione JSON + verifica documentale
+        │
+        ▼
+controlli deterministici e limite caratteri
+        │
+        ▼
+Telegram (due versioni per notizia)
+        │
+        ▼
+cancellazione da Dropbox solo se tutto è riuscito
 ```
 
-1. **Ricezione** — i PDF dei giornali vengono caricati nella cartella Dropbox `NotizieJR`; il bot li scarica automaticamente, senza limiti di dimensione.
-1. **Lettura AI** — ogni PDF viene inviato direttamente a Gemini, che lo legge da solo. Funziona anche con i PDF scansionati (foto delle pagine), perché Gemini è multimodale e “vede” anche le immagini, non solo il testo.
-1. **Analisi** — `gemini-3.5-flash` identifica e sintetizza solo le notizie relative alla Juventus, assegnando a ciascuna la fonte corretta.
-1. **Pulizia** — a elaborazione conclusa i PDF vengono cancellati da Dropbox, così la cartella è sempre pronta per il giorno dopo.
+`bot_giornali.py`:
 
------
+- legge tutti i PDF presenti nella cartella Dropbox `/NotizieJR`;
+- ricava la testata dal nome del file quando contiene Tuttosport, Gazzetta o Corriere;
+- carica ogni PDF su Gemini e richiede un output JSON strutturato;
+- usa prima `gemini-3.5-flash` e passa a `gemini-2.5-flash` soltanto per errori `503`/servizio sovraccarico;
+- esegue di default una seconda lettura di verifica sullo stesso documento;
+- richiede per ogni notizia fonte, pagina e un breve riscontro testuale;
+- mantiene ogni testo entro 280 caratteri visibili senza troncare frasi;
+- normalizza gli importi in milioni di euro (`10M€`, `40-50M€`) senza inventare intervalli;
+- elimina duplicati e markup non consentito;
+- cancella il file temporaneo da Gemini e dal runner.
 
-## Funzionalità
+Per ogni notizia approvata invia:
 
-- **Ricezione PDF da Dropbox** — i PDF dei giornali vengono caricati in una cartella Dropbox dedicata (`NotizieJR`); il bot li scarica automaticamente senza limiti di dimensione.
-- **Cancellazione automatica** — dopo l’elaborazione, i PDF vengono cancellati da Dropbox; la cartella è sempre pulita per il giorno successivo.
-- **Lettura PDF con AI** — il PDF viene inviato direttamente a Google Gemini, che lo legge da solo. Funziona anche con i PDF scansionati, perché Gemini è multimodale e “vede” anche le immagini.
-- **Analisi AI con Gemini** — `gemini-3.5-flash` identifica e sintetizza solo le notizie relative alla Juventus, assegnando la fonte corretta a ogni notizia.
-- **Formattazione HTML** — nomi di giocatori, allenatori, dirigenti e squadre vengono evidenziati in grassetto `<b>`; ogni notizia è limitata a 280 caratteri.
-- **Tag fonte automatico** — ogni notizia riporta un’emoji e il nome del quotidiano di provenienza (`TuttoSport`, `Gazzetta dello Sport`, `Corriere dello Sport`).
-- **Pausa tra giornali** — attesa di 20 secondi tra l’elaborazione di un quotidiano e il successivo per non sovraccaricare l’API Gemini.
+1. una versione editoriale con persone/squadre evidenziate, fonte e firma `@Juventus_Reborn`;
+2. una versione con hashtag e handle della testata.
 
------
+Tra due giornali attende 20 secondi. Il PDF originale viene cancellato da Dropbox solo se l’elaborazione è conclusa e tutti gli invii Telegram sono riusciti; anche un PDF senza notizie Juventus viene considerato elaborato correttamente.
 
-## Formato del messaggio
+### Workflow e configurazione
 
+Il workflow [`.github/workflows/run_giornali.yml`](.github/workflows/run_giornali.yml) è solo manuale, usa Python 3.10 ed esegue `bot_giornali.py`.
+
+Configura questi secret:
+
+| Secret | Uso |
+|---|---|
+| `TELEGRAM_TOKEN` | Token del bot Telegram. |
+| `CHAT_ID` | Chat o canale di destinazione. |
+| `GEMINI_API_KEY` | Accesso ai modelli Gemini. |
+| `DROPBOX_APP_KEY` | App key Dropbox. |
+| `DROPBOX_APP_SECRET` | App secret Dropbox. |
+| `DROPBOX_REFRESH_TOKEN` | Refresh token OAuth2 Dropbox. |
+
+Impostazioni opzionali lette dal codice:
+
+| Variabile | Default | Effetto |
+|---|---:|---|
+| `MAX_CARATTERI_NOTIZIA` | `280` | Limite visibile per ogni notizia. |
+| `USA_DOPPIA_VERIFICA` | `true` | Abilita la seconda verifica Gemini. |
+
+Il workflow corrente non passa queste due variabili opzionali: per cambiarle in Actions occorre aggiungerle al blocco `env`.
+
+## Bot web: Juventus Press News
+
+### Fonti monitorate
+
+`juve_press_bot.py` raccoglie le notizie pubblicate nella data italiana corrente da:
+
+- Tuttosport;
+- Corriere dello Sport;
+- La Gazzetta dello Sport;
+- Sky Sport – Calciomercato;
+- Juventus.com;
+- Gianluca Di Marzio;
+- Alfredo Pedullà;
+- Borsa Italiana.
+
+Per Sky, Di Marzio, Pedullà e Borsa Italiana vengono applicati filtri espliciti su `Juve`/`Juventus` (con esclusione di `Juve Stabia`). La pagina ufficiale Juventus è già specifica del club; Tuttosport, Corriere e Gazzetta usano sezioni o feed dedicati.
+
+Gli articoli vengono normalizzati, deduplicati e ordinati dal più vecchio al più recente. Il messaggio Telegram contiene fonte, titolo, eventuale sommario e link all’articolo. In caso di rate limit `429`, l’invio rispetta `retry_after` e prova fino a tre volte.
+
+### Stato anti-duplicati
+
+Gli identificativi notificati sono salvati in `.seen_juve_press_news.json` (massimo 2.000 elementi).
+
+In GitHub Actions lo stato viene conservato con `actions/cache`. Il workflow imposta `BASELINE_IF_NO_STATE=true`: se non esiste ancora una cache, registra le notizie correnti senza inviarle, evitando una raffica al primo avvio. Ogni articolo viene salvato nello stato subito dopo l’invio riuscito.
+
+### Workflow e configurazione
+
+Il workflow [`.github/workflows/juve-press-news.yml`](.github/workflows/juve-press-news.yml):
+
+- è avviabile solo manualmente;
+- usa Python 3.12;
+- ripristina e salva lo stato con Actions Cache;
+- installa `requirements-juve-press.txt`;
+- esegue `python juve_press_bot.py`.
+
+Richiede soltanto:
+
+| Secret | Uso |
+|---|---|
+| `TELEGRAM_TOKEN` | Token del bot Telegram. |
+| `CHAT_ID` | Chat o canale di destinazione. |
+
+Il bot supporta anche una modalità di sola verifica:
+
+```bash
+python juve_press_bot.py --dry-run
 ```
-[Emoji notizia] Testo della notizia con Giocatore in grassetto...
-📰 TuttoSport
-👉 @Juventus_Reborn
+
+La modalità `--dry-run` recupera e stampa le notizie senza leggere lo stato e senza usare Telegram.
+
+## Avvio locale
+
+### PDF
+
+```bash
+python -m pip install -r requirements.txt
+python bot_giornali.py
 ```
 
------
+### Web
 
-## Struttura del repository
-
+```bash
+python -m pip install -r requirements-juve-press.txt
+python juve_press_bot.py --dry-run
 ```
+
+Per gli invii reali imposta le variabili d’ambiente richieste dal relativo bot.
+
+## Struttura
+
+```text
 Notizie_JR/
-├── bot_giornali.py           # Script principale
-├── requirements.txt          # Dipendenze Python
+├── bot_giornali.py
+├── juve_press_bot.py
+├── requirements.txt
+├── requirements-juve-press.txt
 └── .github/workflows/
-    └── run_giornali.yml      # Workflow GitHub Actions
+    ├── run_giornali.yml
+    └── juve-press-news.yml
 ```
 
------
+## Limiti noti
 
-## Configurazione
+- L’estrazione PDF dipende dalla leggibilità del documento e dalla risposta di Gemini; i controlli riducono, ma non eliminano, il rischio di errori.
+- I selettori HTML e gli endpoint non documentati delle fonti web possono cambiare.
+- Entrambi i workflow sono manuali: il repository non contiene uno `schedule`.
+- Lo stato del bot web vive nella cache di GitHub Actions, non in un database o in un file versionato.
 
-In **Settings → Secrets and variables → Actions** aggiungi:
+---
 
-|Secret                 |Descrizione                                       |
-|-----------------------|--------------------------------------------------|
-|`TELEGRAM_TOKEN`       |Token del bot Telegram.                           |
-|`CHAT_ID`              |Chat ID del canale di destinazione per le notizie.|
-|`GEMINI_API_KEY`       |Chiave API Google Gemini.                         |
-|`DROPBOX_APP_KEY`      |App key dell’app Dropbox.                         |
-|`DROPBOX_APP_SECRET`   |App secret dell’app Dropbox.                      |
-|`DROPBOX_REFRESH_TOKEN`|Refresh token OAuth2 Dropbox (non scade).         |
-
------
-
-## Avvio
-
-1. Fai il **fork** del repository.
-1. Configura i secret elencati sopra.
-1. Crea una cartella chiamata `NotizieJR` su Dropbox e condividila con il service account.
-1. Carica i PDF dei quotidiani nella cartella `NotizieJR` su Dropbox.
-1. Avvia il workflow da `Actions → Avvio Estrazione Notizie - Giornali → Run workflow`.
-
-> Carica i PDF su Dropbox **prima** di avviare il workflow. Dopo l’elaborazione verranno cancellati automaticamente.
-
------
-
-## Stack tecnico
-
-`Python 3.10` · `google-genai` · `dropbox` · `requests` · `GitHub Actions`
-
------
-
-## Modello AI
-
-[Google Gemini](https://ai.google.dev/) — modello `gemini-3.5-flash` per la lettura dei PDF e la sintesi delle notizie.
-
------
-
-<div align="center">
-
-*Progetto amatoriale. Non affiliato con la Juventus FC, Telegram, Google, Dropbox o i quotidiani citati.*
-
-</div>
+Progetto amatoriale, non affiliato con Juventus FC, Telegram, Google, Dropbox o le fonti citate.
