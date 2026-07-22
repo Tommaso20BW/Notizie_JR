@@ -30,6 +30,19 @@ import requests
 from bs4 import BeautifulSoup
 
 
+def configure_console_encoding() -> None:
+    """Evita che caratteri tipografici delle fonti blocchino il bot su Windows."""
+    for stream in (sys.stdout, sys.stderr):
+        if stream is None or not hasattr(stream, "reconfigure"):
+            continue
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (OSError, ValueError):
+            pass
+
+
+configure_console_encoding()
+
 ROME = ZoneInfo("Europe/Rome")
 SCRIPT_DIR = Path(__file__).resolve().parent
 STATE_FILE = SCRIPT_DIR / ".seen_juve_press_news.json"
@@ -63,6 +76,17 @@ JUVENTUS_FEED_TEMPLATE = (
     "https://www.juventus.com/it/news/_libraries/"
     "{date_value}/{date_value}/{page}/_news-list"
 )
+GIANLUCA_DI_MARZIO_SEARCH_URL = (
+    "https://www.gianlucadimarzio.com/ricerca/?key=juventus"
+)
+ALFREDO_PEDULLA_JUVENTUS_URLS = (
+    "https://www.alfredopedulla.com/squadre/juventus/",
+    "https://www.alfredopedulla.com/tag/juventus/",
+)
+BORSA_ITALIANA_JUVENTUS_URL = (
+    "https://www.borsaitaliana.it/borsa/azioni/"
+    "elenco-completo-notizie.html?isin=IT0005572778&lang=it"
+)
 
 SKY_MONTH_NAMES = {
     1: "gennaio",
@@ -86,6 +110,47 @@ SKY_RECAP_TITLE_RE = re.compile(
     re.IGNORECASE,
 )
 SKY_EXCLUDED_TITLE_RE = re.compile(r"\bjuve\s+stabia\b", re.IGNORECASE)
+ITALIAN_DATE_RE = re.compile(
+    r"\b(\d{1,2})\s+"
+    r"(gennaio|febbraio|marzo|aprile|maggio|giugno|luglio|"
+    r"agosto|settembre|ottobre|novembre|dicembre)\b",
+    re.IGNORECASE,
+)
+BORSA_DATE_RE = re.compile(
+    r"\b(\d{1,2})\s+"
+    r"(gen|feb|mar|apr|mag|giu|lug|ago|set|ott|nov|dic)\s+"
+    r"(\d{1,2}):(\d{2})\b",
+    re.IGNORECASE,
+)
+
+ITALIAN_MONTHS = {
+    "gennaio": 1,
+    "febbraio": 2,
+    "marzo": 3,
+    "aprile": 4,
+    "maggio": 5,
+    "giugno": 6,
+    "luglio": 7,
+    "agosto": 8,
+    "settembre": 9,
+    "ottobre": 10,
+    "novembre": 11,
+    "dicembre": 12,
+}
+BORSA_MONTHS = {
+    "gen": 1,
+    "feb": 2,
+    "mar": 3,
+    "apr": 4,
+    "mag": 5,
+    "giu": 6,
+    "lug": 7,
+    "ago": 8,
+    "set": 9,
+    "ott": 10,
+    "nov": 11,
+    "dic": 12,
+}
 
 
 @dataclass(frozen=True)
@@ -144,6 +209,35 @@ def date_from_article_url(url: str) -> datetime | None:
 
 def is_today(published: datetime, today: date) -> bool:
     return published.astimezone(ROME).date() == today
+
+
+def date_from_italian_label(value: str, today: date) -> date | None:
+    """Legge date senza anno, come "Mercoledì 22 luglio"."""
+    match = ITALIAN_DATE_RE.search(value)
+    if not match:
+        return None
+
+    try:
+        candidate = date(
+            today.year,
+            ITALIAN_MONTHS[match.group(2).lower()],
+            int(match.group(1)),
+        )
+    except ValueError:
+        return None
+
+    # Una lista recente visualizzata a inizio gennaio può contenere dicembre.
+    if candidate > today:
+        return date(candidate.year - 1, candidate.month, candidate.day)
+    return candidate
+
+
+def is_juventus_title(title: str) -> bool:
+    """Esclude omonimie, come la squadra Juve Stabia."""
+    return bool(
+        JUVE_KEYWORD_RE.search(title)
+        and not SKY_EXCLUDED_TITLE_RE.search(title)
+    )
 
 
 def article_summary(card) -> str:
@@ -329,13 +423,10 @@ def scrape_sky_calciomercato(
         title = title_tag.get_text(" ", strip=True)
         if SKY_RECAP_TITLE_RE.search(title):
             continue
-        if SKY_EXCLUDED_TITLE_RE.search(title):
-            continue
-
         # Il testo della diretta può citare qualunque squadra in modo
         # incidentale: per Sky notifichiamo soltanto aggiornamenti che citano
         # Juve/Juventus direttamente nel titolo.
-        if not JUVE_KEYWORD_RE.search(title):
+        if not is_juventus_title(title):
             continue
 
         summary_tag = post.select_one(".lvbg-post__body")
@@ -473,6 +564,201 @@ def scrape_juventus_official(
     return articles
 
 
+def scrape_gianluca_di_marzio(
+    session: requests.Session,
+    today: date,
+) -> list[Article]:
+    """Recupera dalla ricerca Juventus soltanto il gruppo della data odierna."""
+    response = session.get(GIANLUCA_DI_MARZIO_SEARCH_URL, timeout=30)
+    response.raise_for_status()
+    soup = BeautifulSoup(response.text, "html.parser")
+
+    articles: list[Article] = []
+    urls_done: set[str] = set()
+    for date_label in soup.select(".tcc-border.date"):
+        published_date = date_from_italian_label(
+            date_label.get_text(" ", strip=True),
+            today,
+        )
+        if published_date != today:
+            continue
+
+        news_list = date_label.find_next_sibling(
+            "div",
+            class_="tcc-list-news",
+        )
+        if not news_list:
+            continue
+
+        for item in news_list.find_all("div", recursive=False):
+            link = item.find("a", href=True)
+            if not link:
+                continue
+
+            title = link.get_text(" ", strip=True)
+            if not title or not is_juventus_title(title):
+                continue
+
+            url = normalize_url(
+                urljoin(GIANLUCA_DI_MARZIO_SEARCH_URL, link["href"])
+            )
+            if (
+                urlsplit(url).netloc.lower()
+                != "www.gianlucadimarzio.com"
+            ):
+                continue
+            if url in urls_done:
+                continue
+
+            time_text = item.find(class_="hh")
+            match = (
+                re.search(r"\b(\d{1,2}):(\d{2})\b", time_text.get_text())
+                if time_text
+                else None
+            )
+            hour, minute = (
+                (int(match.group(1)), int(match.group(2)))
+                if match
+                else (0, 0)
+            )
+            published = datetime(
+                today.year,
+                today.month,
+                today.day,
+                hour,
+                minute,
+                tzinfo=ROME,
+            )
+
+            urls_done.add(url)
+            articles.append(
+                Article(
+                    source="Gianluca Di Marzio",
+                    title=title,
+                    url=url,
+                    published=published,
+                )
+            )
+
+    return articles
+
+
+def scrape_alfredo_pedulla(
+    session: requests.Session,
+    today: date,
+) -> list[Article]:
+    articles: list[Article] = []
+    urls_done: set[str] = set()
+    for page_url in ALFREDO_PEDULLA_JUVENTUS_URLS:
+        response = session.get(page_url, timeout=30)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, "html.parser")
+
+        for item in soup.select("li.article-block-item"):
+            link = item.select_one("a.block-title[href]")
+            date_tag = item.select_one(".block-date")
+            if not link or not date_tag:
+                continue
+
+            raw_date = date_tag.get_text(" ", strip=True)
+            try:
+                published = datetime.strptime(
+                    raw_date,
+                    "%d/%m/%Y | %H:%M",
+                ).replace(tzinfo=ROME)
+            except ValueError:
+                continue
+            if not is_today(published, today):
+                continue
+
+            title = link.get_text(" ", strip=True)
+            if not title or not is_juventus_title(title):
+                continue
+
+            url = normalize_url(urljoin(page_url, link["href"]))
+            if urlsplit(url).netloc.lower() != "www.alfredopedulla.com":
+                continue
+            if url in urls_done:
+                continue
+
+            urls_done.add(url)
+            articles.append(
+                Article(
+                    source="Alfredo Pedullà",
+                    title=title,
+                    url=url,
+                    published=published,
+                )
+            )
+
+    return articles
+
+
+def scrape_borsa_italiana(
+    session: requests.Session,
+    today: date,
+) -> list[Article]:
+    response = session.get(BORSA_ITALIANA_JUVENTUS_URL, timeout=30)
+    response.raise_for_status()
+    soup = BeautifulSoup(response.text, "html.parser")
+
+    articles: list[Article] = []
+    urls_done: set[str] = set()
+    for link in soup.select("a.news[href]"):
+        item = link.find_parent("li")
+        date_tag = item.select_one(".m-feed__date") if item else None
+        if not date_tag:
+            continue
+
+        match = BORSA_DATE_RE.search(date_tag.get_text(" ", strip=True))
+        if not match:
+            continue
+        try:
+            published = datetime(
+                today.year,
+                BORSA_MONTHS[match.group(2).lower()],
+                int(match.group(1)),
+                int(match.group(3)),
+                int(match.group(4)),
+                tzinfo=ROME,
+            )
+        except ValueError:
+            continue
+        if not is_today(published, today):
+            continue
+
+        title = link.get_text(" ", strip=True)
+        if not title or not is_juventus_title(title):
+            continue
+
+        url = normalize_url(
+            urljoin(BORSA_ITALIANA_JUVENTUS_URL, link["href"])
+        )
+        if urlsplit(url).netloc.lower() != "www.borsaitaliana.it":
+            continue
+        if url in urls_done:
+            continue
+
+        author = item.select_one(".m-feed__author") if item else None
+        summary = (
+            f"Fonte: {author.get_text(' ', strip=True)}"
+            if author
+            else ""
+        )
+        urls_done.add(url)
+        articles.append(
+            Article(
+                source="Borsa Italiana",
+                title=title,
+                url=url,
+                published=published,
+                summary=summary,
+            )
+        )
+
+    return articles
+
+
 def load_seen() -> list[str]:
     if not STATE_FILE.exists():
         return []
@@ -570,6 +856,9 @@ def collect_today_articles(
         ("La Gazzetta dello Sport", scrape_gazzetta),
         ("Sky Sport - Calciomercato", scrape_sky_calciomercato),
         ("Juventus.com", scrape_juventus_official),
+        ("Gianluca Di Marzio", scrape_gianluca_di_marzio),
+        ("Alfredo Pedullà", scrape_alfredo_pedulla),
+        ("Borsa Italiana", scrape_borsa_italiana),
     )
     articles_by_key: dict[str, Article] = {}
     errors: list[str] = []
