@@ -20,7 +20,7 @@ import re
 import sys
 import time
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from email.utils import parsedate_to_datetime
 from html import escape
 from pathlib import Path
@@ -240,8 +240,16 @@ def date_from_article_url(url: str) -> datetime | None:
         return None
 
 
+def is_requested_date(
+    published: datetime,
+    requested_dates: set[date],
+) -> bool:
+    return published.astimezone(ROME).date() in requested_dates
+
+
 def is_today(published: datetime, today: date) -> bool:
-    return published.astimezone(ROME).date() == today
+    """Compatibilità per le fonti che vengono richieste una data alla volta."""
+    return is_requested_date(published, {today})
 
 
 def date_from_italian_label(value: str, today: date) -> date | None:
@@ -286,7 +294,7 @@ def scrape_html_source(
     source: str,
     page_url: str,
     expected_host: str,
-    today: date,
+    requested_dates: set[date],
 ) -> list[Article]:
     response = session.get(page_url, timeout=30)
     response.raise_for_status()
@@ -318,7 +326,10 @@ def scrape_html_source(
         if published is None:
             published = date_from_article_url(url)
 
-        if published is None or not is_today(published, today):
+        if (
+            published is None
+            or not is_requested_date(published, requested_dates)
+        ):
             continue
         if url in urls_done:
             continue
@@ -343,33 +354,33 @@ def scrape_html_source(
 
 def scrape_tuttosport(
     session: requests.Session,
-    today: date,
+    requested_dates: set[date],
 ) -> list[Article]:
     return scrape_html_source(
         session=session,
         source="Tuttosport",
         page_url=TUTTOSPORT_URL,
         expected_host="www.tuttosport.com",
-        today=today,
+        requested_dates=requested_dates,
     )
 
 
 def scrape_corriere(
     session: requests.Session,
-    today: date,
+    requested_dates: set[date],
 ) -> list[Article]:
     return scrape_html_source(
         session=session,
         source="Corriere dello Sport",
         page_url=CORRIERE_URL,
         expected_host="www.corrieredellosport.it",
-        today=today,
+        requested_dates=requested_dates,
     )
 
 
 def scrape_gazzetta(
     session: requests.Session,
-    today: date,
+    requested_dates: set[date],
 ) -> list[Article]:
     # La pagina Gazzetta carica le notizie da questo feed JSON ufficiale.
     response = session.get(
@@ -397,7 +408,7 @@ def scrape_gazzetta(
             published = parse_iso_datetime(raw_date)
         except ValueError:
             continue
-        if not is_today(published, today):
+        if not is_requested_date(published, requested_dates):
             continue
 
         url = normalize_url(raw_url)
@@ -434,7 +445,7 @@ def sky_url_for_date(today: date) -> str:
     )
 
 
-def scrape_sky_calciomercato(
+def _scrape_sky_calciomercato_for_date(
     session: requests.Session,
     today: date,
 ) -> list[Article]:
@@ -514,6 +525,31 @@ def scrape_sky_calciomercato(
     return articles
 
 
+def scrape_sky_calciomercato(
+    session: requests.Session,
+    requested_dates: set[date],
+) -> list[Article]:
+    articles_by_key: dict[str, Article] = {}
+    for requested_date in sorted(requested_dates):
+        source_articles: list[Article] = []
+        for sky_date in (requested_date, requested_date - timedelta(days=1)):
+            try:
+                source_articles = _scrape_sky_calciomercato_for_date(
+                    session,
+                    sky_date,
+                )
+            except requests.HTTPError as error:
+                response = error.response
+                if response is None or response.status_code != 404:
+                    raise
+                continue
+            break
+
+        for article in source_articles:
+            articles_by_key.setdefault(article.notification_key, article)
+    return list(articles_by_key.values())
+
+
 def juventus_feed_url(today: date, page: int = 1) -> str:
     return JUVENTUS_FEED_TEMPLATE.format(
         date_value=today.isoformat(),
@@ -521,7 +557,7 @@ def juventus_feed_url(today: date, page: int = 1) -> str:
     )
 
 
-def scrape_juventus_official(
+def _scrape_juventus_official_for_date(
     session: requests.Session,
     today: date,
 ) -> list[Article]:
@@ -597,9 +633,23 @@ def scrape_juventus_official(
     return articles
 
 
+def scrape_juventus_official(
+    session: requests.Session,
+    requested_dates: set[date],
+) -> list[Article]:
+    articles_by_key: dict[str, Article] = {}
+    for requested_date in sorted(requested_dates):
+        for article in _scrape_juventus_official_for_date(
+            session,
+            requested_date,
+        ):
+            articles_by_key.setdefault(article.notification_key, article)
+    return list(articles_by_key.values())
+
+
 def scrape_gianluca_di_marzio(
     session: requests.Session,
-    today: date,
+    requested_dates: set[date],
 ) -> list[Article]:
     """Recupera dalla ricerca Juventus soltanto il gruppo della data odierna."""
     response = session.get(GIANLUCA_DI_MARZIO_SEARCH_URL, timeout=30)
@@ -611,9 +661,9 @@ def scrape_gianluca_di_marzio(
     for date_label in soup.select(".tcc-border.date"):
         published_date = date_from_italian_label(
             date_label.get_text(" ", strip=True),
-            today,
+            max(requested_dates),
         )
-        if published_date != today:
+        if published_date not in requested_dates:
             continue
 
         news_list = date_label.find_next_sibling(
@@ -655,9 +705,9 @@ def scrape_gianluca_di_marzio(
                 else (0, 0)
             )
             published = datetime(
-                today.year,
-                today.month,
-                today.day,
+                published_date.year,
+                published_date.month,
+                published_date.day,
                 hour,
                 minute,
                 tzinfo=ROME,
@@ -678,7 +728,7 @@ def scrape_gianluca_di_marzio(
 
 def scrape_alfredo_pedulla(
     session: requests.Session,
-    today: date,
+    requested_dates: set[date],
 ) -> list[Article]:
     articles: list[Article] = []
     urls_done: set[str] = set()
@@ -704,7 +754,7 @@ def scrape_alfredo_pedulla(
                 ).replace(tzinfo=ROME)
             except ValueError:
                 continue
-            if not is_today(published, today):
+            if not is_requested_date(published, requested_dates):
                 continue
 
             title = link.get_text(" ", strip=True)
@@ -732,7 +782,7 @@ def scrape_alfredo_pedulla(
 
 def scrape_borsa_italiana(
     session: requests.Session,
-    today: date,
+    requested_dates: set[date],
 ) -> list[Article]:
     response = session.get(BORSA_ITALIANA_JUVENTUS_URL, timeout=30)
     response.raise_for_status()
@@ -751,7 +801,7 @@ def scrape_borsa_italiana(
             continue
         try:
             published = datetime(
-                today.year,
+                max(requested_dates).year,
                 BORSA_MONTHS[match.group(2).lower()],
                 int(match.group(1)),
                 int(match.group(3)),
@@ -760,7 +810,7 @@ def scrape_borsa_italiana(
             )
         except ValueError:
             continue
-        if not is_today(published, today):
+        if not is_requested_date(published, requested_dates):
             continue
 
         title = link.get_text(" ", strip=True)
@@ -797,7 +847,7 @@ def scrape_borsa_italiana(
 
 def scrape_youtube_channels(
     session: requests.Session,
-    today: date,
+    requested_dates: set[date],
 ) -> list[Article]:
     """Recupera tutti i video pubblicati oggi dai canali configurati."""
     articles: list[Article] = []
@@ -828,7 +878,7 @@ def scrape_youtube_channels(
                 published = parse_iso_datetime(raw_published)
             except ValueError:
                 continue
-            if not is_today(published, today):
+            if not is_requested_date(published, requested_dates):
                 continue
 
             state_key = f"youtube:{channel['channel_id']}:{video_id}"
@@ -851,7 +901,7 @@ def scrape_youtube_channels(
 
 def scrape_x_profiles(
     session: requests.Session,
-    today: date,
+    requested_dates: set[date],
 ) -> list[Article]:
     """Recupera i post X odierni dagli account configurati."""
     articles: list[Article] = []
@@ -894,7 +944,7 @@ def scrape_x_profiles(
             if published.tzinfo is None:
                 published = published.replace(tzinfo=ROME)
             published = published.astimezone(ROME)
-            if not is_today(published, today):
+            if not is_requested_date(published, requested_dates):
                 continue
 
             link_match = X_STATUS_PATH_RE.match(urlsplit(raw_link).path)
@@ -1011,9 +1061,9 @@ class TelegramClient:
             )
 
 
-def collect_today_articles(
+def collect_articles(
     session: requests.Session,
-    today: date,
+    requested_dates: set[date],
 ) -> tuple[list[Article], list[str]]:
     scrapers = (
         ("Tuttosport", scrape_tuttosport),
@@ -1032,7 +1082,7 @@ def collect_today_articles(
 
     for source, scraper in scrapers:
         try:
-            source_articles = scraper(session, today)
+            source_articles = scraper(session, requested_dates)
         except (
             requests.RequestException,
             ValueError,
@@ -1053,19 +1103,29 @@ def collect_today_articles(
     return list(articles_by_key.values()), errors
 
 
-def run(dry_run: bool = False) -> None:
+def run(
+    dry_run: bool = False,
+    include_yesterday: bool = False,
+) -> None:
     today = datetime.now(ROME).date()
+    requested_dates = {today}
+    if include_yesterday:
+        requested_dates.add(today - timedelta(days=1))
     session = requests.Session()
     session.headers.update(HEADERS)
 
-    articles, _ = collect_today_articles(session, today)
+    articles, _ = collect_articles(session, requested_dates)
 
     # I siti mostrano prima le notizie più recenti. Telegram le riceve invece
     # dalla più vecchia alla più nuova, per mantenere l'ordine cronologico.
     articles.sort(key=lambda item: (item.published, item.source, item.title))
 
     if dry_run:
-        print(f"[TEST] Totale notizie del {today.isoformat()}: {len(articles)}")
+        selected_days = ", ".join(
+            requested_date.isoformat()
+            for requested_date in sorted(requested_dates)
+        )
+        print(f"[TEST] Totale notizie del {selected_days}: {len(articles)}")
         for article in articles:
             print(
                 f"[TEST] {article.source} | "
@@ -1127,8 +1187,16 @@ def main() -> None:
         action="store_true",
         help="Recupera e mostra le notizie senza usare Telegram.",
     )
+    parser.add_argument(
+        "--include-yesterday",
+        action="store_true",
+        help="TEST: aggiunge alle notizie di oggi anche quelle di ieri.",
+    )
     args = parser.parse_args()
-    run(dry_run=args.dry_run)
+    run(
+        dry_run=args.dry_run,
+        include_yesterday=args.include_yesterday,
+    )
 
 
 if __name__ == "__main__":
