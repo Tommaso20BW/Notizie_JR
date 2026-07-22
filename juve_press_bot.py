@@ -652,6 +652,9 @@ def scrape_alfredo_pedulla(
     for page_url in ALFREDO_PEDULLA_JUVENTUS_URLS:
         response = session.get(page_url, timeout=30)
         response.raise_for_status()
+        # Il sito dichiara una codifica non coerente con i contenuti UTF-8.
+        # Senza questa assegnazione, Telegram riceve sequenze come "Ã¨".
+        response.encoding = "utf-8"
         soup = BeautifulSoup(response.text, "html.parser")
 
         for item in soup.select("li.article-block-item"):
