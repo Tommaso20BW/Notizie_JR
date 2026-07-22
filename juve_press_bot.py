@@ -7,7 +7,10 @@ Controlla le notizie Juventus pubblicate OGGI su:
 - La Gazzetta dello Sport
 - Sky Sport Calciomercato (solo aggiornamenti con "Juve" o "Juventus")
 - Juventus.com
+- Gianluca Di Marzio e Alfredo Pedullà (notizie Juventus)
+- Borsa Italiana (notizie sull'azione Juventus)
 - YouTube: Fabrizio Romano in Italiano e Romeo Agresti
+- X: profili configurati (i tre account richiesti senza filtro)
 
 Ogni notizia viene inviata su Telegram una sola volta. Lo stato è salvato nel file
 .seen_juve_press_news.json accanto allo script.
