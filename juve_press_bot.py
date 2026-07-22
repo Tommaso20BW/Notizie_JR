@@ -7,6 +7,7 @@ Controlla le notizie Juventus pubblicate OGGI su:
 - La Gazzetta dello Sport
 - Sky Sport Calciomercato (solo aggiornamenti con "Juve" o "Juventus")
 - Juventus.com
+- YouTube: Fabrizio Romano in Italiano e Romeo Agresti
 
 Ogni notizia viene inviata su Telegram una sola volta. Lo stato è salvato nel file
 .seen_juve_press_news.json accanto allo script.
@@ -20,10 +21,12 @@ import sys
 import time
 from dataclasses import dataclass
 from datetime import date, datetime
+from email.utils import parsedate_to_datetime
 from html import escape
 from pathlib import Path
 from typing import Iterable
 from urllib.parse import urljoin, urlsplit, urlunsplit
+from xml.etree import ElementTree as ET
 from zoneinfo import ZoneInfo
 
 import requests
@@ -87,6 +90,36 @@ BORSA_ITALIANA_JUVENTUS_URL = (
     "https://www.borsaitaliana.it/borsa/azioni/"
     "elenco-completo-notizie.html?isin=IT0005572778&lang=it"
 )
+YOUTUBE_CHANNELS = (
+    {
+        "source": "YouTube - Fabrizio Romano in Italiano",
+        "channel_id": "UC7pT9g1-oKwVgbpipZODvBA",
+        "channel_url": "https://www.youtube.com/@FabrizioRomanoItaliano",
+    },
+    {
+        "source": "YouTube - Romeo Agresti",
+        "channel_id": "UCmlXlTE2oTArVL8DafyRsXA",
+        "channel_url": "https://www.youtube.com/@RomeoAgresti",
+    },
+)
+YOUTUBE_FEED_TEMPLATE = (
+    "https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
+)
+ATOM_NS = "{http://www.w3.org/2005/Atom}"
+YOUTUBE_NS = "{http://www.youtube.com/xml/schemas/2015}"
+X_ACCOUNTS = (
+    {"handle": "Glongari", "filter_juventus": True, "include_reposts": False},
+    {"handle": "romeoagresti", "filter_juventus": False, "include_reposts": True},
+    {"handle": "NicoSchira", "filter_juventus": True, "include_reposts": False},
+    {"handle": "AlfredoPedulla", "filter_juventus": True, "include_reposts": False},
+    {"handle": "MatteMoretto", "filter_juventus": True, "include_reposts": False},
+    {"handle": "FabrizioRomano", "filter_juventus": True, "include_reposts": False},
+    {"handle": "DiMarzio", "filter_juventus": True, "include_reposts": False},
+    {"handle": "_Morik92_", "filter_juventus": False, "include_reposts": True},
+    {"handle": "ilbianconerocom", "filter_juventus": False, "include_reposts": True},
+)
+NITTER_RSS_TEMPLATE = "https://nitter.net/{handle}/rss"
+X_STATUS_PATH_RE = re.compile(r"^/([A-Za-z0-9_]+)/status/(\d+)$")
 
 SKY_MONTH_NAMES = {
     1: "gennaio",
@@ -762,6 +795,135 @@ def scrape_borsa_italiana(
     return articles
 
 
+def scrape_youtube_channels(
+    session: requests.Session,
+    today: date,
+) -> list[Article]:
+    """Recupera tutti i video pubblicati oggi dai canali configurati."""
+    articles: list[Article] = []
+    keys_done: set[str] = set()
+
+    for channel in YOUTUBE_CHANNELS:
+        feed_url = YOUTUBE_FEED_TEMPLATE.format(
+            channel_id=channel["channel_id"],
+        )
+        response = session.get(feed_url, timeout=30)
+        response.raise_for_status()
+        root = ET.fromstring(response.content)
+
+        for entry in root.findall(f"{ATOM_NS}entry"):
+            title = entry.findtext(f"{ATOM_NS}title", default="").strip()
+            raw_published = entry.findtext(
+                f"{ATOM_NS}published",
+                default="",
+            )
+            video_id = entry.findtext(
+                f"{YOUTUBE_NS}videoId",
+                default="",
+            )
+            if not title or not raw_published or not video_id:
+                continue
+
+            try:
+                published = parse_iso_datetime(raw_published)
+            except ValueError:
+                continue
+            if not is_today(published, today):
+                continue
+
+            state_key = f"youtube:{channel['channel_id']}:{video_id}"
+            if state_key in keys_done:
+                continue
+
+            keys_done.add(state_key)
+            articles.append(
+                Article(
+                    source=channel["source"],
+                    title=title,
+                    url=f"https://www.youtube.com/watch?v={video_id}",
+                    published=published,
+                    state_key=state_key,
+                )
+            )
+
+    return articles
+
+
+def scrape_x_profiles(
+    session: requests.Session,
+    today: date,
+) -> list[Article]:
+    """Recupera i post X odierni dagli account configurati."""
+    articles: list[Article] = []
+    keys_done: set[str] = set()
+
+    for account in X_ACCOUNTS:
+        handle = account["handle"]
+        feed_url = NITTER_RSS_TEMPLATE.format(handle=handle)
+        response = session.get(feed_url, timeout=30)
+        response.raise_for_status()
+        root = ET.fromstring(response.content)
+        channel = root.find("channel")
+        if channel is None:
+            continue
+
+        for item in channel.findall("item"):
+            title = item.findtext("title", default="").strip()
+            raw_published = item.findtext("pubDate", default="")
+            tweet_id = item.findtext("guid", default="").strip()
+            raw_link = item.findtext("link", default="").strip()
+            if not title or not raw_published or not tweet_id:
+                continue
+
+            # Per gli account indicati dall'utente si mantengono anche i repost.
+            if (
+                not account["include_reposts"]
+                and title.startswith("RT by @")
+            ):
+                continue
+            if (
+                account["filter_juventus"]
+                and not is_juventus_title(title)
+            ):
+                continue
+
+            try:
+                published = parsedate_to_datetime(raw_published)
+            except (TypeError, ValueError):
+                continue
+            if published.tzinfo is None:
+                published = published.replace(tzinfo=ROME)
+            published = published.astimezone(ROME)
+            if not is_today(published, today):
+                continue
+
+            link_match = X_STATUS_PATH_RE.match(urlsplit(raw_link).path)
+            if link_match:
+                tweet_url = (
+                    f"https://x.com/{link_match.group(1)}/status/"
+                    f"{link_match.group(2)}"
+                )
+            else:
+                tweet_url = f"https://x.com/{handle}/status/{tweet_id}"
+
+            state_key = f"x:{handle}:{tweet_id}"
+            if state_key in keys_done:
+                continue
+
+            keys_done.add(state_key)
+            articles.append(
+                Article(
+                    source=f"X - @{handle}",
+                    title=title,
+                    url=tweet_url,
+                    published=published,
+                    state_key=state_key,
+                )
+            )
+
+    return articles
+
+
 def load_seen() -> list[str]:
     if not STATE_FILE.exists():
         return []
@@ -862,6 +1024,8 @@ def collect_today_articles(
         ("Gianluca Di Marzio", scrape_gianluca_di_marzio),
         ("Alfredo Pedullà", scrape_alfredo_pedulla),
         ("Borsa Italiana", scrape_borsa_italiana),
+        ("YouTube", scrape_youtube_channels),
+        ("X", scrape_x_profiles),
     )
     articles_by_key: dict[str, Article] = {}
     errors: list[str] = []
@@ -869,7 +1033,12 @@ def collect_today_articles(
     for source, scraper in scrapers:
         try:
             source_articles = scraper(session, today)
-        except (requests.RequestException, ValueError, KeyError) as error:
+        except (
+            requests.RequestException,
+            ValueError,
+            KeyError,
+            ET.ParseError,
+        ) as error:
             errors.append(f"{source}: {error}")
             print(f"[{source}] errore durante il recupero: {error}")
             continue
