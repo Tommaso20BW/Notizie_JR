@@ -39,7 +39,7 @@ jobs:
         run: pip install -r requirements-juve-press.txt
 
       - name: Controlla le notizie di oggi
-        run: python juve_press_bot.py
+        run: python -u juve_press_bot.py
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
