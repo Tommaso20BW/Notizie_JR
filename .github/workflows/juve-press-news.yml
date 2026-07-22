@@ -1,4 +1,4 @@
-name: Notizie Giornali Web
+name: Notizie Web
 
 on:
   workflow_dispatch:
