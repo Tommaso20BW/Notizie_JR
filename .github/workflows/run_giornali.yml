@@ -3,6 +3,10 @@ name: Estrazione Notizie Quotidiani
 on:
   workflow_dispatch: # Solo attivazione manuale con bottone
 
+permissions:
+  actions: write
+  contents: read
+
 jobs:
   run-bot:
     runs-on: ubuntu-latest
@@ -28,3 +32,20 @@ jobs:
           DROPBOX_APP_SECRET: ${{ secrets.DROPBOX_APP_SECRET }}
           DROPBOX_REFRESH_TOKEN: ${{ secrets.DROPBOX_REFRESH_TOKEN }}
         run: python -u bot_giornali.py
+
+      - name: Pulisci la cronologia dei run
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEEP: "0"   # 0 = cancella TUTTI i run precedenti; resta visibile solo quello in corso
+                      # (un run non puo' cancellare se' stesso mentre gira: limite di GitHub)
+        run: |
+          # Cancella i run COMPLETATI di questo stesso workflow,
+          # tenendo solo gli ultimi $KEEP.
+          gh api "repos/${{ github.repository }}/actions/workflows/run_giornali.yml/runs?status=completed&per_page=100" \
+            --jq '.workflow_runs | sort_by(.created_at) | reverse | .['"$KEEP"':] | .[].id' |
+          while read -r RUN_ID; do
+            echo "Elimino run $RUN_ID"
+            gh api -X DELETE "repos/${{ github.repository }}/actions/runs/$RUN_ID" || true
+          done
+          echo "Pulizia completata."

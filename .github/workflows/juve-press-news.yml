@@ -4,6 +4,7 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: write
   contents: read
 
 concurrency:
@@ -50,3 +51,20 @@ jobs:
         with:
           path: .seen_juve_press_news.json
           key: ${{ steps.restore-news-state.outputs.cache-primary-key }}
+
+      - name: Pulisci la cronologia dei run
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEEP: "0"   # 0 = cancella TUTTI i run precedenti; resta visibile solo quello in corso
+                      # (un run non puo' cancellare se' stesso mentre gira: limite di GitHub)
+        run: |
+          # Cancella i run COMPLETATI di questo stesso workflow,
+          # tenendo solo gli ultimi $KEEP.
+          gh api "repos/${{ github.repository }}/actions/workflows/juve-press-news.yml/runs?status=completed&per_page=100" \
+            --jq '.workflow_runs | sort_by(.created_at) | reverse | .['"$KEEP"':] | .[].id' |
+          while read -r RUN_ID; do
+            echo "Elimino run $RUN_ID"
+            gh api -X DELETE "repos/${{ github.repository }}/actions/runs/$RUN_ID" || true
+          done
+          echo "Pulizia completata."
