@@ -3,7 +3,7 @@
 Repository con **due bot Telegram distinti** per le notizie sulla Juventus:
 
 1. `bot_giornali.py` legge i PDF dei quotidiani da Dropbox e usa Gemini per estrarre notizie verificate;
-2. `juve_press_bot.py` monitora otto fonti web e segnala soltanto gli articoli pubblicati oggi e non ancora notificati.
+2. `juve_press_bot.py` monitora siti web, canali YouTube e profili X, quindi segnala soltanto i contenuti delle date richieste che non risultano già notificati.
 
 I due flussi hanno workflow, dipendenze e stato separati.
 
@@ -78,18 +78,30 @@ Il workflow corrente non passa queste due variabili opzionali: per cambiarle in 
 
 ### Fonti monitorate
 
-`juve_press_bot.py` raccoglie le notizie pubblicate nella data italiana corrente da:
+Nell’esecuzione normale `juve_press_bot.py` raccoglie i contenuti pubblicati nella data italiana corrente.
 
-- Tuttosport;
-- Corriere dello Sport;
-- La Gazzetta dello Sport;
-- Sky Sport – Calciomercato;
-- Juventus.com;
-- Gianluca Di Marzio;
-- Alfredo Pedullà;
-- Borsa Italiana.
+| Gruppo | Fonti | Regola principale |
+|---|---|---|
+| Quotidiani | Tuttosport, Corriere dello Sport, La Gazzetta dello Sport | Sezioni o feed dedicati alla Juventus. |
+| Altri siti | Sky Sport – Calciomercato, Juventus.com, Gianluca Di Marzio, Alfredo Pedullà, Borsa Italiana | Filtri per data e, dove necessario, per `Juve`/`Juventus`, escludendo `Juve Stabia`. |
+| YouTube | Fabrizio Romano in Italiano, Romeo Agresti | Tutti i video pubblicati nella data richiesta, letti dai feed Atom ufficiali dei canali. |
+| X | 9 profili configurati | Lettura via RSS Nitter, conversione dei collegamenti in URL `x.com` e filtri diversi per account. |
 
-Per Sky, Di Marzio, Pedullà e Borsa Italiana vengono applicati filtri espliciti su `Juve`/`Juventus` (con esclusione di `Juve Stabia`). La pagina ufficiale Juventus è già specifica del club; Tuttosport, Corriere e Gazzetta usano sezioni o feed dedicati.
+I profili X configurati sono:
+
+| Profilo | Contenuti accettati | Repost |
+|---|---|---:|
+| `@Glongari` | Solo post che citano Juve/Juventus | esclusi |
+| `@romeoagresti` | Tutti i post | inclusi |
+| `@NicoSchira` | Solo post che citano Juve/Juventus | esclusi |
+| `@AlfredoPedulla` | Solo post che citano Juve/Juventus | esclusi |
+| `@MatteMoretto` | Solo post che citano Juve/Juventus | esclusi |
+| `@FabrizioRomano` | Solo post che citano Juve/Juventus | esclusi |
+| `@DiMarzio` | Solo post che citano Juve/Juventus | esclusi |
+| `@_Morik92_` | Tutti i post | inclusi |
+| `@ilbianconerocom` | Tutti i post | inclusi |
+
+Per Sky il bot prova la pagina della data richiesta e, se non esiste ancora (`404`), usa come fallback la pagina del giorno precedente. Juventus.com viene letto attraverso il feed datato e la relativa paginazione.
 
 Gli articoli vengono normalizzati, deduplicati e ordinati dal più vecchio al più recente. Il messaggio Telegram contiene fonte, titolo, eventuale sommario e link all’articolo. In caso di rate limit `429`, l’invio rispetta `retry_after` e prova fino a tre volte.
 
@@ -123,6 +135,14 @@ python juve_press_bot.py --dry-run
 ```
 
 La modalità `--dry-run` recupera e stampa le notizie senza leggere lo stato e senza usare Telegram.
+
+Per i test si può includere anche il giorno precedente:
+
+```bash
+python juve_press_bot.py --dry-run --include-yesterday
+```
+
+`--include-yesterday` amplia la raccolta a oggi e ieri. L’opzione non è usata dal workflow e va considerata uno strumento di test; senza `--dry-run` potrebbe inviare anche contenuti del giorno precedente non presenti nello stato.
 
 ## Avvio locale
 
@@ -159,6 +179,8 @@ Notizie_JR/
 
 - L’estrazione PDF dipende dalla leggibilità del documento e dalla risposta di Gemini; i controlli riducono, ma non eliminano, il rischio di errori.
 - I selettori HTML e gli endpoint non documentati delle fonti web possono cambiare.
+- Il monitoraggio X dipende dall’RSS pubblico di `nitter.net`: se l’istanza è indisponibile o cambia formato, la categoria X viene saltata per quell’esecuzione.
+- I feed YouTube includono tutti i video dei due canali configurati, senza un ulteriore filtro Juventus sul titolo.
 - Entrambi i workflow sono manuali: il repository non contiene uno `schedule`.
 - Lo stato del bot web vive nella cache di GitHub Actions, non in un database o in un file versionato.
 
