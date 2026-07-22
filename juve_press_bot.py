@@ -85,6 +85,7 @@ SKY_RECAP_TITLE_RE = re.compile(
     r"^calciomercato,.*\bnews\b.*\boggi\b",
     re.IGNORECASE,
 )
+SKY_EXCLUDED_TITLE_RE = re.compile(r"\bjuve\s+stabia\b", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -328,6 +329,14 @@ def scrape_sky_calciomercato(
         title = title_tag.get_text(" ", strip=True)
         if SKY_RECAP_TITLE_RE.search(title):
             continue
+        if SKY_EXCLUDED_TITLE_RE.search(title):
+            continue
+
+        # Il testo della diretta può citare qualunque squadra in modo
+        # incidentale: per Sky notifichiamo soltanto aggiornamenti che citano
+        # Juve/Juventus direttamente nel titolo.
+        if not JUVE_KEYWORD_RE.search(title):
+            continue
 
         summary_tag = post.select_one(".lvbg-post__body")
         # Considera solo i paragrafi del singolo aggiornamento. Usare tutto
@@ -342,8 +351,14 @@ def scrape_sky_calciomercato(
             paragraph.get_text(" ", strip=True)
             for paragraph in paragraphs
         )
-        if not JUVE_KEYWORD_RE.search(f"{title} {summary}"):
-            continue
+        # Sky inserisce talvolta i TAG nello stesso <p> del testo: non sono
+        # parte della notizia e possono contenere artificialmente "Juventus".
+        summary = re.split(
+            r"\s*\bTAG:\s*",
+            summary,
+            maxsplit=1,
+            flags=re.IGNORECASE,
+        )[0].strip()
 
         try:
             published = parse_iso_datetime(time_tag["datetime"])
