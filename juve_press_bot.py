@@ -122,8 +122,16 @@ X_ACCOUNTS = (
     {"handle": "ilbianconerocom", "filter_juventus": False, "include_reposts": True},
 )
 X_RSS_MIRROR_TEMPLATES = (
+    # Istanze Nitter dirette
     "https://nitter.net/{handle}/rss",
     "https://xcancel.com/{handle}/rss",
+    "https://nitter.poast.org/{handle}/rss",
+    "https://nitter.privacydev.net/{handle}/rss",
+    "https://nitter.kylrth.com/{handle}/rss",
+    "https://nitter.fdn.fr/{handle}/rss",
+    # Aggregatori/load balancer (scelgono automaticamente un'istanza attiva)
+    "https://twiiit.com/{handle}/rss",
+    "https://farside.link/nitter/{handle}/rss",
 )
 X_RSS_TIMEOUT_SECONDS = 12
 X_STATUS_PATH_RE = re.compile(r"^/([A-Za-z0-9_]+)/status/(\d+)$")
