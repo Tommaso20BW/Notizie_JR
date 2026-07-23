@@ -10,7 +10,7 @@ Controlla le notizie Juventus pubblicate OGGI su:
 - Gianluca Di Marzio e Alfredo Pedullà (notizie Juventus)
 - Borsa Italiana (notizie sull'azione Juventus)
 - YouTube: Fabrizio Romano in Italiano e Romeo Agresti
-- X: profili configurati (i tre account richiesti senza filtro)
+- X: profili configurati (filtri e repost definiti per account)
 
 Ogni notizia viene inviata su Telegram una sola volta. Lo stato è salvato nel file
 .seen_juve_press_news.json accanto allo script.
@@ -112,6 +112,7 @@ YOUTUBE_FEED_TEMPLATE = (
 ATOM_NS = "{http://www.w3.org/2005/Atom}"
 YOUTUBE_NS = "{http://www.youtube.com/xml/schemas/2015}"
 X_ACCOUNTS = (
+    {"handle": "juventusfc", "filter_juventus": False, "include_reposts": True},
     {"handle": "Glongari", "filter_juventus": True, "include_reposts": False},
     {"handle": "romeoagresti", "filter_juventus": False, "include_reposts": True},
     {"handle": "NicoSchira", "filter_juventus": True, "include_reposts": False},

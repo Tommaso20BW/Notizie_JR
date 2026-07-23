@@ -85,12 +85,13 @@ Nell’esecuzione normale `juve_press_bot.py` raccoglie i contenuti pubblicati n
 | Quotidiani | Tuttosport, Corriere dello Sport, La Gazzetta dello Sport | Sezioni o feed dedicati alla Juventus. |
 | Altri siti | Sky Sport – Calciomercato, Juventus.com, Gianluca Di Marzio, Alfredo Pedullà, Borsa Italiana | Filtri per data e, dove necessario, per `Juve`/`Juventus`, escludendo `Juve Stabia`. |
 | YouTube | Fabrizio Romano in Italiano, Romeo Agresti | Tutti i video pubblicati nella data richiesta, letti dai feed Atom ufficiali dei canali. |
-| X | 9 profili configurati | Lettura via RSS Nitter, conversione dei collegamenti in URL `x.com` e filtri diversi per account. |
+| X | 10 profili configurati | Lettura tramite mirror RSS pubblici, conversione dei collegamenti in URL `x.com` e filtri diversi per account. |
 
 I profili X configurati sono:
 
 | Profilo | Contenuti accettati | Repost |
 |---|---|---:|
+| `@juventusfc` | Tutti i post | inclusi |
 | `@Glongari` | Solo post che citano Juve/Juventus | esclusi |
 | `@romeoagresti` | Tutti i post | inclusi |
 | `@NicoSchira` | Solo post che citano Juve/Juventus | esclusi |
@@ -179,7 +180,7 @@ Notizie_JR/
 
 - L’estrazione PDF dipende dalla leggibilità del documento e dalla risposta di Gemini; i controlli riducono, ma non eliminano, il rischio di errori.
 - I selettori HTML e gli endpoint non documentati delle fonti web possono cambiare.
-- Il monitoraggio X dipende dall’RSS pubblico di `nitter.net`: se l’istanza è indisponibile o cambia formato, la categoria X viene saltata per quell’esecuzione.
+- Il monitoraggio X dipende dai mirror RSS pubblici configurati (`nitter.net` e `xcancel.com`): se entrambi sono indisponibili o cambiano formato, la categoria X viene saltata per quell’esecuzione.
 - I feed YouTube includono tutti i video dei due canali configurati, senza un ulteriore filtro Juventus sul titolo.
 - Entrambi i workflow sono manuali: il repository non contiene uno `schedule`.
 - Lo stato del bot web vive nel file versionato `.seen_juve_press_news.json`; il workflow usa un gruppo di concorrenza per evitare esecuzioni sovrapposte.
