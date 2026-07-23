@@ -5,7 +5,7 @@ Controlla le notizie Juventus pubblicate OGGI su:
 - Tuttosport
 - Corriere dello Sport
 - La Gazzetta dello Sport
-- Sky Sport Calciomercato (solo aggiornamenti con "Juve" o "Juventus")
+- Sky Sport Calciomercato ("Juve"/"Juventus", esclusi i titoli "video")
 - Juventus.com
 - Gianluca Di Marzio (solo titoli con "Juventus") e Alfredo Pedullà
 - Borsa Italiana (notizie sull'azione Juventus)
@@ -163,6 +163,7 @@ SKY_RECAP_TITLE_RE = re.compile(
     r"^calciomercato,.*\bnews\b.*\boggi\b",
     re.IGNORECASE,
 )
+SKY_VIDEO_TITLE_RE = re.compile(r"\bvideo\b", re.IGNORECASE)
 SKY_EXCLUDED_TITLE_RE = re.compile(r"\bjuve\s+stabia\b", re.IGNORECASE)
 BORSA_DATE_RE = re.compile(
     r"\b(\d{1,2})\s+"
@@ -445,7 +446,10 @@ def _scrape_sky_calciomercato_for_date(
             continue
 
         title = title_tag.get_text(" ", strip=True)
-        if SKY_RECAP_TITLE_RE.search(title):
+        if (
+            SKY_RECAP_TITLE_RE.search(title)
+            or SKY_VIDEO_TITLE_RE.search(title)
+        ):
             continue
         # Il testo della diretta può citare qualunque squadra in modo
         # incidentale: per Sky notifichiamo soltanto aggiornamenti che citano
