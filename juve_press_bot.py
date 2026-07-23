@@ -7,7 +7,7 @@ Controlla le notizie Juventus pubblicate OGGI su:
 - La Gazzetta dello Sport
 - Sky Sport Calciomercato (solo aggiornamenti con "Juve" o "Juventus")
 - Juventus.com
-- Gianluca Di Marzio e Alfredo Pedullà (notizie Juventus)
+- Gianluca Di Marzio (solo titoli con "Juventus") e Alfredo Pedullà
 - Borsa Italiana (notizie sull'azione Juventus)
 - YouTube: Fabrizio Romano in Italiano e Romeo Agresti
 - X: profili configurati (filtri e repost definiti per account)
@@ -83,9 +83,7 @@ JUVENTUS_FEED_TEMPLATE = (
     "https://www.juventus.com/it/news/_libraries/"
     "{date_value}/{date_value}/{page}/_news-list"
 )
-GIANLUCA_DI_MARZIO_SEARCH_URL = (
-    "https://www.gianlucadimarzio.com/ricerca/?key=juventus"
-)
+GIANLUCA_DI_MARZIO_URL = "https://www.gianlucadimarzio.com/"
 ALFREDO_PEDULLA_JUVENTUS_URLS = (
     "https://www.alfredopedulla.com/squadre/juventus/",
     "https://www.alfredopedulla.com/tag/juventus/",
@@ -160,17 +158,12 @@ SKY_MONTH_NAMES = {
 
 URL_DATE_RE = re.compile(r"/(\d{4})/(\d{2})/(\d{2})(?:-|/)")
 JUVE_KEYWORD_RE = re.compile(r"\b(?:juventus|juve)\b", re.IGNORECASE)
+JUVENTUS_KEYWORD_RE = re.compile(r"\bjuventus\b", re.IGNORECASE)
 SKY_RECAP_TITLE_RE = re.compile(
     r"^calciomercato,.*\bnews\b.*\boggi\b",
     re.IGNORECASE,
 )
 SKY_EXCLUDED_TITLE_RE = re.compile(r"\bjuve\s+stabia\b", re.IGNORECASE)
-ITALIAN_DATE_RE = re.compile(
-    r"\b(\d{1,2})\s+"
-    r"(gennaio|febbraio|marzo|aprile|maggio|giugno|luglio|"
-    r"agosto|settembre|ottobre|novembre|dicembre)\b",
-    re.IGNORECASE,
-)
 BORSA_DATE_RE = re.compile(
     r"\b(\d{1,2})\s+"
     r"(gen|feb|mar|apr|mag|giu|lug|ago|set|ott|nov|dic)\s+"
@@ -178,20 +171,6 @@ BORSA_DATE_RE = re.compile(
     re.IGNORECASE,
 )
 
-ITALIAN_MONTHS = {
-    "gennaio": 1,
-    "febbraio": 2,
-    "marzo": 3,
-    "aprile": 4,
-    "maggio": 5,
-    "giugno": 6,
-    "luglio": 7,
-    "agosto": 8,
-    "settembre": 9,
-    "ottobre": 10,
-    "novembre": 11,
-    "dicembre": 12,
-}
 BORSA_MONTHS = {
     "gen": 1,
     "feb": 2,
@@ -272,27 +251,6 @@ def is_requested_date(
 def is_today(published: datetime, today: date) -> bool:
     """Compatibilità per le fonti che vengono richieste una data alla volta."""
     return is_requested_date(published, {today})
-
-
-def date_from_italian_label(value: str, today: date) -> date | None:
-    """Legge date senza anno, come "Mercoledì 22 luglio"."""
-    match = ITALIAN_DATE_RE.search(value)
-    if not match:
-        return None
-
-    try:
-        candidate = date(
-            today.year,
-            ITALIAN_MONTHS[match.group(2).lower()],
-            int(match.group(1)),
-        )
-    except ValueError:
-        return None
-
-    # Una lista recente visualizzata a inizio gennaio può contenere dicembre.
-    if candidate > today:
-        return date(candidate.year - 1, candidate.month, candidate.day)
-    return candidate
 
 
 def is_juventus_title(title: str) -> bool:
@@ -673,77 +631,94 @@ def scrape_gianluca_di_marzio(
     session: requests.Session,
     requested_dates: set[date],
 ) -> list[Article]:
-    """Recupera dalla ricerca Juventus soltanto il gruppo della data odierna."""
-    response = session.get(GIANLUCA_DI_MARZIO_SEARCH_URL, timeout=30)
+    """Recupera dalla home solo le notizie con "Juventus" nel titolo."""
+    response = session.get(GIANLUCA_DI_MARZIO_URL, timeout=30)
     response.raise_for_status()
     soup = BeautifulSoup(response.text, "html.parser")
 
     articles: list[Article] = []
     urls_done: set[str] = set()
-    for date_label in soup.select(".tcc-border.date"):
-        published_date = date_from_italian_label(
-            date_label.get_text(" ", strip=True),
-            max(requested_dates),
-        )
-        if published_date not in requested_dates:
+    for link in soup.select("#tcc-index a[href]"):
+        title_tag = link.select_one(".title")
+        if not title_tag:
             continue
 
-        news_list = date_label.find_next_sibling(
-            "div",
-            class_="tcc-list-news",
-        )
-        if not news_list:
+        title = title_tag.get_text(" ", strip=True)
+        if not title or not JUVENTUS_KEYWORD_RE.search(title):
             continue
 
-        for item in news_list.find_all("div", recursive=False):
-            link = item.find("a", href=True)
-            if not link:
+        raw_url = str(link.get("href") or "").strip()
+        if not raw_url:
+            continue
+        url = normalize_url(urljoin(GIANLUCA_DI_MARZIO_URL, raw_url))
+        if urlsplit(url).netloc.lower() != "www.gianlucadimarzio.com":
+            continue
+        if url in urls_done:
+            continue
+        urls_done.add(url)
+
+        try:
+            article_response = session.get(url, timeout=30)
+            article_response.raise_for_status()
+        except requests.RequestException:
+            continue
+
+        article_soup = BeautifulSoup(article_response.text, "html.parser")
+        article_data = None
+        for script in article_soup.find_all(
+            "script",
+            attrs={"type": "application/ld+json"},
+        ):
+            try:
+                structured_data = json.loads(script.string or "")
+            except json.JSONDecodeError:
                 continue
 
-            title = link.get_text(" ", strip=True)
-            if not title or not is_juventus_title(title):
-                continue
-
-            url = normalize_url(
-                urljoin(GIANLUCA_DI_MARZIO_SEARCH_URL, link["href"])
+            graph = (
+                structured_data.get("@graph", [])
+                if isinstance(structured_data, dict)
+                else []
             )
-            if (
-                urlsplit(url).netloc.lower()
-                != "www.gianlucadimarzio.com"
-            ):
-                continue
-            if url in urls_done:
-                continue
-
-            time_text = item.find(class_="hh")
-            match = (
-                re.search(r"\b(\d{1,2}):(\d{2})\b", time_text.get_text())
-                if time_text
-                else None
-            )
-            hour, minute = (
-                (int(match.group(1)), int(match.group(2)))
-                if match
-                else (0, 0)
-            )
-            published = datetime(
-                published_date.year,
-                published_date.month,
-                published_date.day,
-                hour,
-                minute,
-                tzinfo=ROME,
-            )
-
-            urls_done.add(url)
-            articles.append(
-                Article(
-                    source="Gianluca Di Marzio",
-                    title=title,
-                    url=url,
-                    published=published,
+            for item in graph:
+                item_types = (
+                    item.get("@type", [])
+                    if isinstance(item, dict)
+                    else []
                 )
+                if isinstance(item_types, str):
+                    item_types = [item_types]
+                if "NewsArticle" in item_types:
+                    article_data = item
+                    break
+            if article_data:
+                break
+
+        if not article_data:
+            continue
+        try:
+            published = parse_iso_datetime(str(article_data["datePublished"]))
+        except (KeyError, ValueError):
+            continue
+        if not is_requested_date(published, requested_dates):
+            continue
+
+        # Il titolo della home è quello su cui va applicato il filtro.
+        # Usiamo quello completo dei metadati solo dopo averlo accettato.
+        article_title = str(article_data.get("headline") or title).strip()
+        summary = BeautifulSoup(
+            str(article_data.get("abstract") or ""),
+            "html.parser",
+        ).get_text(" ", strip=True)
+
+        articles.append(
+            Article(
+                source="Gianluca Di Marzio",
+                title=article_title,
+                url=url,
+                published=published,
+                summary=summary,
             )
+        )
 
     return articles
 

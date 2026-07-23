@@ -83,7 +83,7 @@ Nell’esecuzione normale `juve_press_bot.py` raccoglie i contenuti pubblicati n
 | Gruppo | Fonti | Regola principale |
 |---|---|---|
 | Quotidiani | Tuttosport, Corriere dello Sport, La Gazzetta dello Sport | Sezioni o feed dedicati alla Juventus. |
-| Altri siti | Sky Sport – Calciomercato, Juventus.com, Gianluca Di Marzio, Alfredo Pedullà, Borsa Italiana | Filtri per data e, dove necessario, per `Juve`/`Juventus`, escludendo `Juve Stabia`. |
+| Altri siti | Sky Sport – Calciomercato, Juventus.com, Gianluca Di Marzio, Alfredo Pedullà, Borsa Italiana | Gianluca Di Marzio accetta solo titoli contenenti `Juventus`; le altre fonti applicano i rispettivi filtri per data e parola chiave. |
 | YouTube | Fabrizio Romano in Italiano, Romeo Agresti | Tutti i video pubblicati nella data richiesta, letti dai feed Atom ufficiali dei canali. |
 | X | 10 profili configurati | Lettura tramite mirror RSS pubblici, conversione dei collegamenti in URL `x.com` e filtri diversi per account. |
 
