@@ -1080,7 +1080,7 @@ class TelegramClient:
             "chat_id": self.chat_id,
             "text": text,
             "parse_mode": "HTML",
-            "disable_web_page_preview": False,
+            "disable_web_page_preview": True,
         }
 
         for attempt in range(3):
