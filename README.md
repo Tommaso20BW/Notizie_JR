@@ -27,7 +27,7 @@ controlli deterministici e limite caratteri
 Telegram (due versioni per notizia)
         │
         ▼
-cancellazione da Dropbox solo se tutto è riuscito
+cancellazione da Dropbox indipendentemente dall'esito
 ```
 
 `bot_giornali.py`:
@@ -48,7 +48,7 @@ Per ogni notizia approvata invia:
 1. una versione editoriale con persone/squadre evidenziate, fonte e firma `@Juventus_Reborn`;
 2. una versione con hashtag e handle della testata.
 
-Tra due giornali attende 20 secondi. Il PDF originale viene cancellato da Dropbox solo se l’elaborazione è conclusa e tutti gli invii Telegram sono riusciti; anche un PDF senza notizie Juventus viene considerato elaborato correttamente.
+Tra due giornali attende 20 secondi. Ogni PDF originale viene cancellato da Dropbox dopo il tentativo di elaborazione, anche se Gemini, la validazione o uno degli invii Telegram falliscono. Se fallisce il download, il bot tenta comunque la cancellazione del PDF remoto.
 
 ### Workflow e configurazione
 

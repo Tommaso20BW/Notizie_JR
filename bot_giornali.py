@@ -172,22 +172,43 @@ def get_pdf_from_dropbox():
             print(f"Scaricato: {file.name}")
         except Exception as e:
             print(f"Errore download {file.name}: {e}")
+            print(
+                f"Il download di {file.name} è fallito: "
+                "il PDF verrà comunque cancellato da Dropbox."
+            )
+            delete_files_from_dropbox([file.path_lower])
 
     return documenti
 
 
 def delete_files_from_dropbox(dropbox_paths):
-    """Cancella da Dropbox solo i PDF elaborati con successo."""
+    """Cancella da Dropbox i PDF indicati, indipendentemente dall'esito."""
     if not dropbox_paths:
         return
 
-    dbx = crea_dropbox_client()
+    try:
+        dbx = crea_dropbox_client()
+    except Exception as e:
+        print(f"Impossibile creare il client per la cancellazione Dropbox: {e}")
+        return
+
     for path in dropbox_paths:
-        try:
-            dbx.files_delete_v2(path)
-            print(f"File {path} cancellato da Dropbox.")
-        except Exception as e:
-            print(f"Errore cancellazione {path}: {e}")
+        for tentativo in range(1, 4):
+            try:
+                dbx.files_delete_v2(path)
+                print(f"File {path} cancellato da Dropbox.")
+                break
+            except Exception as e:
+                if tentativo == 3:
+                    print(
+                        f"Errore cancellazione {path} dopo 3 tentativi: {e}"
+                    )
+                else:
+                    print(
+                        f"Errore cancellazione {path}: {e}. "
+                        f"Nuovo tentativo ({tentativo + 1}/3)..."
+                    )
+                    time.sleep(2)
 
 
 def _senza_accenti(testo):
@@ -247,7 +268,7 @@ def _genera_json(uploaded, prompt, schema=SCHEMA_NOTIZIE):
                 if "MAX_TOKENS" in finish_reason:
                     raise RuntimeError(
                         "Risposta Gemini incompleta: limite di output "
-                        "raggiunto. Il PDF non verrà cancellato."
+                        "raggiunto. Il PDF verrà comunque cancellato."
                     )
 
             parsed = getattr(response, "parsed", None)
@@ -588,7 +609,7 @@ def _riassumi_notizie_lunghe(uploaded, nome_originale, notizie):
         if mancanti:
             raise RuntimeError(
                 "Gemini non ha restituito tutti i riassunti richiesti. "
-                "Il PDF non verrà cancellato."
+                "Il PDF verrà comunque cancellato."
             )
 
     ancora_lunghe = _trova_notizie_lunghe(notizie)
@@ -596,7 +617,7 @@ def _riassumi_notizie_lunghe(uploaded, nome_originale, notizie):
         raise RuntimeError(
             "Impossibile riassumere fedelmente tutte le notizie entro "
             f"{MAX_CARATTERI_NOTIZIA} caratteri dopo 3 tentativi. "
-            "Nessun testo verrà troncato e il PDF non verrà cancellato."
+            "Nessun testo verrà troncato; il PDF verrà comunque cancellato."
         )
 
     return notizie
@@ -911,35 +932,32 @@ if __name__ == "__main__":
     if not documenti:
         print("Nessun PDF nuovo. Chiusura.")
     else:
-        dropbox_da_cancellare = []
-
         for i, documento in enumerate(documenti):
             path = documento["local_path"]
             nome_originale = documento["original_name"]
-            elaborazione_riuscita = False
 
             print(f"Elaborazione {nome_originale}...")
             try:
                 lista = generate_news_from_pdf(path, nome_originale)
                 if lista:
                     print(f"Notizie pronte per l'invio: {len(lista)}")
-                    elaborazione_riuscita = send_to_telegram(lista)
-                    if not elaborazione_riuscita:
+                    if not send_to_telegram(lista):
                         print(
-                            "Invio incompleto: il PDF resterà su Dropbox "
-                            "per evitare di perdere le notizie."
+                            "Invio incompleto: il PDF verrà comunque "
+                            "cancellato da Dropbox."
                         )
                 else:
                     print("Nessuna notizia Juventus verificata nel PDF.")
-                    elaborazione_riuscita = True
             except Exception as e:
                 print(f"Errore durante l'elaborazione: {e}")
             finally:
+                print(
+                    f"Cancellazione di {nome_originale} da Dropbox "
+                    "indipendentemente dall'esito..."
+                )
+                delete_files_from_dropbox([documento["dropbox_path"]])
                 if os.path.exists(path):
                     os.remove(path)
-
-            if elaborazione_riuscita:
-                dropbox_da_cancellare.append(documento["dropbox_path"])
 
             if i < len(documenti) - 1:
                 print(
@@ -947,13 +965,4 @@ if __name__ == "__main__":
                 )
                 time.sleep(20)
 
-        print("Cancellazione da Dropbox dei soli PDF elaborati...")
-        delete_files_from_dropbox(dropbox_da_cancellare)
-
-        non_elaborati = len(documenti) - len(dropbox_da_cancellare)
-        if non_elaborati:
-            print(
-                f"{non_elaborati} PDF non cancellati perché l'elaborazione "
-                "o l'invio non sono terminati correttamente."
-            )
         print("Operazione completata.")
