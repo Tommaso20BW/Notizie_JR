@@ -109,7 +109,7 @@ Gli articoli vengono normalizzati, deduplicati e ordinati dal più vecchio al pi
 
 Gli identificativi notificati sono salvati in `.seen_juve_press_news.json` (massimo 2.000 elementi).
 
-In GitHub Actions lo stato viene conservato con `actions/cache`. Il workflow imposta `BASELINE_IF_NO_STATE=true`: se non esiste ancora una cache, registra le notizie correnti senza inviarle, evitando una raffica al primo avvio. Ogni articolo viene salvato nello stato subito dopo l’invio riuscito.
+In GitHub Actions lo stato viene salvato nel repository come `.seen_juve_press_news.json`. Il workflow imposta `BASELINE_IF_NO_STATE=true`: se il file non esiste ancora, registra le notizie correnti senza inviarle, evitando una raffica al primo avvio. Dopo ogni esecuzione aggiorna il file con un commit, così lo stato resta disponibile anche nei run successivi.
 
 ### Workflow e configurazione
 
@@ -117,7 +117,7 @@ Il workflow [`.github/workflows/juve-press-news.yml`](.github/workflows/juve-pre
 
 - è avviabile solo manualmente;
 - usa Python 3.12;
-- ripristina e salva lo stato con Actions Cache;
+- legge e aggiorna lo stato versionato `.seen_juve_press_news.json`;
 - installa `requirements-juve-press.txt`;
 - esegue `python juve_press_bot.py`.
 
@@ -182,7 +182,7 @@ Notizie_JR/
 - Il monitoraggio X dipende dall’RSS pubblico di `nitter.net`: se l’istanza è indisponibile o cambia formato, la categoria X viene saltata per quell’esecuzione.
 - I feed YouTube includono tutti i video dei due canali configurati, senza un ulteriore filtro Juventus sul titolo.
 - Entrambi i workflow sono manuali: il repository non contiene uno `schedule`.
-- Lo stato del bot web vive nella cache di GitHub Actions, non in un database o in un file versionato.
+- Lo stato del bot web vive nel file versionato `.seen_juve_press_news.json`; il workflow usa un gruppo di concorrenza per evitare esecuzioni sovrapposte.
 
 ---
 

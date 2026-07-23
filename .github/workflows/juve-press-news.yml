@@ -5,7 +5,7 @@ on:
 
 permissions:
   actions: write
-  contents: read
+  contents: write
 
 concurrency:
   group: juventus-press-news
@@ -18,15 +18,6 @@ jobs:
     steps:
       - name: Scarica il repository
         uses: actions/checkout@v6
-
-      - name: Ripristina lo stato degli articoli notificati
-        id: restore-news-state
-        uses: actions/cache/restore@v6
-        with:
-          path: .seen_juve_press_news.json
-          key: juve-press-state-${{ github.run_id }}
-          restore-keys: |
-            juve-press-state-
 
       - name: Configura Python
         uses: actions/setup-python@v6
@@ -45,12 +36,20 @@ jobs:
           CHAT_ID: ${{ secrets.CHAT_ID }}
           BASELINE_IF_NO_STATE: "true"
 
-      - name: Salva lo stato degli articoli notificati
+      - name: Salva lo stato degli articoli notificati nel repository
         if: ${{ always() && hashFiles('.seen_juve_press_news.json') != '' }}
-        uses: actions/cache/save@v6
-        with:
-          path: .seen_juve_press_news.json
-          key: ${{ steps.restore-news-state.outputs.cache-primary-key }}
+        env:
+          STATE_FILE: .seen_juve_press_news.json
+        run: |
+          if [[ -z "$(git status --porcelain -- "$STATE_FILE")" ]]; then
+            echo "Stato invariato: nessun commit necessario."
+            exit 0
+          fi
+          git config user.name "notizie-jr-bot[bot]"
+          git config user.email "notizie-jr-bot[bot]@users.noreply.github.com"
+          git add "$STATE_FILE"
+          git commit -m "chore: aggiorna stato notizie"
+          git push origin "HEAD:${GITHUB_REF}"
 
       - name: Pulisci la cronologia dei run
         if: always()
