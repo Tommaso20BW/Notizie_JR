@@ -110,17 +110,17 @@ YOUTUBE_FEED_TEMPLATE = (
 ATOM_NS = "{http://www.w3.org/2005/Atom}"
 YOUTUBE_NS = "{http://www.youtube.com/xml/schemas/2015}"
 X_ACCOUNTS = (
-    {"handle": "juventusfc", "filter_juventus": False, "include_reposts": True},
+    {"handle": "juventusfc", "filter_juventus": False, "include_reposts": False},
     {"handle": "Glongari", "filter_juventus": True, "include_reposts": False},
-    {"handle": "romeoagresti", "filter_juventus": False, "include_reposts": True},
+    {"handle": "romeoagresti", "filter_juventus": False, "include_reposts": False},
     {"handle": "NicoSchira", "filter_juventus": True, "include_reposts": False},
     {"handle": "AlfredoPedulla", "filter_juventus": True, "include_reposts": False},
     {"handle": "MatteMoretto", "filter_juventus": True, "include_reposts": False},
     {"handle": "FabrizioRomano", "filter_juventus": True, "include_reposts": False},
     {"handle": "DiMarzio", "filter_juventus": True, "include_reposts": False},
-    {"handle": "_Morik92_", "filter_juventus": False, "include_reposts": True},
-    {"handle": "ilbianconerocom", "filter_juventus": False, "include_reposts": True},
-    {"handle": "BaridonMarco", "filter_juventus": False, "include_reposts": True},
+    {"handle": "_Morik92_", "filter_juventus": False, "include_reposts": False},
+    {"handle": "ilbianconerocom", "filter_juventus": False, "include_reposts": False},
+    {"handle": "BaridonMarco", "filter_juventus": False, "include_reposts": False},
 )
 X_RSS_MIRROR_TEMPLATES = (
     # Istanze Nitter dirette
