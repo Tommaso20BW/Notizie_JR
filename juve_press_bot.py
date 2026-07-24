@@ -120,6 +120,7 @@ X_ACCOUNTS = (
     {"handle": "DiMarzio", "filter_juventus": True, "include_reposts": False},
     {"handle": "_Morik92_", "filter_juventus": False, "include_reposts": True},
     {"handle": "ilbianconerocom", "filter_juventus": False, "include_reposts": True},
+    {"handle": "baridonmarco", "filter_juventus": False, "include_reposts": True},
 )
 X_RSS_MIRROR_TEMPLATES = (
     # Istanze Nitter dirette
