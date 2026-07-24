@@ -1111,7 +1111,7 @@ class TelegramClient:
             f"<b>{escape(article.title)}</b>"
             f"{summary}\n\n"
             f'<a href="{escape(article.url, quote=True)}">'
-            "Leggi l’articolo</a>"
+            "Apri contenuto</a>"
         )
         endpoint = (
             f"https://api.telegram.org/bot{self.token}/sendMessage"
