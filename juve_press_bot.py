@@ -167,6 +167,7 @@ SKY_MONTH_NAMES = {
 URL_DATE_RE = re.compile(r"/(\d{4})/(\d{2})/(\d{2})(?:-|/)")
 JUVE_KEYWORD_RE = re.compile(r"\b(?:juventus|juve)\b", re.IGNORECASE)
 JUVENTUS_KEYWORD_RE = re.compile(r"\bjuventus\b", re.IGNORECASE)
+X_JUVENTUS_MENTION_RE = re.compile(r"(?<!\w)@juventusfc\b", re.IGNORECASE)
 SKY_RECAP_TITLE_RE = re.compile(
     r"^calciomercato,.*\bnews\b.*\boggi\b",
     re.IGNORECASE,
@@ -267,6 +268,13 @@ def is_juventus_title(title: str) -> bool:
     return bool(
         JUVE_KEYWORD_RE.search(title)
         and not SKY_EXCLUDED_TITLE_RE.search(title)
+    )
+
+
+def is_juventus_x_post(text: str) -> bool:
+    """Accetta Juve/Juventus e la menzione dell'account ufficiale."""
+    return is_juventus_title(text) or bool(
+        X_JUVENTUS_MENTION_RE.search(text)
     )
 
 
@@ -1012,7 +1020,7 @@ def scrape_x_profiles(
                     continue
                 if (
                     account["filter_juventus"]
-                    and not is_juventus_title(title)
+                    and not is_juventus_x_post(title)
                 ):
                     continue
 
