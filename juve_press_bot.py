@@ -7,7 +7,7 @@ Controlla le notizie Juventus pubblicate OGGI su:
 - La Gazzetta dello Sport
 - Sky Sport Calciomercato ("Juve"/"Juventus", esclusi i titoli "video")
 - Juventus.com
-- Gianluca Di Marzio (testo completo dell'articolo, non solo il titolo) e Alfredo Pedullà
+- Gianluca Di Marzio (titolo o testo con "Juventus") e Alfredo Pedullà
 - Borsa Italiana (notizie sull'azione Juventus)
 - YouTube: Fabrizio Romano in Italiano e Romeo Agresti
 - X: profili configurati (filtri e repost definiti per account)
@@ -643,13 +643,7 @@ def scrape_gianluca_di_marzio(
     session: requests.Session,
     requested_dates: set[date],
 ) -> list[Article]:
-    """Recupera dalla home e controlla il TESTO COMPLETO di ogni articolo,
-    non solo il titolo in home: il sito pubblica tutte le squadre nella
-    stessa lista e spesso un pezzo sulla Juventus non ha "Juventus" nel
-    titolo (es. "Allegri-Napoli, contratto triennale" può citare la Juve
-    solo nel corpo del testo). Filtrare sul titolo, come prima, faceva
-    perdere queste notizie.
-    """
+    """Recupera le notizie che citano "Juventus" nel titolo o nel testo."""
     response = session.get(GIANLUCA_DI_MARZIO_URL, timeout=30)
     response.raise_for_status()
     soup = BeautifulSoup(response.text, "html.parser")
@@ -664,6 +658,10 @@ def scrape_gianluca_di_marzio(
         title = title_tag.get_text(" ", strip=True)
         if not title:
             continue
+
+        # La card della home contiene spesso anche l'anteprima dell'articolo.
+        # Serve per intercettare notizie il cui titolo non nomina la Juventus.
+        preview_text = link.get_text(" ", strip=True)
 
         raw_url = str(link.get("href") or "").strip()
         if not raw_url:
@@ -725,19 +723,35 @@ def scrape_gianluca_di_marzio(
             str(article_data.get("abstract") or ""),
             "html.parser",
         ).get_text(" ", strip=True)
+        article_body = BeautifulSoup(
+            str(article_data.get("articleBody") or ""),
+            "html.parser",
+        ).get_text(" ", strip=True)
 
-        # Il filtro va applicato qui, sul testo completo dell'articolo
-        # (metadati + corpo pagina), non sul titolo mostrato in home:
-        # è questo il punto che risolve le notizie Juve "perse".
-        full_text_for_match = " ".join(
-            [
+        description_tag = article_soup.select_one(
+            'meta[name="description"], meta[property="og:description"]'
+        )
+        meta_description = (
+            str(description_tag.get("content") or "").strip()
+            if description_tag
+            else ""
+        )
+
+        # Il controllo viene eseguito soltanto sul contenuto della singola
+        # notizia, evitando menu, articoli correlati e sezioni globali del sito.
+        searchable_text = " ".join(
+            part
+            for part in (
+                title,
+                preview_text,
                 article_title,
                 summary,
-                str(article_data.get("articleBody") or ""),
-                article_soup.get_text(" ", strip=True),
-            ]
+                article_body,
+                meta_description,
+            )
+            if part
         )
-        if not JUVENTUS_KEYWORD_RE.search(full_text_for_match):
+        if not JUVENTUS_KEYWORD_RE.search(searchable_text):
             continue
 
         articles.append(
