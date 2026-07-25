@@ -110,6 +110,8 @@ Gli articoli vengono normalizzati, deduplicati e ordinati dal più vecchio al pi
 
 Gli identificativi notificati sono salvati in `.seen_juve_press_news.json` (massimo 2.000 elementi).
 
+Ogni notizia appena scoperta viene scritta immediatamente in `.pending_juve_press_news.json`, senza attendere il completamento delle altre fonti. Dopo la conferma dell’invio Telegram viene aggiunta allo stato delle notizie inviate e rimossa dal journal. Se una fonte successiva o Telegram falliscono, la notizia rimane nel journal e viene ritentata al run seguente.
+
 In GitHub Actions lo stato viene salvato nel repository come `.seen_juve_press_news.json`. Il workflow imposta `BASELINE_IF_NO_STATE=true`: se il file non esiste ancora, registra le notizie correnti senza inviarle, evitando una raffica al primo avvio. Dopo ogni esecuzione aggiorna il file con un commit, così lo stato resta disponibile anche nei run successivi.
 
 ### Workflow e configurazione

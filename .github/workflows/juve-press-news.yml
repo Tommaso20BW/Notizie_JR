@@ -42,18 +42,16 @@ jobs:
           CHAT_ID: ${{ secrets.CHAT_ID }}
           BASELINE_IF_NO_STATE: "true"
 
-      - name: Salva lo stato degli articoli notificati nel repository
-        if: ${{ always() && hashFiles('.seen_juve_press_news.json') != '' }}
-        env:
-          STATE_FILE: .seen_juve_press_news.json
+      - name: Salva lo stato delle notizie nel repository
+        if: always()
         run: |
-          if [[ -z "$(git status --porcelain -- "$STATE_FILE")" ]]; then
+          if [[ -z "$(git status --porcelain -- .seen_juve_press_news.json .pending_juve_press_news.json)" ]]; then
             echo "Stato invariato: nessun commit necessario."
             exit 0
           fi
           git config user.name "notizie-jr-bot[bot]"
           git config user.email "notizie-jr-bot[bot]@users.noreply.github.com"
-          git add "$STATE_FILE"
+          git add .seen_juve_press_news.json .pending_juve_press_news.json
           git commit -m "chore: aggiorna stato notizie"
           git push origin "HEAD:${GITHUB_REF}"
 

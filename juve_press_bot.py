@@ -22,7 +22,7 @@ import os
 import re
 import sys
 import time
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -35,6 +35,7 @@ from zoneinfo import ZoneInfo
 import requests
 from bs4 import BeautifulSoup
 
+from article_journal import ArticleJournal
 from preview_image import PreviewImageResolver, normalize_image_url
 from telegram_notifier import (
     TELEGRAM_MAX_CAPTION_LENGTH,
@@ -60,6 +61,7 @@ configure_console_encoding()
 ROME = ZoneInfo("Europe/Rome")
 SCRIPT_DIR = Path(__file__).resolve().parent
 STATE_FILE = SCRIPT_DIR / ".seen_juve_press_news.json"
+PENDING_FILE = SCRIPT_DIR / ".pending_juve_press_news.json"
 MAX_SEEN = 2000
 
 HEADERS = {
@@ -1115,9 +1117,27 @@ def save_seen(seen: Iterable[str]) -> None:
     os.replace(temporary, STATE_FILE)
 
 
+def article_from_journal(entry: dict) -> Article:
+    try:
+        return Article(
+            source=str(entry["source"]),
+            title=str(entry["title"]),
+            url=str(entry["url"]),
+            published=parse_iso_datetime(str(entry["published"])),
+            summary=str(entry.get("summary", "")),
+            state_key=str(entry.get("state_key", "")),
+            image_url=str(entry.get("image_url", "")),
+        )
+    except (KeyError, ValueError, TypeError) as error:
+        raise RuntimeError(
+            f"Notizia non valida in {PENDING_FILE.name}."
+        ) from error
+
+
 def collect_articles(
     session: requests.Session,
     requested_dates: set[date],
+    on_article: Callable[[Article], None] | None = None,
 ) -> tuple[list[Article], list[str]]:
     scrapers = (
         ("Tuttosport", scrape_tuttosport),
@@ -1149,7 +1169,11 @@ def collect_articles(
 
         print(f"[{source}] notizie di oggi trovate: {len(source_articles)}")
         for article in source_articles:
-            articles_by_key.setdefault(article.notification_key, article)
+            if article.notification_key in articles_by_key:
+                continue
+            articles_by_key[article.notification_key] = article
+            if on_article is not None:
+                on_article(article)
 
     if len(errors) == len(scrapers):
         raise RuntimeError("Nessuna fonte è stata recuperata correttamente.")
@@ -1169,7 +1193,39 @@ def run(
     session = requests.Session()
     session.headers.update(HEADERS)
 
-    articles, _ = collect_articles(session, requested_dates)
+    if dry_run:
+        articles, _ = collect_articles(session, requested_dates)
+    else:
+        token = os.environ.get("TELEGRAM_TOKEN")
+        chat_id = os.environ.get("CHAT_ID")
+        if not token or not chat_id:
+            raise RuntimeError(
+                "Secret mancanti: configura TELEGRAM_TOKEN e CHAT_ID."
+            )
+
+        seen_list = load_seen()
+        seen = set(seen_list)
+        journal = ArticleJournal(PENDING_FILE)
+        cleaned = journal.discard_all(seen)
+        if cleaned:
+            print(f"[STATO] rimosse {cleaned} notizie già inviate dal journal.")
+        print(f"[STATO] articoli già notificati: {len(seen)}")
+        print(f"[STATO] articoli in attesa: {len(journal.entries)}")
+
+        def save_discovered(article: Article) -> None:
+            if article.notification_key in seen:
+                return
+            if journal.add(article):
+                print(
+                    f"[STATO] salvata subito nel journal: "
+                    f"{article.source} | {article.title}"
+                )
+
+        articles, _ = collect_articles(
+            session,
+            requested_dates,
+            on_article=save_discovered,
+        )
 
     # I siti mostrano prima le notizie più recenti. Telegram le riceve invece
     # dalla più vecchia alla più nuova, per mantenere l'ordine cronologico.
@@ -1207,35 +1263,25 @@ def run(
                 print("--- FINE ANTEPRIMA ---\n")
         return
 
-    token = os.environ.get("TELEGRAM_TOKEN")
-    chat_id = os.environ.get("CHAT_ID")
-    if not token or not chat_id:
-        raise RuntimeError(
-            "Secret mancanti: configura TELEGRAM_TOKEN e CHAT_ID."
-        )
-
-    seen_list = load_seen()
-    seen = set(seen_list)
-    print(f"[STATO] articoli già notificati: {len(seen)}")
-
     baseline_if_missing = os.environ.get(
         "BASELINE_IF_NO_STATE",
         "",
     ).lower() in {"1", "true", "yes"}
     if baseline_if_missing and not STATE_FILE.exists():
-        seen_list = [article.notification_key for article in articles]
+        seen_list = [
+            str(entry["notification_key"])
+            for entry in journal.entries
+        ]
         save_seen(seen_list)
+        journal.clear()
         print(
             "[STATO] cache iniziale assente: "
             f"registrate {len(seen_list)} notizie correnti senza reinviarle."
         )
         return
 
-    pending = [
-        article
-        for article in articles
-        if article.notification_key not in seen
-    ]
+    pending = [article_from_journal(entry) for entry in journal.entries]
+    pending.sort(key=lambda item: (item.published, item.source, item.title))
     if not pending:
         print("[NEWS] nessuna nuova notizia di oggi.")
         return
@@ -1256,6 +1302,7 @@ def run(
         seen.add(article.notification_key)
         seen_list.append(article.notification_key)
         save_seen(seen_list)
+        journal.remove(article.notification_key)
         sent_count += 1
         time.sleep(0.8)
 
