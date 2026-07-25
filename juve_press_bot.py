@@ -22,19 +22,20 @@ import os
 import re
 import sys
 import time
+from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from email.utils import parsedate_to_datetime
-from html import escape
 from pathlib import Path
-from typing import Iterable
 from urllib.parse import urljoin, urlsplit, urlunsplit
 from xml.etree import ElementTree as ET
 from zoneinfo import ZoneInfo
 
 import requests
 from bs4 import BeautifulSoup
+
+from telegram_notifier import TelegramClient, format_article_message
 
 
 def configure_console_encoding() -> None:
@@ -136,19 +137,6 @@ X_RSS_MIRROR_TEMPLATES = (
 )
 X_RSS_TIMEOUT_SECONDS = 12
 X_STATUS_PATH_RE = re.compile(r"^/([A-Za-z0-9_]+)/status/(\d+)$")
-
-TELEGRAM_SOURCE_EMOJIS = (
-    ("Sky Sport - Calciomercato", "6033058586945392520", "📰"),
-    ("La Gazzetta dello Sport", "6032862491623559282", "📰"),
-    ("Corriere dello Sport", "6030691308346019878", "📰"),
-    ("Tuttosport", "6032834612990841221", "📰"),
-    ("X - @", "5796663209016431644", "📲"),
-    ("YouTube - ", "6032683730789732131", "🖥"),
-    ("Gianluca Di Marzio", "5785253271912324677", "📲"),
-    ("Alfredo Pedullà", "5785322627044220734", "📲"),
-    ("Borsa Italiana", "5373001317042101552", "📈"),
-    ("Juventus.com", "6028591382870888482", "⚪️"),
-)
 
 SKY_MONTH_NAMES = {
     1: "gennaio",
@@ -1093,75 +1081,6 @@ def save_seen(seen: Iterable[str]) -> None:
     os.replace(temporary, STATE_FILE)
 
 
-def telegram_source_emoji(source: str) -> str:
-    """Restituisce l'emoji premium associata alla fonte Telegram."""
-    for source_prefix, emoji_id, fallback_emoji in TELEGRAM_SOURCE_EMOJIS:
-        if source.startswith(source_prefix):
-            return (
-                f'<tg-emoji emoji-id="{emoji_id}">'
-                f"{fallback_emoji}</tg-emoji>"
-            )
-    return "📰"
-
-
-class TelegramClient:
-    def __init__(self, token: str, chat_id: str):
-        self.token = token
-        self.chat_id = chat_id
-
-    def send_article(self, article: Article) -> None:
-        summary = ""
-        if article.summary:
-            summary = f"\n\n{escape(article.summary)}"
-
-        source_emoji = telegram_source_emoji(article.source)
-        text = (
-            f"{source_emoji} <b>{escape(article.source)}</b>\n\n"
-            f"<b>{escape(article.title)}</b>"
-            f"{summary}\n\n"
-            f'<a href="{escape(article.url, quote=True)}">'
-            "Apri contenuto</a>"
-        )
-        endpoint = (
-            f"https://api.telegram.org/bot{self.token}/sendMessage"
-        )
-        payload = {
-            "chat_id": self.chat_id,
-            "text": text,
-            "parse_mode": "HTML",
-            "disable_web_page_preview": True,
-        }
-
-        for attempt in range(3):
-            response = requests.post(endpoint, json=payload, timeout=30)
-            if response.ok:
-                return
-
-            try:
-                telegram_error = response.json()
-            except ValueError:
-                telegram_error = {}
-
-            if response.status_code == 429 and attempt < 2:
-                retry_after = (
-                    telegram_error.get("parameters", {}).get(
-                        "retry_after",
-                        2,
-                    )
-                )
-                time.sleep(max(int(retry_after), 1))
-                continue
-
-            description = telegram_error.get(
-                "description",
-                response.text,
-            )
-            raise RuntimeError(
-                f"Telegram sendMessage: HTTP {response.status_code} - "
-                f"{description}"
-            )
-
-
 def collect_articles(
     session: requests.Session,
     requested_dates: set[date],
@@ -1207,6 +1126,7 @@ def collect_articles(
 def run(
     dry_run: bool = False,
     include_yesterday: bool = False,
+    preview_messages: bool = False,
 ) -> None:
     today = datetime.now(ROME).date()
     requested_dates = {today}
@@ -1232,6 +1152,10 @@ def run(
                 f"[TEST] {article.source} | "
                 f"{article.published.strftime('%H:%M')} | {article.title}"
             )
+            if preview_messages:
+                print("\n--- ANTEPRIMA TELEGRAM ---")
+                print(format_article_message(article))
+                print("--- FINE ANTEPRIMA ---\n")
         return
 
     token = os.environ.get("TELEGRAM_TOKEN")
@@ -1268,15 +1192,20 @@ def run(
         return
 
     telegram = TelegramClient(token, chat_id)
+    sent_count = 0
     for article in pending:
-        telegram.send_article(article)
-        print(f"[NEWS] notificato da {article.source}: {article.title}")
+        message_id = telegram.send_article(article)
+        print(
+            f"[NEWS] notificato da {article.source}: {article.title} "
+            f"(message_id={message_id or 'non disponibile'})"
+        )
         seen.add(article.notification_key)
         seen_list.append(article.notification_key)
         save_seen(seen_list)
+        sent_count += 1
         time.sleep(0.8)
 
-    print(f"[NEWS] notifiche inviate: {len(pending)}")
+    print(f"[NEWS] notifiche inviate: {sent_count}")
 
 
 def main() -> None:
@@ -1293,10 +1222,21 @@ def main() -> None:
         action="store_true",
         help="TEST: aggiunge alle notizie di oggi anche quelle di ieri.",
     )
+    parser.add_argument(
+        "--preview-messages",
+        action="store_true",
+        help=(
+            "Con --dry-run mostra il testo HTML esatto che verrebbe inviato "
+            "a Telegram."
+        ),
+    )
     args = parser.parse_args()
+    if args.preview_messages and not args.dry_run:
+        parser.error("--preview-messages richiede --dry-run")
     run(
         dry_run=args.dry_run,
         include_yesterday=args.include_yesterday,
+        preview_messages=args.preview_messages,
     )
 
 

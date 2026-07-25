@@ -104,7 +104,7 @@ I profili X configurati sono:
 
 Per Sky il bot prova la pagina della data richiesta e, se non esiste ancora (`404`), usa come fallback la pagina del giorno precedente. Juventus.com viene letto attraverso il feed datato e la relativa paginazione.
 
-Gli articoli vengono normalizzati, deduplicati e ordinati dal più vecchio al più recente. Il messaggio Telegram contiene fonte, titolo, eventuale sommario e link all’articolo. In caso di rate limit `429`, l’invio rispetta `retry_after` e prova fino a tre volte.
+Gli articoli vengono normalizzati, deduplicati e ordinati dal più vecchio al più recente. Il messaggio Telegram usa un solo formato: fonte, titolo, eventuale sommario e link al contenuto. Il client Telegram è separato dagli scraper, restituisce il `message_id` confermato dall’API e ritenta gli errori di rete, i rate limit `429` e gli errori temporanei `5xx`. Lo stato viene aggiornato soltanto dopo la conferma dell’invio.
 
 ### Stato anti-duplicati
 
@@ -117,7 +117,7 @@ In GitHub Actions lo stato viene salvato nel repository come `.seen_juve_press_n
 Il workflow [`.github/workflows/juve-press-news.yml`](.github/workflows/juve-press-news.yml):
 
 - è avviabile solo manualmente;
-- usa Python 3.12;
+- usa Python 3.14;
 - legge e aggiorna lo stato versionato `.seen_juve_press_news.json`;
 - installa `requirements-juve-press.txt`;
 - esegue `python juve_press_bot.py`.
@@ -136,6 +136,12 @@ python juve_press_bot.py --dry-run
 ```
 
 La modalità `--dry-run` recupera e stampa le notizie senza leggere lo stato e senza usare Telegram.
+
+Per visualizzare anche il messaggio HTML esatto che verrebbe inviato:
+
+```bash
+python juve_press_bot.py --dry-run --preview-messages
+```
 
 Per i test si può includere anche il giorno precedente:
 
