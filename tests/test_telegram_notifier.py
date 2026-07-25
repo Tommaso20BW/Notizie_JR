@@ -77,9 +77,10 @@ class TelegramNotifierTests(unittest.TestCase):
             sleep=sleeps.append,
         )
 
-        message_id = client.send_article(SampleArticle())
+        receipt = client.send_article(SampleArticle())
 
-        self.assertEqual(message_id, 123)
+        self.assertEqual(receipt.message_id, 123)
+        self.assertEqual(receipt.mode, "testo")
         self.assertEqual(sleeps, [4])
         self.assertEqual(len(session.calls), 2)
 
@@ -100,7 +101,8 @@ class TelegramNotifierTests(unittest.TestCase):
             sleep=lambda _: None,
         )
 
-        self.assertEqual(client.send_article(SampleArticle()), 456)
+        receipt = client.send_article(SampleArticle())
+        self.assertEqual(receipt.message_id, 456)
         self.assertEqual(len(session.calls), 2)
 
     def test_permanent_error_is_not_retried(self):
@@ -117,6 +119,65 @@ class TelegramNotifierTests(unittest.TestCase):
         with self.assertRaisesRegex(TelegramDeliveryError, "Bad Request"):
             client.send_article(SampleArticle())
         self.assertEqual(len(session.calls), 1)
+
+    def test_article_with_image_is_sent_as_photo(self):
+        session = FakeSession(
+            [
+                FakeResponse(
+                    200,
+                    {"ok": True, "result": {"message_id": 789}},
+                )
+            ]
+        )
+        client = TelegramClient(
+            "token",
+            "chat",
+            session=session,
+            sleep=lambda _: None,
+        )
+
+        receipt = client.send_article(
+            SampleArticle(),
+            photo_url="https://example.com/photo.jpg",
+        )
+
+        endpoint, payload, _ = session.calls[0]
+        self.assertTrue(endpoint.endswith("/sendPhoto"))
+        self.assertEqual(payload["photo"], "https://example.com/photo.jpg")
+        self.assertLessEqual(len(payload["caption"]), 1024)
+        self.assertEqual(receipt.mode, "foto")
+        self.assertFalse(receipt.photo_fallback)
+
+    def test_rejected_photo_falls_back_to_text(self):
+        session = FakeSession(
+            [
+                FakeResponse(
+                    400,
+                    {"ok": False, "description": "wrong file identifier"},
+                ),
+                FakeResponse(
+                    200,
+                    {"ok": True, "result": {"message_id": 790}},
+                ),
+            ]
+        )
+        client = TelegramClient(
+            "token",
+            "chat",
+            session=session,
+            sleep=lambda _: None,
+        )
+
+        receipt = client.send_article(
+            SampleArticle(),
+            photo_url="https://example.com/broken.jpg",
+        )
+
+        self.assertTrue(session.calls[0][0].endswith("/sendPhoto"))
+        self.assertTrue(session.calls[1][0].endswith("/sendMessage"))
+        self.assertEqual(receipt.message_id, 790)
+        self.assertEqual(receipt.mode, "testo")
+        self.assertTrue(receipt.photo_fallback)
 
 
 if __name__ == "__main__":

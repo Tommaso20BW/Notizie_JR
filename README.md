@@ -104,7 +104,7 @@ I profili X configurati sono:
 
 Per Sky il bot prova la pagina della data richiesta e, se non esiste ancora (`404`), usa come fallback la pagina del giorno precedente. Juventus.com viene letto attraverso il feed datato e la relativa paginazione.
 
-Gli articoli vengono normalizzati, deduplicati e ordinati dal più vecchio al più recente. Il messaggio Telegram usa un solo formato: fonte, titolo, eventuale sommario e link al contenuto. Il client Telegram è separato dagli scraper, restituisce il `message_id` confermato dall’API e ritenta gli errori di rete, i rate limit `429` e gli errori temporanei `5xx`. Lo stato viene aggiornato soltanto dopo la conferma dell’invio.
+Gli articoli vengono normalizzati, deduplicati e ordinati dal più vecchio al più recente. Il messaggio Telegram usa un solo formato: fonte, titolo, eventuale sommario e link al contenuto. Se il contenuto espone una foto tramite feed RSS, YouTube, Open Graph o Twitter Card, il bot usa `sendPhoto` e inserisce il testo nella didascalia; se Telegram rifiuta la foto, ripiega sul messaggio testuale. Il client Telegram è separato dagli scraper, restituisce il `message_id` confermato dall’API e ritenta gli errori di rete, i rate limit `429` e gli errori temporanei `5xx`. Lo stato viene aggiornato soltanto dopo la conferma dell’invio.
 
 ### Stato anti-duplicati
 

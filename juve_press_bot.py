@@ -35,7 +35,13 @@ from zoneinfo import ZoneInfo
 import requests
 from bs4 import BeautifulSoup
 
-from telegram_notifier import TelegramClient, format_article_message
+from preview_image import PreviewImageResolver, normalize_image_url
+from telegram_notifier import (
+    TELEGRAM_MAX_CAPTION_LENGTH,
+    TELEGRAM_MAX_MESSAGE_LENGTH,
+    TelegramClient,
+    format_article_message,
+)
 
 
 def configure_console_encoding() -> None:
@@ -194,6 +200,7 @@ class Article:
     published: datetime
     summary: str = ""
     state_key: str = ""
+    image_url: str = ""
 
     @property
     def notification_key(self) -> str:
@@ -931,6 +938,9 @@ def scrape_youtube_channels(
                     url=f"https://www.youtube.com/watch?v={video_id}",
                     published=published,
                     state_key=state_key,
+                    image_url=(
+                        f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
+                    ),
                 )
             )
 
@@ -952,6 +962,29 @@ def _download_x_feed(
     except requests.RequestException:
         return None
     return response.content
+
+
+def _rss_item_image(item: ET.Element, page_url: str = "") -> str:
+    """Estrae una foto da media:content, enclosure o HTML del feed RSS."""
+    for child in item.iter():
+        local_name = child.tag.rsplit("}", 1)[-1].lower()
+        candidate = ""
+        if local_name in {"content", "thumbnail"}:
+            candidate = child.attrib.get("url", "")
+        elif local_name == "enclosure" and child.attrib.get(
+            "type", ""
+        ).startswith("image/"):
+            candidate = child.attrib.get("url", "")
+        image_url = normalize_image_url(candidate, page_url)
+        if image_url:
+            return image_url
+
+    description = item.findtext("description", default="")
+    if description:
+        image = BeautifulSoup(description, "html.parser").find("img", src=True)
+        if image:
+            return normalize_image_url(image.get("src", ""), page_url)
+    return ""
 
 
 def scrape_x_profiles(
@@ -1045,6 +1078,7 @@ def scrape_x_profiles(
                         url=tweet_url,
                         published=published,
                         state_key=state_key,
+                        image_url=_rss_item_image(item, raw_link),
                     )
                 )
 
@@ -1142,6 +1176,7 @@ def run(
     articles.sort(key=lambda item: (item.published, item.source, item.title))
 
     if dry_run:
+        preview_resolver = PreviewImageResolver(session)
         selected_days = ", ".join(
             requested_date.isoformat()
             for requested_date in sorted(requested_dates)
@@ -1153,8 +1188,22 @@ def run(
                 f"{article.published.strftime('%H:%M')} | {article.title}"
             )
             if preview_messages:
+                image_url = preview_resolver.resolve(
+                    article.url,
+                    article.image_url,
+                )
                 print("\n--- ANTEPRIMA TELEGRAM ---")
-                print(format_article_message(article))
+                print(f"[FOTO] {image_url or 'nessuna'}")
+                print(
+                    format_article_message(
+                        article,
+                        max_length=(
+                            TELEGRAM_MAX_CAPTION_LENGTH
+                            if image_url
+                            else TELEGRAM_MAX_MESSAGE_LENGTH
+                        ),
+                    )
+                )
                 print("--- FINE ANTEPRIMA ---\n")
         return
 
@@ -1192,13 +1241,18 @@ def run(
         return
 
     telegram = TelegramClient(token, chat_id)
+    preview_resolver = PreviewImageResolver(session)
     sent_count = 0
     for article in pending:
-        message_id = telegram.send_article(article)
+        image_url = preview_resolver.resolve(article.url, article.image_url)
+        receipt = telegram.send_article(article, photo_url=image_url)
         print(
             f"[NEWS] notificato da {article.source}: {article.title} "
-            f"(message_id={message_id or 'non disponibile'})"
+            f"(modalità={receipt.mode}, "
+            f"message_id={receipt.message_id or 'non disponibile'})"
         )
+        if receipt.photo_fallback:
+            print("[NEWS] foto non accettata da Telegram: inviato testo.")
         seen.add(article.notification_key)
         seen_list.append(article.notification_key)
         save_seen(seen_list)
