@@ -102,13 +102,13 @@ I profili X configurati sono:
 | `@_Morik92_` | Tutti i post | inclusi |
 | `@ilbianconerocom` | Tutti i post | inclusi |
 
-Per Sky il bot prova la pagina della data richiesta e, se non esiste ancora (`404`), usa come fallback la pagina del giorno precedente. Juventus.com viene letto attraverso il feed datato e la relativa paginazione.
+Per Sky il bot controlla esclusivamente la pagina della data richiesta. Se la pagina odierna non esiste ancora (`404`), la fonte viene ignorata senza mostrare errori nei log. Juventus.com viene letto attraverso il feed datato e la relativa paginazione.
 
 Gli articoli vengono normalizzati, deduplicati e ordinati dal più vecchio al più recente. Il messaggio Telegram usa un solo formato: fonte, titolo, eventuale sommario e link al contenuto. Se il contenuto espone una foto tramite feed RSS, YouTube, Open Graph o Twitter Card, il bot usa `sendPhoto` e inserisce il testo nella didascalia; se Telegram rifiuta la foto, ripiega sul messaggio testuale. Il client Telegram è separato dagli scraper, restituisce il `message_id` confermato dall’API e ritenta gli errori di rete, i rate limit `429` e gli errori temporanei `5xx`. Lo stato viene aggiornato soltanto dopo la conferma dell’invio.
 
 ### Stato anti-duplicati
 
-Gli identificativi notificati sono salvati in `.seen_juve_press_news.json` (massimo 2.000 elementi).
+Gli identificativi notificati sono salvati in `.seen_juve_press_news.json` insieme alla data di riferimento. Al primo run di un nuovo giorno il file viene azzerato automaticamente, perché le fonti ordinarie controllano soltanto i contenuti della data richiesta.
 
 Ogni notizia appena scoperta viene scritta immediatamente in `.pending_juve_press_news.json`, senza attendere il completamento delle altre fonti. Dopo la conferma dell’invio Telegram viene aggiunta allo stato delle notizie inviate e rimossa dal journal. Se una fonte successiva o Telegram falliscono, la notizia rimane nel journal e viene ritentata al run seguente.
 

@@ -96,7 +96,7 @@ class RunJournalTests(unittest.TestCase):
                 bot.run()
 
             self.assertEqual(
-                json.loads(seen.read_text(encoding="utf-8")),
+                json.loads(seen.read_text(encoding="utf-8"))["items"],
                 ["article:1"],
             )
             self.assertEqual(json.loads(pending.read_text(encoding="utf-8")), [])

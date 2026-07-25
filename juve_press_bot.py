@@ -529,19 +529,16 @@ def scrape_sky_calciomercato(
 ) -> list[Article]:
     articles_by_key: dict[str, Article] = {}
     for requested_date in sorted(requested_dates):
-        source_articles: list[Article] = []
-        for sky_date in (requested_date, requested_date - timedelta(days=1)):
-            try:
-                source_articles = _scrape_sky_calciomercato_for_date(
-                    session,
-                    sky_date,
-                )
-            except requests.HTTPError as error:
-                response = error.response
-                if response is None or response.status_code != 404:
-                    raise
+        try:
+            source_articles = _scrape_sky_calciomercato_for_date(
+                session,
+                requested_date,
+            )
+        except requests.HTTPError as error:
+            response = error.response
+            if response is not None and response.status_code == 404:
                 continue
-            break
+            raise
 
         for article in source_articles:
             articles_by_key.setdefault(article.notification_key, article)
@@ -1087,7 +1084,7 @@ def scrape_x_profiles(
     return articles
 
 
-def load_seen() -> list[str]:
+def load_seen(state_date: date) -> list[str]:
     if not STATE_FILE.exists():
         return []
     try:
@@ -1097,21 +1094,46 @@ def load_seen() -> list[str]:
             f"Stato non leggibile ({STATE_FILE.name}); "
             "interrompo per evitare notifiche duplicate."
         ) from error
-    if not isinstance(data, list) or not all(
-        isinstance(item, str) for item in data
+    # Migrazione trasparente dal vecchio formato, che era una semplice lista.
+    if isinstance(data, list) and all(isinstance(item, str) for item in data):
+        values = list(dict.fromkeys(data))
+        save_seen(values, state_date)
+        return values
+
+    if not isinstance(data, dict):
+        raise RuntimeError(
+            f"Formato non valido in {STATE_FILE.name}; "
+            "interrompo per evitare notifiche duplicate."
+        )
+    stored_date = data.get("date")
+    items = data.get("items")
+    if not isinstance(stored_date, str) or not isinstance(items, list) or not all(
+        isinstance(item, str) for item in items
     ):
         raise RuntimeError(
             f"Formato non valido in {STATE_FILE.name}; "
             "interrompo per evitare notifiche duplicate."
         )
-    return list(dict.fromkeys(data))
+
+    if stored_date != state_date.isoformat():
+        save_seen([], state_date)
+        print(
+            f"[STATO] nuovo giorno ({state_date.isoformat()}): "
+            "cache delle notizie inviate azzerata."
+        )
+        return []
+    return list(dict.fromkeys(items))
 
 
-def save_seen(seen: Iterable[str]) -> None:
+def save_seen(seen: Iterable[str], state_date: date) -> None:
     values = list(dict.fromkeys(seen))[-MAX_SEEN:]
     temporary = STATE_FILE.with_suffix(".json.tmp")
     temporary.write_text(
-        json.dumps(values, ensure_ascii=False, indent=2),
+        json.dumps(
+            {"date": state_date.isoformat(), "items": values},
+            ensure_ascii=False,
+            indent=2,
+        ),
         encoding="utf-8",
     )
     os.replace(temporary, STATE_FILE)
@@ -1203,7 +1225,7 @@ def run(
                 "Secret mancanti: configura TELEGRAM_TOKEN e CHAT_ID."
             )
 
-        seen_list = load_seen()
+        seen_list = load_seen(today)
         seen = set(seen_list)
         journal = ArticleJournal(PENDING_FILE)
         cleaned = journal.discard_all(seen)
@@ -1272,7 +1294,7 @@ def run(
             str(entry["notification_key"])
             for entry in journal.entries
         ]
-        save_seen(seen_list)
+        save_seen(seen_list, today)
         journal.clear()
         print(
             "[STATO] cache iniziale assente: "
@@ -1301,7 +1323,7 @@ def run(
             print("[NEWS] foto non accettata da Telegram: inviato testo.")
         seen.add(article.notification_key)
         seen_list.append(article.notification_key)
-        save_seen(seen_list)
+        save_seen(seen_list, today)
         journal.remove(article.notification_key)
         sent_count += 1
         time.sleep(0.8)
