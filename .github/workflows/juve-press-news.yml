@@ -9,7 +9,7 @@ permissions:
 
 concurrency:
   group: juventus-press-news
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   check-news:
