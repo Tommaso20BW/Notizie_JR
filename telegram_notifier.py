@@ -13,11 +13,6 @@ import requests
 TELEGRAM_MAX_MESSAGE_LENGTH = 4096
 TELEGRAM_MAX_CAPTION_LENGTH = 1024
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
-TELEGRAM_MAX_COPY_TEXT_LENGTH = 256
-CHATGPT_CONVERSATION_URL = (
-    "https://chatgpt.com/c/6a56beff-31e8-83eb-bcea-4547cd21f9e3"
-)
-GEMINI_APP_URL = "https://gemini.google.com/app"
 
 SOURCE_EMOJIS = (
     ("Sky Sport - Calciomercato", "6033058586945392520", "📰"),
@@ -92,52 +87,6 @@ def format_article_message(
     if len(message) > max_length:
         raise ValueError(f"Testo Telegram oltre il limite di {max_length} caratteri.")
     return message
-
-
-def article_reply_markup(article: ArticleLike) -> dict | None:
-    """Crea i pulsanti iPhone per copiare il prompt e aprire l'app AI."""
-    if article.source.startswith("X - @"):
-        copied_text = _clip(article.title, TELEGRAM_MAX_COPY_TEXT_LENGTH)
-        return {
-            "inline_keyboard": [
-                [
-                    {
-                        "text": "1️⃣ Copia tweet",
-                        "copy_text": {"text": copied_text},
-                    }
-                ],
-                [
-                    {
-                        "text": "2️⃣ Apri ChatGPT",
-                        "url": CHATGPT_CONVERSATION_URL,
-                    }
-                ],
-            ]
-        }
-
-    if article.source.startswith("YouTube - "):
-        copied_text = _clip(
-            f"Cosa dice nel video?\n{article.url.strip()}",
-            TELEGRAM_MAX_COPY_TEXT_LENGTH,
-        )
-        return {
-            "inline_keyboard": [
-                [
-                    {
-                        "text": "1️⃣ Copia domanda",
-                        "copy_text": {"text": copied_text},
-                    }
-                ],
-                [
-                    {
-                        "text": "2️⃣ Apri Gemini",
-                        "url": GEMINI_APP_URL,
-                    }
-                ],
-            ]
-        }
-
-    return None
 
 
 class TelegramClient:
@@ -215,38 +164,27 @@ class TelegramClient:
             f"tentativi: {last_error}"
         )
 
-    def send_message(
-        self,
-        text: str,
-        *,
-        reply_markup: dict | None = None,
-    ) -> int | None:
-        payload = {
-            "chat_id": self.chat_id,
-            "text": text,
-            "parse_mode": "HTML",
-            "disable_web_page_preview": True,
-        }
-        if reply_markup:
-            payload["reply_markup"] = reply_markup
-        return self._deliver("sendMessage", payload)
+    def send_message(self, text: str) -> int | None:
+        return self._deliver(
+            "sendMessage",
+            {
+                "chat_id": self.chat_id,
+                "text": text,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": True,
+            },
+        )
 
-    def send_photo(
-        self,
-        photo_url: str,
-        caption: str,
-        *,
-        reply_markup: dict | None = None,
-    ) -> int | None:
-        payload = {
-            "chat_id": self.chat_id,
-            "photo": photo_url,
-            "caption": caption,
-            "parse_mode": "HTML",
-        }
-        if reply_markup:
-            payload["reply_markup"] = reply_markup
-        return self._deliver("sendPhoto", payload)
+    def send_photo(self, photo_url: str, caption: str) -> int | None:
+        return self._deliver(
+            "sendPhoto",
+            {
+                "chat_id": self.chat_id,
+                "photo": photo_url,
+                "caption": caption,
+                "parse_mode": "HTML",
+            },
+        )
 
     def send_article(
         self,
@@ -254,7 +192,6 @@ class TelegramClient:
         *,
         photo_url: str = "",
     ) -> DeliveryReceipt:
-        reply_markup = article_reply_markup(article)
         if photo_url:
             try:
                 message_id = self.send_photo(
@@ -263,18 +200,11 @@ class TelegramClient:
                         article,
                         max_length=TELEGRAM_MAX_CAPTION_LENGTH,
                     ),
-                    reply_markup=reply_markup,
                 )
                 return DeliveryReceipt(message_id, "foto")
             except (TelegramDeliveryError, ValueError):
-                message_id = self.send_message(
-                    format_article_message(article),
-                    reply_markup=reply_markup,
-                )
+                message_id = self.send_message(format_article_message(article))
                 return DeliveryReceipt(message_id, "testo", photo_fallback=True)
 
-        message_id = self.send_message(
-            format_article_message(article),
-            reply_markup=reply_markup,
-        )
+        message_id = self.send_message(format_article_message(article))
         return DeliveryReceipt(message_id, "testo")

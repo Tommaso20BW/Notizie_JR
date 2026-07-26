@@ -4,11 +4,8 @@ from dataclasses import dataclass
 import requests
 
 from telegram_notifier import (
-    CHATGPT_CONVERSATION_URL,
-    GEMINI_APP_URL,
     TelegramClient,
     TelegramDeliveryError,
-    article_reply_markup,
     format_article_message,
 )
 
@@ -87,46 +84,6 @@ class TelegramNotifierTests(unittest.TestCase):
         self.assertEqual(sleeps, [4])
         self.assertEqual(len(session.calls), 2)
 
-    def test_x_buttons_copy_tweet_and_open_requested_chatgpt_chat(self):
-        article = SampleArticle(
-            source="X - @romeoagresti",
-            title="Testo completo del tweet",
-            url="https://x.com/romeoagresti/status/123",
-        )
-
-        keyboard = article_reply_markup(article)
-
-        self.assertEqual(
-            keyboard["inline_keyboard"][0][0]["copy_text"]["text"],
-            article.title,
-        )
-        self.assertEqual(
-            keyboard["inline_keyboard"][1][0]["url"],
-            CHATGPT_CONVERSATION_URL,
-        )
-
-    def test_youtube_buttons_copy_prompt_and_open_gemini(self):
-        article = SampleArticle(
-            source="YouTube - Romeo Agresti",
-            title="Nuovo video",
-            url="https://www.youtube.com/watch?v=abc123",
-        )
-
-        keyboard = article_reply_markup(article)
-
-        copied_text = keyboard["inline_keyboard"][0][0]["copy_text"]["text"]
-        self.assertEqual(
-            copied_text,
-            "Cosa dice nel video? https://www.youtube.com/watch?v=abc123",
-        )
-        self.assertEqual(
-            keyboard["inline_keyboard"][1][0]["url"],
-            GEMINI_APP_URL,
-        )
-
-    def test_regular_news_has_no_ai_buttons(self):
-        self.assertIsNone(article_reply_markup(SampleArticle()))
-
     def test_network_error_is_retried(self):
         session = FakeSession(
             [
@@ -190,42 +147,6 @@ class TelegramNotifierTests(unittest.TestCase):
         self.assertLessEqual(len(payload["caption"]), 1024)
         self.assertEqual(receipt.mode, "foto")
         self.assertFalse(receipt.photo_fallback)
-
-    def test_x_keyboard_is_sent_with_photo_and_text_fallback(self):
-        session = FakeSession(
-            [
-                FakeResponse(
-                    400,
-                    {"ok": False, "description": "wrong file identifier"},
-                ),
-                FakeResponse(
-                    200,
-                    {"ok": True, "result": {"message_id": 791}},
-                ),
-            ]
-        )
-        client = TelegramClient(
-            "token",
-            "chat",
-            session=session,
-            sleep=lambda _: None,
-        )
-        article = SampleArticle(
-            source="X - @juventusfc",
-            title="Forza Juve!",
-            url="https://x.com/juventusfc/status/456",
-        )
-
-        client.send_article(article, photo_url="https://example.com/photo.jpg")
-
-        for _, payload, _ in session.calls:
-            self.assertIn("reply_markup", payload)
-            self.assertEqual(
-                payload["reply_markup"]["inline_keyboard"][0][0]["copy_text"][
-                    "text"
-                ],
-                "Forza Juve!",
-            )
 
     def test_rejected_photo_falls_back_to_text(self):
         session = FakeSession(
