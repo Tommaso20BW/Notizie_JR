@@ -17,9 +17,7 @@ TELEGRAM_MAX_COPY_TEXT_LENGTH = 256
 CHATGPT_CONVERSATION_URL = (
     "https://chatgpt.com/c/6a56beff-31e8-83eb-bcea-4547cd21f9e3"
 )
-GEMINI_APP_URL = (
-    "https://tommaso20bw.github.io/Notizie_JR/open-gemini.html"
-)
+GEMINI_APP_URL = "https://gemini.google.com/app"
 
 SOURCE_EMOJIS = (
     ("Sky Sport - Calciomercato", "6033058586945392520", "📰"),
