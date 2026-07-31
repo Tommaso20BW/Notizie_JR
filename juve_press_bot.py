@@ -145,6 +145,7 @@ X_RSS_MIRROR_TEMPLATES = (
 )
 X_RSS_TIMEOUT_SECONDS = 12
 X_STATUS_PATH_RE = re.compile(r"^/([A-Za-z0-9_]+)/status/(\d+)$")
+X_MARKER_TRANSLATION = str.maketrans("", "", "#@")
 
 SKY_MONTH_NAMES = {
     1: "gennaio",
@@ -274,6 +275,11 @@ def is_juventus_x_post(text: str) -> bool:
     return is_juventus_title(text) or bool(
         X_JUVENTUS_MENTION_RE.search(text)
     )
+
+
+def clean_x_text(text: str) -> str:
+    """Rimuove i simboli di hashtag e menzioni dai testi provenienti da X."""
+    return text.translate(X_MARKER_TRANSLATION)
 
 
 def article_summary(card) -> str:
@@ -1072,8 +1078,8 @@ def scrape_x_profiles(
                 keys_done.add(state_key)
                 articles.append(
                     Article(
-                        source=f"X - @{handle}",
-                        title=title,
+                        source=f"X - {handle}",
+                        title=clean_x_text(title),
                         url=tweet_url,
                         published=published,
                         state_key=state_key,

@@ -85,7 +85,7 @@ Nell’esecuzione normale `juve_press_bot.py` raccoglie i contenuti pubblicati n
 | Quotidiani | Tuttosport, Corriere dello Sport, La Gazzetta dello Sport | Sezioni o feed dedicati alla Juventus. |
 | Altri siti | Sky Sport – Calciomercato, Juventus.com, Gianluca Di Marzio, Alfredo Pedullà, Borsa Italiana | Sky esclude i titoli contenenti `video`; Gianluca Di Marzio accetta solo titoli contenenti `Juventus`; le altre fonti applicano i rispettivi filtri. |
 | YouTube | Fabrizio Romano in Italiano, Romeo Agresti | Tutti i video pubblicati nella data richiesta, letti dai feed Atom ufficiali dei canali. |
-| X | 10 profili configurati | Lettura tramite mirror RSS pubblici, conversione dei collegamenti in URL `x.com` e filtri diversi per account. |
+| X | 10 profili configurati | Lettura tramite mirror RSS pubblici, conversione dei collegamenti in URL `x.com`, rimozione dei simboli `#` e `@` dal testo e filtri diversi per account. |
 
 I profili X configurati sono:
 
