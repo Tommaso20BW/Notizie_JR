@@ -94,8 +94,7 @@ JUVENTUS_FEED_TEMPLATE = (
 )
 GIANLUCA_DI_MARZIO_URL = "https://www.gianlucadimarzio.com/"
 ALFREDO_PEDULLA_JUVENTUS_URLS = (
-    "https://www.alfredopedulla.com/squadre/juventus/",
-    "https://www.alfredopedulla.com/tag/juventus/",
+    "https://www.alfredopedulla.com/search/juve/",
 )
 BORSA_ITALIANA_JUVENTUS_URL = (
     "https://www.borsaitaliana.it/borsa/azioni/"
