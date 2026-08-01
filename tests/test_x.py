@@ -191,7 +191,7 @@ class XTests(unittest.TestCase):
             "https://pbs.twimg.com/poster.jpg",
         )
 
-    def test_embedded_mp4_is_used_without_media_api(self):
+    def test_embedded_x_gif_uses_only_its_static_poster(self):
         item = bot.ET.fromstring(
             """<item><description><![CDATA[
             <video poster=\"poster.jpg\"><source src=\"clip.mp4\" type=\"video/mp4\"></video>
@@ -199,8 +199,62 @@ class XTests(unittest.TestCase):
         )
 
         self.assertEqual(
-            bot._rss_item_video_url(item, "https://nitter.example/user/status/1"),
-            "https://nitter.example/user/status/clip.mp4",
+            bot._rss_item_video_thumbnail(
+                item,
+                "https://nitter.example/user/status/1",
+            ),
+            "https://nitter.example/user/status/poster.jpg",
+        )
+
+    def test_x_gif_post_is_scraped_as_static_photo_not_video(self):
+        gif_feed = b"""<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+<rss version=\"2.0\">
+  <channel>
+    <item>
+      <title>GIF Juventus</title>
+      <pubDate>Fri, 31 Jul 2026 10:00:00 GMT</pubDate>
+      <guid>2083000000000000002</guid>
+      <link>https://nitter.example/Reporter/status/2083000000000000002</link>
+      <description><![CDATA[
+        <video poster=\"https://nitter.example/pic/poster.jpg\">
+          <source src=\"https://nitter.example/pic/animated.mp4\" type=\"video/mp4\">
+        </video>
+      ]]></description>
+    </item>
+  </channel>
+</rss>
+"""
+        feed_response = FeedResponse()
+        feed_response.content = gif_feed
+        accounts = (
+            {
+                "handle": "Reporter",
+                "filter_juventus": True,
+                "include_reposts": False,
+            },
+        )
+        mirrors = ("https://nitter.example/{handle}/rss",)
+
+        with (
+            patch.object(bot, "X_ACCOUNTS", accounts),
+            patch.object(bot, "X_RSS_MIRROR_TEMPLATES", mirrors),
+            patch.object(
+                bot.requests,
+                "get",
+                return_value=feed_response,
+            ) as request,
+        ):
+            articles = bot.scrape_x_profiles(
+                FakeSession(),
+                {date(2026, 7, 31)},
+            )
+
+        self.assertEqual(request.call_count, 1)
+        self.assertEqual(len(articles), 1)
+        self.assertEqual(articles[0].video_url, "")
+        self.assertEqual(
+            articles[0].image_url,
+            "https://nitter.example/pic/poster.jpg",
         )
 
     def test_video_enclosure_is_not_mistaken_for_a_photo(self):
@@ -210,10 +264,21 @@ class XTests(unittest.TestCase):
         )
 
         self.assertEqual(bot._rss_item_images(item), [])
-        self.assertEqual(
-            bot._rss_item_video_url(item),
-            "https://cdn.example/clip.mp4",
+
+    def test_vxtwitter_gif_is_not_classified_as_video(self):
+        media = bot._x_media_from_payload(
+            {
+                "media_extended": [
+                    {
+                        "type": "gif",
+                        "url": "https://video.twimg.com/animated.mp4",
+                        "thumbnail_url": "https://pbs.twimg.com/poster.jpg",
+                    }
+                ]
+            }
         )
+
+        self.assertEqual(media.video_url, "")
 
 
 if __name__ == "__main__":

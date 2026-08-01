@@ -1021,38 +1021,6 @@ def _rss_item_images(item: ET.Element, page_url: str = "") -> list[str]:
     return images
 
 
-def _rss_item_video_url(item: ET.Element, page_url: str = "") -> str:
-    """Restituisce un MP4 incorporato direttamente nel feed (tipicamente GIF)."""
-
-    def normalized(candidate: str) -> str:
-        return normalize_image_url(candidate, page_url)
-
-    for child in item.iter():
-        local_name = child.tag.rsplit("}", 1)[-1].lower()
-        media_type = child.attrib.get("type", "").lower()
-        if (
-            local_name in {"content", "enclosure"}
-            and media_type == "video/mp4"
-        ):
-            video_url = normalized(child.attrib.get("url", ""))
-            if video_url:
-                return video_url
-
-    description = item.findtext("description", default="")
-    if not description:
-        return ""
-    soup = BeautifulSoup(description, "html.parser")
-    for element in soup.select("video[src], video source[src]"):
-        media_type = str(element.get("type") or "").lower()
-        candidate = str(element.get("src") or "")
-        if media_type and media_type != "video/mp4" and ".mp4" not in candidate:
-            continue
-        video_url = normalized(candidate)
-        if video_url:
-            return video_url
-    return ""
-
-
 def _rss_item_video_thumbnail(item: ET.Element, page_url: str = "") -> str:
     description = item.findtext("description", default="")
     if not description:
@@ -1161,7 +1129,9 @@ def _x_media_from_payload(payload: dict) -> XMedia:
     for media in extended_media:
         if not isinstance(media, dict):
             continue
-        if str(media.get("type") or "").lower() not in {"video", "gif"}:
+        # Le GIF di X sono MP4 senza audio, ma Telegram le mostra come
+        # animazioni in loop: vengono escluse esplicitamente.
+        if str(media.get("type") or "").lower() != "video":
             continue
         video_url = _best_x_mp4(media)
         if video_url:
@@ -1282,9 +1252,9 @@ def scrape_x_profiles(
                 keys_done.add(state_key)
                 image_urls = tuple(_rss_item_images(item, raw_link))
                 rss_image_urls = image_urls
-                video_url = _rss_item_video_url(item, raw_link)
+                video_url = ""
                 video_thumbnail_url = _rss_item_video_thumbnail(item, raw_link)
-                if not video_url and _rss_item_has_native_video(item):
+                if _rss_item_has_native_video(item):
                     x_media = _resolve_x_media(tweet_id)
                     video_url = x_media.video_url
                     if video_url:
@@ -1294,6 +1264,13 @@ def scrape_x_profiles(
                         video_thumbnail_url = x_media.video_thumbnail_url or (
                             rss_image_urls[0] if rss_image_urls else ""
                         )
+                elif video_thumbnail_url:
+                    # Il tag <video> nei feed Nitter rappresenta una GIF di X.
+                    # Non inviamo l'MP4 animato: usiamo soltanto il poster
+                    # statico quando non ci sono vere foto nel post.
+                    if not image_urls:
+                        image_urls = (video_thumbnail_url,)
+                    video_thumbnail_url = ""
                 articles.append(
                     Article(
                         source=f"X - {handle}",
