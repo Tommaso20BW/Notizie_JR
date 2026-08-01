@@ -771,18 +771,12 @@ def render_testo(testo):
     return testo.strip()
 
 
-# Stato per il separatore: viene inserito tra due notizie.
-_prima_notizia_inviata = False
-
-
 def send_to_telegram(news_list):
     """
     Invia un solo messaggio per notizia, con la fonte in alto, e restituisce
     True soltanto se ogni invio riesce.
     """
-    global _prima_notizia_inviata
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    separatore = "———————————————"
 
     emoji_mapping = {
         "TUTTO": (
@@ -850,14 +844,8 @@ def send_to_telegram(news_list):
 
         testo = f"{emoji_fonte} <i>{nome_fonte}</i>\n\n{corpo}"
 
-        if _prima_notizia_inviata:
-            tutto_inviato = _post(separatore) and tutto_inviato
-            time.sleep(1)
-
         esito = _post(testo)
         tutto_inviato = esito and tutto_inviato
-        if esito:
-            _prima_notizia_inviata = True
         time.sleep(1)
 
     return tutto_inviato
