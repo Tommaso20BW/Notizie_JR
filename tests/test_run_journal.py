@@ -20,6 +20,7 @@ class FakeTelegramClient:
         article,
         *,
         video_url="",
+        video_file_path="",
         video_thumbnail_url="",
         photo_url="",
         photo_urls=(),

@@ -43,6 +43,7 @@ from telegram_notifier import (
     TelegramClient,
     format_article_message,
 )
+from video_media import VideoPreparationError, prepare_telegram_video
 
 
 def configure_console_encoding() -> None:
@@ -1527,12 +1528,37 @@ def run(
     sent_count = 0
     for article in pending:
         image_urls = preview_resolver.resolve_all(article.url, article.all_image_urls)
-        receipt = telegram.send_article(
-            article,
-            video_url=article.video_url,
-            video_thumbnail_url=article.video_thumbnail_url,
-            photo_urls=image_urls,
-        )
+        if article.video_url:
+            try:
+                with prepare_telegram_video(
+                    session,
+                    article.video_url,
+                ) as video_file:
+                    receipt = telegram.send_article(
+                        article,
+                        video_file_path=str(video_file),
+                        video_thumbnail_url=article.video_thumbnail_url,
+                        photo_urls=image_urls,
+                    )
+            except VideoPreparationError as error:
+                fallback_images = image_urls or (
+                    [article.video_thumbnail_url]
+                    if article.video_thumbnail_url
+                    else []
+                )
+                print(
+                    f"[NEWS] video non preparabile ({error}): "
+                    "uso il fallback statico."
+                )
+                receipt = telegram.send_article(
+                    article,
+                    photo_urls=fallback_images,
+                )
+        else:
+            receipt = telegram.send_article(
+                article,
+                photo_urls=image_urls,
+            )
         print(
             f"[NEWS] notificato da {article.source}: {article.title} "
             f"(modalità={receipt.mode}, "

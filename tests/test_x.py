@@ -158,6 +158,45 @@ class XTests(unittest.TestCase):
             "https://pbs.twimg.com/poster.jpg",
         )
 
+    def test_user_example_is_a_real_video_not_a_gif(self):
+        media = bot._x_media_from_payload(
+            {
+                "tweet": {
+                    "media": {
+                        "videos": [
+                            {
+                                "id": "2083627667866206208",
+                                "type": "video",
+                                "duration": 21.633,
+                                "thumbnail_url": (
+                                    "https://pbs.twimg.com/amplify_video_thumb/"
+                                    "2083627667866206208/img/kteiamyN0mIPAr77.jpg"
+                                ),
+                                "formats": [
+                                    {
+                                        "url": (
+                                            "https://video.twimg.com/amplify_video/"
+                                            "2083627667866206208/vid/avc1/720x900/"
+                                            "msU13mr0uz0hMYsG.mp4?tag=14"
+                                        ),
+                                        "container": "mp4",
+                                        "bitrate": 2_176_000,
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                }
+            }
+        )
+
+        self.assertEqual(
+            media.video_url,
+            "https://video.twimg.com/amplify_video/"
+            "2083627667866206208/vid/avc1/720x900/"
+            "msU13mr0uz0hMYsG.mp4?tag=14",
+        )
+
     def test_x_post_with_video_and_photos_keeps_both_media_types(self):
         payload = {
             "tweet": {

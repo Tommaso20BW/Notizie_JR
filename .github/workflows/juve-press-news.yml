@@ -32,6 +32,15 @@ jobs:
           python -m pip install --upgrade pip==26.1.2
           pip install -r requirements-juve-press.txt
 
+      - name: Installa il supporto video
+        run: |
+          if ! command -v ffmpeg >/dev/null || ! command -v ffprobe >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y ffmpeg
+          fi
+          ffmpeg -version
+          ffprobe -version
+
       - name: Verifica invio Telegram
         run: python -m unittest discover -s tests -v
 

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from html import escape
+from pathlib import Path
 from typing import Protocol
 
 import requests
@@ -164,6 +166,56 @@ class TelegramClient:
             f"tentativi: {last_error}"
         )
 
+    def _deliver_file_result(
+        self,
+        method: str,
+        payload: dict,
+        video_file_path: str,
+    ):
+        """Invia un MP4 multipart riaprendo il file a ogni tentativo."""
+        last_error = "errore sconosciuto"
+        path = Path(video_file_path)
+
+        for attempt in range(1, self.max_attempts + 1):
+            try:
+                with path.open("rb") as video_file:
+                    response = self.session.post(
+                        f"{self.api_root}/{method}",
+                        data=payload,
+                        files={
+                            "video": (
+                                "video.mp4",
+                                video_file,
+                                "video/mp4",
+                            )
+                        },
+                        timeout=60,
+                    )
+            except (OSError, requests.RequestException) as error:
+                last_error = f"errore di rete o file: {error}"
+                if attempt == self.max_attempts:
+                    break
+                self.sleep(self._retry_delay(attempt))
+                continue
+
+            data = self._response_data(response)
+            if response.ok and data.get("ok") is True:
+                return data.get("result")
+
+            description = data.get("description") or response.text
+            last_error = f"HTTP {response.status_code} - {description}"
+            if (
+                response.status_code not in RETRYABLE_STATUS_CODES
+                or attempt == self.max_attempts
+            ):
+                break
+            self.sleep(self._retry_delay(attempt, data))
+
+        raise TelegramDeliveryError(
+            f"Telegram {method} fallito dopo {self.max_attempts} "
+            f"tentativi: {last_error}"
+        )
+
     def send_message(self, text: str) -> int | None:
         result = self._deliver_result(
             "sendMessage",
@@ -200,6 +252,20 @@ class TelegramClient:
                 "parse_mode": "HTML",
                 "supports_streaming": True,
             },
+        )
+        message_id = (result or {}).get("message_id")
+        return int(message_id) if message_id is not None else None
+
+    def send_video_file(self, video_file_path: str, caption: str) -> int | None:
+        result = self._deliver_file_result(
+            "sendVideo",
+            {
+                "chat_id": self.chat_id,
+                "caption": caption,
+                "parse_mode": "HTML",
+                "supports_streaming": "true",
+            },
+            video_file_path,
         )
         message_id = (result or {}).get("message_id")
         return int(message_id) if message_id is not None else None
@@ -261,11 +327,45 @@ class TelegramClient:
             if entry.get("message_id") is not None
         ]
 
+    def send_mixed_media_group_file(
+        self,
+        video_file_path: str,
+        photo_urls: Sequence[str],
+        caption: str,
+    ) -> list[int]:
+        media = [
+            {
+                "type": "video",
+                "media": "attach://video",
+                "caption": caption,
+                "parse_mode": "HTML",
+                "supports_streaming": True,
+            }
+        ]
+        media.extend(
+            {"type": "photo", "media": url}
+            for url in photo_urls[:9]
+        )
+        result = self._deliver_file_result(
+            "sendMediaGroup",
+            {
+                "chat_id": self.chat_id,
+                "media": json.dumps(media, ensure_ascii=False),
+            },
+            video_file_path,
+        )
+        return [
+            int(entry["message_id"])
+            for entry in (result or [])
+            if entry.get("message_id") is not None
+        ]
+
     def send_article(
         self,
         article: ArticleLike,
         *,
         video_url: str = "",
+        video_file_path: str = "",
         video_thumbnail_url: str = "",
         photo_url: str = "",
         photo_urls: Sequence[str] = (),
@@ -276,31 +376,43 @@ class TelegramClient:
         )
 
         mixed_album_failed = False
-        if video_url and urls:
+        if (video_file_path or video_url) and urls:
             try:
-                message_ids = self.send_mixed_media_group(
-                    video_url,
-                    urls,
-                    format_article_message(
-                        article,
-                        max_length=TELEGRAM_MAX_CAPTION_LENGTH,
-                    ),
+                caption = format_article_message(
+                    article,
+                    max_length=TELEGRAM_MAX_CAPTION_LENGTH,
                 )
+                if video_file_path:
+                    message_ids = self.send_mixed_media_group_file(
+                        video_file_path,
+                        urls,
+                        caption,
+                    )
+                else:
+                    message_ids = self.send_mixed_media_group(
+                        video_url,
+                        urls,
+                        caption,
+                    )
                 first_id = message_ids[0] if message_ids else None
                 return DeliveryReceipt(first_id, "album")
             except (TelegramDeliveryError, ValueError):
                 mixed_album_failed = True
 
         video_fallback = False
-        if video_url:
+        if video_file_path or video_url:
             try:
-                message_id = self.send_video(
-                    video_url,
-                    format_article_message(
-                        article,
-                        max_length=TELEGRAM_MAX_CAPTION_LENGTH,
-                    ),
+                caption = format_article_message(
+                    article,
+                    max_length=TELEGRAM_MAX_CAPTION_LENGTH,
                 )
+                if video_file_path:
+                    message_id = self.send_video_file(
+                        video_file_path,
+                        caption,
+                    )
+                else:
+                    message_id = self.send_video(video_url, caption)
                 return DeliveryReceipt(
                     message_id,
                     "video",

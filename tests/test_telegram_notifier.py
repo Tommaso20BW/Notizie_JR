@@ -1,5 +1,7 @@
 import unittest
 from dataclasses import dataclass
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import requests
 
@@ -34,8 +36,18 @@ class FakeSession:
         self.results = list(results)
         self.calls = []
 
-    def post(self, endpoint, json, timeout):
-        self.calls.append((endpoint, json, timeout))
+    def post(
+        self,
+        endpoint,
+        json=None,
+        timeout=None,
+        data=None,
+        files=None,
+    ):
+        payload = json if json is not None else data
+        self.calls.append((endpoint, payload, timeout))
+        self.files = getattr(self, "files", [])
+        self.files.append(files)
         result = self.results.pop(0)
         if isinstance(result, Exception):
             raise result
@@ -209,6 +221,38 @@ class TelegramNotifierTests(unittest.TestCase):
         self.assertEqual(receipt.mode, "video")
         self.assertFalse(receipt.video_fallback)
 
+    def test_prepared_video_is_uploaded_as_multipart_video(self):
+        session = FakeSession(
+            [
+                FakeResponse(
+                    200,
+                    {"ok": True, "result": {"message_id": 795}},
+                )
+            ]
+        )
+        client = TelegramClient(
+            "token",
+            "chat",
+            session=session,
+            sleep=lambda _: None,
+        )
+
+        with TemporaryDirectory() as directory:
+            video_file = Path(directory) / "prepared.mp4"
+            video_file.write_bytes(b"prepared-video")
+            receipt = client.send_article(
+                SampleArticle(),
+                video_file_path=str(video_file),
+            )
+
+        endpoint, payload, timeout = session.calls[0]
+        self.assertTrue(endpoint.endswith("/sendVideo"))
+        self.assertEqual(payload["supports_streaming"], "true")
+        self.assertEqual(timeout, 60)
+        self.assertIn("video", session.files[0])
+        self.assertEqual(receipt.message_id, 795)
+        self.assertEqual(receipt.mode, "video")
+
     def test_video_and_photos_are_sent_as_one_mixed_album(self):
         session = FakeSession(
             [
@@ -250,6 +294,44 @@ class TelegramNotifierTests(unittest.TestCase):
         self.assertIn("caption", payload["media"][0])
         self.assertNotIn("caption", payload["media"][1])
         self.assertEqual(receipt.message_id, 792)
+        self.assertEqual(receipt.mode, "album")
+
+    def test_prepared_video_and_photos_use_multipart_mixed_album(self):
+        session = FakeSession(
+            [
+                FakeResponse(
+                    200,
+                    {
+                        "ok": True,
+                        "result": [
+                            {"message_id": 796},
+                            {"message_id": 797},
+                        ],
+                    },
+                )
+            ]
+        )
+        client = TelegramClient(
+            "token",
+            "chat",
+            session=session,
+            sleep=lambda _: None,
+        )
+
+        with TemporaryDirectory() as directory:
+            video_file = Path(directory) / "prepared.mp4"
+            video_file.write_bytes(b"prepared-video")
+            receipt = client.send_article(
+                SampleArticle(),
+                video_file_path=str(video_file),
+                photo_urls=("https://pbs.twimg.com/photo.jpg",),
+            )
+
+        endpoint, payload, _ = session.calls[0]
+        self.assertTrue(endpoint.endswith("/sendMediaGroup"))
+        self.assertIn('"media": "attach://video"', payload["media"])
+        self.assertIn("video", session.files[0])
+        self.assertEqual(receipt.message_id, 796)
         self.assertEqual(receipt.mode, "album")
 
     def test_rejected_video_falls_back_to_poster(self):
