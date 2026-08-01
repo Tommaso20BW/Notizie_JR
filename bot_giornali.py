@@ -259,7 +259,12 @@ def _genera_json(uploaded, prompt, schema=SCHEMA_NOTIZIE):
                     "response_mime_type": "application/json",
                     "response_schema": schema,
                     "temperature": 0,
-                    "max_output_tokens": 16384,
+                    "max_output_tokens": 65536,
+                    # Con notizie integrali (non più tagliate a 280 caratteri)
+                    # il JSON di risposta è molto più grande: si riserva poco
+                    # budget al "pensiero" interno del modello, così non
+                    # sottrae spazio al testo effettivo delle notizie.
+                    "thinking_config": {"thinking_budget": 2048},
                 },
             )
 
