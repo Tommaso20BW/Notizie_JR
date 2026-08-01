@@ -85,7 +85,7 @@ Nell’esecuzione normale `juve_press_bot.py` raccoglie i contenuti pubblicati n
 | Quotidiani | Tuttosport, Corriere dello Sport, La Gazzetta dello Sport | Sezioni o feed dedicati alla Juventus. |
 | Altri siti | Sky Sport – Calciomercato, Juventus.com, Gianluca Di Marzio, Alfredo Pedullà, Borsa Italiana | Sky esclude i titoli contenenti `video`; Gianluca Di Marzio accetta solo titoli contenenti `Juventus`; le altre fonti applicano i rispettivi filtri. |
 | YouTube | Fabrizio Romano in Italiano, Romeo Agresti | Tutti i video pubblicati nella data richiesta, letti dai feed Atom ufficiali dei canali. |
-| X | 10 profili configurati | Lettura tramite mirror RSS pubblici, conversione dei collegamenti in URL `x.com`, rimozione dei simboli `#` e `@` dal testo e filtri diversi per account. |
+| X | 11 profili configurati | Lettura tramite mirror RSS pubblici, conversione dei collegamenti in URL `x.com`, rimozione dei simboli `#` e `@` dal testo e filtri diversi per account. I post con un video nativo vengono inviati come video Telegram. |
 
 I profili X configurati sono:
 
@@ -104,7 +104,7 @@ I profili X configurati sono:
 
 Per Sky il bot controlla esclusivamente la pagina della data richiesta. Se la pagina odierna non esiste ancora (`404`), la fonte viene ignorata senza mostrare errori nei log. Juventus.com viene letto attraverso il feed datato e la relativa paginazione.
 
-Gli articoli vengono normalizzati, deduplicati e ordinati dal più vecchio al più recente. Il messaggio Telegram usa un solo formato: fonte, titolo, eventuale sommario e link al contenuto. Se il contenuto espone una foto tramite feed RSS, YouTube, Open Graph o Twitter Card, il bot usa `sendPhoto` e inserisce il testo nella didascalia; se Telegram rifiuta la foto, ripiega sul messaggio testuale. Il client Telegram è separato dagli scraper, restituisce il `message_id` confermato dall’API e ritenta gli errori di rete, i rate limit `429` e gli errori temporanei `5xx`. Lo stato viene aggiornato soltanto dopo la conferma dell’invio.
+Gli articoli vengono normalizzati, deduplicati e ordinati dal più vecchio al più recente. Il messaggio Telegram usa un solo formato: fonte, titolo, eventuale sommario e link al contenuto. Se un post X contiene un video nativo o una GIF MP4, il bot usa `sendVideo`; se contiene anche foto reali, invia video e foto insieme con `sendMediaGroup`. Sceglie una variante video adatta al limite degli URL remoti di Telegram e, se il video viene rifiutato, ripiega sulle foto, sulla copertina o sul testo. Se il contenuto espone una foto tramite feed RSS, YouTube, Open Graph o Twitter Card, il bot usa `sendPhoto` e inserisce il testo nella didascalia; se Telegram rifiuta la foto, ripiega sul messaggio testuale. Il client Telegram è separato dagli scraper, restituisce il `message_id` confermato dall'API e ritenta gli errori di rete, i rate limit `429` e gli errori temporanei `5xx`. Lo stato viene aggiornato soltanto dopo la conferma dell'invio.
 
 ### Stato anti-duplicati
 
@@ -188,7 +188,7 @@ Notizie_JR/
 
 - L’estrazione PDF dipende dalla leggibilità del documento e dalla risposta di Gemini; i controlli riducono, ma non eliminano, il rischio di errori.
 - I selettori HTML e gli endpoint non documentati delle fonti web possono cambiare.
-- Il monitoraggio X dipende dai mirror RSS pubblici configurati (`nitter.net` e `xcancel.com`): se entrambi sono indisponibili o cambiano formato, la categoria X viene saltata per quell’esecuzione.
+- Il monitoraggio X dipende dai mirror RSS pubblici configurati e, per ricavare gli MP4 dei video nativi, dalle API pubbliche FxTwitter/VxTwitter: se i servizi disponibili sono indisponibili o cambiano formato, il post conserva comunque la copertina e il link a X.
 - I feed YouTube includono tutti i video dei due canali configurati, senza un ulteriore filtro Juventus sul titolo.
 - Entrambi i workflow sono manuali: il repository non contiene uno `schedule`.
 - Lo stato del bot web vive nel file versionato `.seen_juve_press_news.json`; il workflow usa un gruppo di concorrenza per evitare esecuzioni sovrapposte.

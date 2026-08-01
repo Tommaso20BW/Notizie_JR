@@ -16,6 +16,8 @@ class JournalArticle(Protocol):
     state_key: str
     image_url: str
     image_urls: tuple[str, ...]
+    video_url: str
+    video_thumbnail_url: str
     published: object
 
     @property
@@ -73,6 +75,8 @@ class ArticleJournal:
             "state_key": article.state_key,
             "image_url": article.image_url,
             "image_urls": list(article.image_urls),
+            "video_url": article.video_url,
+            "video_thumbnail_url": article.video_thumbnail_url,
         }
         self._save()
         return True

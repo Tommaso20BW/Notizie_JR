@@ -44,6 +44,7 @@ class DeliveryReceipt:
     message_id: int | None
     mode: str
     photo_fallback: bool = False
+    video_fallback: bool = False
 
 
 def source_emoji(source: str) -> str:
@@ -189,6 +190,20 @@ class TelegramClient:
         message_id = (result or {}).get("message_id")
         return int(message_id) if message_id is not None else None
 
+    def send_video(self, video_url: str, caption: str) -> int | None:
+        result = self._deliver_result(
+            "sendVideo",
+            {
+                "chat_id": self.chat_id,
+                "video": video_url,
+                "caption": caption,
+                "parse_mode": "HTML",
+                "supports_streaming": True,
+            },
+        )
+        message_id = (result or {}).get("message_id")
+        return int(message_id) if message_id is not None else None
+
     def send_media_group(
         self,
         photo_urls: Sequence[str],
@@ -216,10 +231,42 @@ class TelegramClient:
                 message_ids.append(int(message_id))
         return message_ids
 
+    def send_mixed_media_group(
+        self,
+        video_url: str,
+        photo_urls: Sequence[str],
+        caption: str,
+    ) -> list[int]:
+        """Invia un video e le eventuali foto dello stesso post in un album."""
+        media = [
+            {
+                "type": "video",
+                "media": video_url,
+                "caption": caption,
+                "parse_mode": "HTML",
+                "supports_streaming": True,
+            }
+        ]
+        media.extend(
+            {"type": "photo", "media": url}
+            for url in photo_urls[:9]
+        )
+        result = self._deliver_result(
+            "sendMediaGroup",
+            {"chat_id": self.chat_id, "media": media},
+        )
+        return [
+            int(entry["message_id"])
+            for entry in (result or [])
+            if entry.get("message_id") is not None
+        ]
+
     def send_article(
         self,
         article: ArticleLike,
         *,
+        video_url: str = "",
+        video_thumbnail_url: str = "",
         photo_url: str = "",
         photo_urls: Sequence[str] = (),
     ) -> DeliveryReceipt:
@@ -227,6 +274,43 @@ class TelegramClient:
         urls = list(photo_urls)[:10] if photo_urls else (
             [photo_url] if photo_url else []
         )
+
+        mixed_album_failed = False
+        if video_url and urls:
+            try:
+                message_ids = self.send_mixed_media_group(
+                    video_url,
+                    urls,
+                    format_article_message(
+                        article,
+                        max_length=TELEGRAM_MAX_CAPTION_LENGTH,
+                    ),
+                )
+                first_id = message_ids[0] if message_ids else None
+                return DeliveryReceipt(first_id, "album")
+            except (TelegramDeliveryError, ValueError):
+                mixed_album_failed = True
+
+        video_fallback = False
+        if video_url:
+            try:
+                message_id = self.send_video(
+                    video_url,
+                    format_article_message(
+                        article,
+                        max_length=TELEGRAM_MAX_CAPTION_LENGTH,
+                    ),
+                )
+                return DeliveryReceipt(
+                    message_id,
+                    "video",
+                    photo_fallback=mixed_album_failed,
+                )
+            except (TelegramDeliveryError, ValueError):
+                video_fallback = True
+
+        if video_fallback and not urls and video_thumbnail_url:
+            urls = [video_thumbnail_url]
 
         if len(urls) > 1:
             try:
@@ -238,10 +322,19 @@ class TelegramClient:
                     ),
                 )
                 first_id = message_ids[0] if message_ids else None
-                return DeliveryReceipt(first_id, "album")
+                return DeliveryReceipt(
+                    first_id,
+                    "album",
+                    video_fallback=video_fallback,
+                )
             except (TelegramDeliveryError, ValueError):
                 message_id = self.send_message(format_article_message(article))
-                return DeliveryReceipt(message_id, "testo", photo_fallback=True)
+                return DeliveryReceipt(
+                    message_id,
+                    "testo",
+                    photo_fallback=True,
+                    video_fallback=video_fallback,
+                )
 
         if urls:
             try:
@@ -252,10 +345,23 @@ class TelegramClient:
                         max_length=TELEGRAM_MAX_CAPTION_LENGTH,
                     ),
                 )
-                return DeliveryReceipt(message_id, "foto")
+                return DeliveryReceipt(
+                    message_id,
+                    "foto",
+                    video_fallback=video_fallback,
+                )
             except (TelegramDeliveryError, ValueError):
                 message_id = self.send_message(format_article_message(article))
-                return DeliveryReceipt(message_id, "testo", photo_fallback=True)
+                return DeliveryReceipt(
+                    message_id,
+                    "testo",
+                    photo_fallback=True,
+                    video_fallback=video_fallback,
+                )
 
         message_id = self.send_message(format_article_message(article))
-        return DeliveryReceipt(message_id, "testo")
+        return DeliveryReceipt(
+            message_id,
+            "testo",
+            video_fallback=video_fallback,
+        )

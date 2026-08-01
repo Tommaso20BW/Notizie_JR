@@ -15,7 +15,15 @@ class FakeTelegramClient:
         self.token = token
         self.chat_id = chat_id
 
-    def send_article(self, article, *, photo_url="", photo_urls=()):
+    def send_article(
+        self,
+        article,
+        *,
+        video_url="",
+        video_thumbnail_url="",
+        photo_url="",
+        photo_urls=(),
+    ):
         return DeliveryReceipt(message_id=100, mode="testo")
 
 

@@ -143,6 +143,14 @@ X_RSS_MIRROR_TEMPLATES = (
     "https://farside.link/nitter/{handle}/rss",
 )
 X_RSS_TIMEOUT_SECONDS = 12
+X_MEDIA_API_TEMPLATES = (
+    "https://api.fxtwitter.com/status/{tweet_id}",
+    "https://api.vxtwitter.com/status/{tweet_id}",
+)
+X_MEDIA_API_TIMEOUT_SECONDS = 12
+# Telegram può scaricare da un URL remoto file non-foto fino a 20 MB.
+# Teniamo un margine per l'audio, che non è incluso nel bitrate video.
+TELEGRAM_REMOTE_VIDEO_TARGET_BYTES = 18_000_000
 X_STATUS_PATH_RE = re.compile(r"^/([A-Za-z0-9_]+)/status/(\d+)$")
 X_MARKER_TRANSLATION = str.maketrans("", "", "#@")
 
@@ -204,6 +212,8 @@ class Article:
     state_key: str = ""
     image_url: str = ""
     image_urls: tuple[str, ...] = ()
+    video_url: str = ""
+    video_thumbnail_url: str = ""
 
     @property
     def notification_key(self) -> str:
@@ -992,11 +1002,13 @@ def _rss_item_images(item: ET.Element, page_url: str = "") -> list[str]:
 
     for child in item.iter():
         local_name = child.tag.rsplit("}", 1)[-1].lower()
-        if local_name in {"content", "thumbnail"}:
+        media_type = child.attrib.get("type", "").lower()
+        if local_name == "thumbnail" or (
+            local_name == "content"
+            and (not media_type or media_type.startswith("image/"))
+        ):
             add(child.attrib.get("url", ""))
-        elif local_name == "enclosure" and child.attrib.get(
-            "type", ""
-        ).startswith("image/"):
+        elif local_name == "enclosure" and media_type.startswith("image/"):
             add(child.attrib.get("url", ""))
 
     description = item.findtext("description", default="")
@@ -1007,6 +1019,181 @@ def _rss_item_images(item: ET.Element, page_url: str = "") -> list[str]:
             add(image.get("src", ""))
 
     return images
+
+
+def _rss_item_video_url(item: ET.Element, page_url: str = "") -> str:
+    """Restituisce un MP4 incorporato direttamente nel feed (tipicamente GIF)."""
+
+    def normalized(candidate: str) -> str:
+        return normalize_image_url(candidate, page_url)
+
+    for child in item.iter():
+        local_name = child.tag.rsplit("}", 1)[-1].lower()
+        media_type = child.attrib.get("type", "").lower()
+        if (
+            local_name in {"content", "enclosure"}
+            and media_type == "video/mp4"
+        ):
+            video_url = normalized(child.attrib.get("url", ""))
+            if video_url:
+                return video_url
+
+    description = item.findtext("description", default="")
+    if not description:
+        return ""
+    soup = BeautifulSoup(description, "html.parser")
+    for element in soup.select("video[src], video source[src]"):
+        media_type = str(element.get("type") or "").lower()
+        candidate = str(element.get("src") or "")
+        if media_type and media_type != "video/mp4" and ".mp4" not in candidate:
+            continue
+        video_url = normalized(candidate)
+        if video_url:
+            return video_url
+    return ""
+
+
+def _rss_item_video_thumbnail(item: ET.Element, page_url: str = "") -> str:
+    description = item.findtext("description", default="")
+    if not description:
+        return ""
+    video = BeautifulSoup(description, "html.parser").select_one("video[poster]")
+    if not video:
+        return ""
+    return normalize_image_url(str(video.get("poster") or ""), page_url)
+
+
+def _rss_item_has_native_video(item: ET.Element) -> bool:
+    """Riconosce il marcatore usato da Nitter per i video nativi di X."""
+    description = item.findtext("description", default="")
+    return bool(
+        re.search(
+            r"<br\s*/?>\s*Video\s*<br\s*/?>",
+            description,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _best_x_mp4(media: dict) -> str:
+    """Sceglie la variante MP4 migliore che Telegram può leggere da URL."""
+    raw_variants = media.get("formats") or media.get("variants") or ()
+    variants: list[tuple[int, str]] = []
+    for variant in raw_variants:
+        if not isinstance(variant, dict):
+            continue
+        container = str(
+            variant.get("container") or variant.get("content_type") or ""
+        ).lower()
+        candidate = normalize_image_url(str(variant.get("url") or ""))
+        if not candidate or "mp4" not in container:
+            continue
+        try:
+            bitrate = max(int(variant.get("bitrate") or 0), 0)
+        except (TypeError, ValueError):
+            bitrate = 0
+        variants.append((bitrate, candidate))
+
+    if variants:
+        variants.sort(key=lambda item: item[0])
+        try:
+            duration = float(media.get("duration") or 0)
+            if not duration and media.get("duration_millis"):
+                duration = float(media["duration_millis"]) / 1000
+        except (TypeError, ValueError):
+            duration = 0
+
+        if duration > 0:
+            fitting = [
+                variant
+                for variant in variants
+                if duration * (variant[0] + 160_000) / 8
+                <= TELEGRAM_REMOTE_VIDEO_TARGET_BYTES
+            ]
+            if fitting:
+                return fitting[-1][1]
+            return variants[0][1]
+        return variants[-1][1]
+
+    return normalize_image_url(str(media.get("url") or ""))
+
+
+@dataclass(frozen=True)
+class XMedia:
+    video_url: str = ""
+    video_thumbnail_url: str = ""
+    image_urls: tuple[str, ...] = ()
+
+
+def _x_media_from_payload(payload: dict) -> XMedia:
+    """Legge video e foto sia da FxTwitter sia da VxTwitter."""
+    tweet = payload.get("tweet")
+    if isinstance(tweet, dict):
+        media = tweet.get("media")
+        if isinstance(media, dict):
+            image_urls = tuple(
+                image_url
+                for photo in (media.get("photos") or ())
+                if isinstance(photo, dict)
+                if (image_url := normalize_image_url(str(photo.get("url") or "")))
+            )
+            videos = media.get("videos") or ()
+            for video in videos:
+                if isinstance(video, dict):
+                    video_url = _best_x_mp4(video)
+                    if video_url:
+                        return XMedia(
+                            video_url=video_url,
+                            video_thumbnail_url=normalize_image_url(
+                                str(video.get("thumbnail_url") or "")
+                            ),
+                            image_urls=image_urls,
+                        )
+
+    extended_media = payload.get("media_extended") or ()
+    image_urls = tuple(
+        image_url
+        for media in extended_media
+        if isinstance(media, dict)
+        if str(media.get("type") or "").lower() in {"image", "photo"}
+        if (image_url := normalize_image_url(str(media.get("url") or "")))
+    )
+    for media in extended_media:
+        if not isinstance(media, dict):
+            continue
+        if str(media.get("type") or "").lower() not in {"video", "gif"}:
+            continue
+        video_url = _best_x_mp4(media)
+        if video_url:
+            return XMedia(
+                video_url=video_url,
+                video_thumbnail_url=normalize_image_url(
+                    str(media.get("thumbnail_url") or "")
+                ),
+                image_urls=image_urls,
+            )
+    return XMedia(image_urls=image_urls)
+
+
+def _resolve_x_media(tweet_id: str) -> XMedia:
+    """Recupera i media da API pubbliche, senza bloccare le altre fonti."""
+    for template in X_MEDIA_API_TEMPLATES:
+        try:
+            response = requests.get(
+                template.format(tweet_id=tweet_id),
+                headers=HEADERS,
+                timeout=X_MEDIA_API_TIMEOUT_SECONDS,
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except (requests.RequestException, ValueError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        media = _x_media_from_payload(payload)
+        if media.video_url:
+            return media
+    return XMedia()
 
 
 def scrape_x_profiles(
@@ -1094,6 +1281,19 @@ def scrape_x_profiles(
 
                 keys_done.add(state_key)
                 image_urls = tuple(_rss_item_images(item, raw_link))
+                rss_image_urls = image_urls
+                video_url = _rss_item_video_url(item, raw_link)
+                video_thumbnail_url = _rss_item_video_thumbnail(item, raw_link)
+                if not video_url and _rss_item_has_native_video(item):
+                    x_media = _resolve_x_media(tweet_id)
+                    video_url = x_media.video_url
+                    if video_url:
+                        # Il tag <img> di Nitter è la copertina del video,
+                        # non una foto separata da includere nell'album.
+                        image_urls = x_media.image_urls
+                        video_thumbnail_url = x_media.video_thumbnail_url or (
+                            rss_image_urls[0] if rss_image_urls else ""
+                        )
                 articles.append(
                     Article(
                         source=f"X - {handle}",
@@ -1103,6 +1303,8 @@ def scrape_x_profiles(
                         state_key=state_key,
                         image_url=image_urls[0] if image_urls else "",
                         image_urls=image_urls,
+                        video_url=video_url,
+                        video_thumbnail_url=video_thumbnail_url,
                     )
                 )
 
@@ -1175,6 +1377,8 @@ def article_from_journal(entry: dict) -> Article:
             state_key=str(entry.get("state_key", "")),
             image_url=str(entry.get("image_url", "")),
             image_urls=tuple(entry.get("image_urls") or ()),
+            video_url=str(entry.get("video_url", "")),
+            video_thumbnail_url=str(entry.get("video_thumbnail_url", "")),
         )
     except (KeyError, ValueError, TypeError) as error:
         raise RuntimeError(
@@ -1297,6 +1501,10 @@ def run(
                     article.all_image_urls,
                 )
                 print("\n--- ANTEPRIMA TELEGRAM ---")
+                if article.video_url:
+                    print(f"[VIDEO] {article.video_url}")
+                if article.video_thumbnail_url:
+                    print(f"[COPERTINA VIDEO] {article.video_thumbnail_url}")
                 if image_urls:
                     print(f"[FOTO] {len(image_urls)}: {', '.join(image_urls)}")
                 else:
@@ -1306,7 +1514,7 @@ def run(
                         article,
                         max_length=(
                             TELEGRAM_MAX_CAPTION_LENGTH
-                            if image_urls
+                            if image_urls or article.video_url
                             else TELEGRAM_MAX_MESSAGE_LENGTH
                         ),
                     )
@@ -1342,14 +1550,27 @@ def run(
     sent_count = 0
     for article in pending:
         image_urls = preview_resolver.resolve_all(article.url, article.all_image_urls)
-        receipt = telegram.send_article(article, photo_urls=image_urls)
+        receipt = telegram.send_article(
+            article,
+            video_url=article.video_url,
+            video_thumbnail_url=article.video_thumbnail_url,
+            photo_urls=image_urls,
+        )
         print(
             f"[NEWS] notificato da {article.source}: {article.title} "
             f"(modalità={receipt.mode}, "
             f"message_id={receipt.message_id or 'non disponibile'})"
         )
         if receipt.photo_fallback:
-            print("[NEWS] foto non accettata da Telegram: inviato testo.")
+            print(
+                "[NEWS] foto/album non accettati da Telegram: "
+                f"inviato in modalità {receipt.mode}."
+            )
+        if receipt.video_fallback:
+            print(
+                "[NEWS] video non accettato da Telegram: "
+                f"inviato in modalità {receipt.mode}."
+            )
         seen.add(article.notification_key)
         seen_list.append(article.notification_key)
         save_seen(seen_list, today)

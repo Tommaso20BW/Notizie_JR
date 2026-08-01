@@ -17,6 +17,8 @@ class SampleArticle:
     state_key: str = "sky:123"
     image_url: str = "https://example.com/photo.jpg"
     image_urls: tuple = ()
+    video_url: str = "https://video.twimg.com/clip.mp4"
+    video_thumbnail_url: str = "https://example.com/poster.jpg"
     published: datetime = datetime(2026, 7, 26, tzinfo=timezone.utc)
 
     @property
@@ -35,6 +37,14 @@ class ArticleJournalTests(unittest.TestCase):
             stored = json.loads(path.read_text(encoding="utf-8"))
             self.assertEqual(stored[0]["notification_key"], "sky:123")
             self.assertEqual(stored[0]["image_url"], "https://example.com/photo.jpg")
+            self.assertEqual(
+                stored[0]["video_url"],
+                "https://video.twimg.com/clip.mp4",
+            )
+            self.assertEqual(
+                stored[0]["video_thumbnail_url"],
+                "https://example.com/poster.jpg",
+            )
             self.assertEqual(len(ArticleJournal(path).entries), 1)
 
     def test_duplicate_is_not_written_twice(self):
