@@ -66,3 +66,23 @@ class PreviewImageResolver:
 
         self.cache[page_url] = image_url
         return image_url
+
+    def resolve_all(
+        self,
+        page_url: str,
+        direct_image_urls: tuple[str, ...] = (),
+    ) -> list[str]:
+        """Tutte le immagini dirette note; se assenti, prova un singolo
+        fallback tramite i meta tag Open Graph della pagina."""
+        direct: list[str] = []
+        seen: set[str] = set()
+        for candidate in direct_image_urls:
+            normalized = normalize_image_url(candidate, page_url)
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                direct.append(normalized)
+        if direct:
+            return direct
+
+        single = self.resolve(page_url)
+        return [single] if single else []

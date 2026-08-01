@@ -203,11 +203,21 @@ class Article:
     summary: str = ""
     state_key: str = ""
     image_url: str = ""
+    image_urls: tuple[str, ...] = ()
 
     @property
     def notification_key(self) -> str:
         """Chiave usata per non inviare due volte la stessa notizia."""
         return self.state_key or self.url
+
+    @property
+    def all_image_urls(self) -> tuple[str, ...]:
+        """Tutte le immagini note dell'articolo (image_urls, con image_url come fallback)."""
+        if self.image_urls:
+            return self.image_urls
+        if self.image_url:
+            return (self.image_url,)
+        return ()
 
 
 def normalize_url(url: str) -> str:
@@ -968,27 +978,35 @@ def _download_x_feed(
     return response.content
 
 
-def _rss_item_image(item: ET.Element, page_url: str = "") -> str:
-    """Estrae una foto da media:content, enclosure o HTML del feed RSS."""
+def _rss_item_images(item: ET.Element, page_url: str = "") -> list[str]:
+    """Estrae tutte le foto da media:content/media:thumbnail, enclosure ed
+    eventuale HTML del feed RSS, mantenendo l'ordine e senza duplicati."""
+    images: list[str] = []
+    seen: set[str] = set()
+
+    def add(candidate: str) -> None:
+        image_url = normalize_image_url(candidate, page_url)
+        if image_url and image_url not in seen:
+            seen.add(image_url)
+            images.append(image_url)
+
     for child in item.iter():
         local_name = child.tag.rsplit("}", 1)[-1].lower()
-        candidate = ""
         if local_name in {"content", "thumbnail"}:
-            candidate = child.attrib.get("url", "")
+            add(child.attrib.get("url", ""))
         elif local_name == "enclosure" and child.attrib.get(
             "type", ""
         ).startswith("image/"):
-            candidate = child.attrib.get("url", "")
-        image_url = normalize_image_url(candidate, page_url)
-        if image_url:
-            return image_url
+            add(child.attrib.get("url", ""))
 
     description = item.findtext("description", default="")
     if description:
-        image = BeautifulSoup(description, "html.parser").find("img", src=True)
-        if image:
-            return normalize_image_url(image.get("src", ""), page_url)
-    return ""
+        for image in BeautifulSoup(description, "html.parser").find_all(
+            "img", src=True
+        ):
+            add(image.get("src", ""))
+
+    return images
 
 
 def scrape_x_profiles(
@@ -1075,6 +1093,7 @@ def scrape_x_profiles(
                     continue
 
                 keys_done.add(state_key)
+                image_urls = tuple(_rss_item_images(item, raw_link))
                 articles.append(
                     Article(
                         source=f"X - {handle}",
@@ -1082,7 +1101,8 @@ def scrape_x_profiles(
                         url=tweet_url,
                         published=published,
                         state_key=state_key,
-                        image_url=_rss_item_image(item, raw_link),
+                        image_url=image_urls[0] if image_urls else "",
+                        image_urls=image_urls,
                     )
                 )
 
@@ -1154,6 +1174,7 @@ def article_from_journal(entry: dict) -> Article:
             summary=str(entry.get("summary", "")),
             state_key=str(entry.get("state_key", "")),
             image_url=str(entry.get("image_url", "")),
+            image_urls=tuple(entry.get("image_urls") or ()),
         )
     except (KeyError, ValueError, TypeError) as error:
         raise RuntimeError(
@@ -1271,18 +1292,21 @@ def run(
                 f"{article.published.strftime('%H:%M')} | {article.title}"
             )
             if preview_messages:
-                image_url = preview_resolver.resolve(
+                image_urls = preview_resolver.resolve_all(
                     article.url,
-                    article.image_url,
+                    article.all_image_urls,
                 )
                 print("\n--- ANTEPRIMA TELEGRAM ---")
-                print(f"[FOTO] {image_url or 'nessuna'}")
+                if image_urls:
+                    print(f"[FOTO] {len(image_urls)}: {', '.join(image_urls)}")
+                else:
+                    print("[FOTO] nessuna")
                 print(
                     format_article_message(
                         article,
                         max_length=(
                             TELEGRAM_MAX_CAPTION_LENGTH
-                            if image_url
+                            if image_urls
                             else TELEGRAM_MAX_MESSAGE_LENGTH
                         ),
                     )
@@ -1317,8 +1341,8 @@ def run(
     preview_resolver = PreviewImageResolver(session)
     sent_count = 0
     for article in pending:
-        image_url = preview_resolver.resolve(article.url, article.image_url)
-        receipt = telegram.send_article(article, photo_url=image_url)
+        image_urls = preview_resolver.resolve_all(article.url, article.all_image_urls)
+        receipt = telegram.send_article(article, photo_urls=image_urls)
         print(
             f"[NEWS] notificato da {article.source}: {article.title} "
             f"(modalità={receipt.mode}, "

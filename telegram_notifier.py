@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from html import escape
 from typing import Protocol
@@ -128,7 +128,7 @@ class TelegramClient:
                 pass
         return min(2 ** (attempt - 1), 10)
 
-    def _deliver(self, method: str, payload: dict) -> int | None:
+    def _deliver_result(self, method: str, payload: dict):
         last_error = "errore sconosciuto"
 
         for attempt in range(1, self.max_attempts + 1):
@@ -147,8 +147,7 @@ class TelegramClient:
 
             data = self._response_data(response)
             if response.ok and data.get("ok") is True:
-                message_id = data.get("result", {}).get("message_id")
-                return int(message_id) if message_id is not None else None
+                return data.get("result")
 
             description = data.get("description") or response.text
             last_error = f"HTTP {response.status_code} - {description}"
@@ -165,7 +164,7 @@ class TelegramClient:
         )
 
     def send_message(self, text: str) -> int | None:
-        return self._deliver(
+        result = self._deliver_result(
             "sendMessage",
             {
                 "chat_id": self.chat_id,
@@ -174,9 +173,11 @@ class TelegramClient:
                 "disable_web_page_preview": True,
             },
         )
+        message_id = (result or {}).get("message_id")
+        return int(message_id) if message_id is not None else None
 
     def send_photo(self, photo_url: str, caption: str) -> int | None:
-        return self._deliver(
+        result = self._deliver_result(
             "sendPhoto",
             {
                 "chat_id": self.chat_id,
@@ -185,17 +186,67 @@ class TelegramClient:
                 "parse_mode": "HTML",
             },
         )
+        message_id = (result or {}).get("message_id")
+        return int(message_id) if message_id is not None else None
+
+    def send_media_group(
+        self,
+        photo_urls: Sequence[str],
+        caption: str,
+    ) -> list[int]:
+        """Invia più foto come un unico album Telegram (max 10 elementi).
+        La didascalia va solo sul primo elemento, altrimenti Telegram la
+        ripeterebbe sotto ogni immagine."""
+        media = []
+        for index, url in enumerate(photo_urls):
+            item: dict = {"type": "photo", "media": url}
+            if index == 0:
+                item["caption"] = caption
+                item["parse_mode"] = "HTML"
+            media.append(item)
+
+        result = self._deliver_result(
+            "sendMediaGroup",
+            {"chat_id": self.chat_id, "media": media},
+        )
+        message_ids = []
+        for entry in result or []:
+            message_id = entry.get("message_id")
+            if message_id is not None:
+                message_ids.append(int(message_id))
+        return message_ids
 
     def send_article(
         self,
         article: ArticleLike,
         *,
         photo_url: str = "",
+        photo_urls: Sequence[str] = (),
     ) -> DeliveryReceipt:
-        if photo_url:
+        # Telegram consente al massimo 10 elementi per album.
+        urls = list(photo_urls)[:10] if photo_urls else (
+            [photo_url] if photo_url else []
+        )
+
+        if len(urls) > 1:
+            try:
+                message_ids = self.send_media_group(
+                    urls,
+                    format_article_message(
+                        article,
+                        max_length=TELEGRAM_MAX_CAPTION_LENGTH,
+                    ),
+                )
+                first_id = message_ids[0] if message_ids else None
+                return DeliveryReceipt(first_id, "album")
+            except (TelegramDeliveryError, ValueError):
+                message_id = self.send_message(format_article_message(article))
+                return DeliveryReceipt(message_id, "testo", photo_fallback=True)
+
+        if urls:
             try:
                 message_id = self.send_photo(
-                    photo_url,
+                    urls[0],
                     format_article_message(
                         article,
                         max_length=TELEGRAM_MAX_CAPTION_LENGTH,
