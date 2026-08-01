@@ -1,4 +1,3 @@
 beautifulsoup4==4.15.0
 requests==2.34.2
 tzdata==2026.3
-google-genai==2.14.0
