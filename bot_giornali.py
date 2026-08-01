@@ -20,7 +20,10 @@ DROPBOX_REFRESH_TOKEN = os.getenv("DROPBOX_REFRESH_TOKEN")
 DROPBOX_FOLDER = "/NotizieJR"
 
 # Impostazioni regolabili senza modificare il codice
-MAX_CARATTERI_NOTIZIA = int(os.getenv("MAX_CARATTERI_NOTIZIA", "280"))
+# Telegram accetta messaggi fino a 4096 caratteri: si lascia margine per
+# l'intestazione con la fonte e per i tag HTML, così la notizia integrale
+# viene riassunta solo nei rari casi in cui superi davvero il limite reale.
+MAX_CARATTERI_NOTIZIA = int(os.getenv("MAX_CARATTERI_NOTIZIA", "3800"))
 USA_DOPPIA_VERIFICA = os.getenv("USA_DOPPIA_VERIFICA", "true").lower() not in {
     "0",
     "false",
@@ -748,42 +751,9 @@ def generate_news_from_pdf(path, nome_originale):
             print(f"Impossibile cancellare il file Gemini: {e}")
 
 
-def _hashtag_persona(testo):
+def render_testo(testo):
     """
-    Persone: nome di battesimo staccato, cognome anche composto in un hashtag.
-    """
-    testo = " ".join(testo.split())
-    if not testo:
-        return ""
-    parole = testo.split(" ")
-    if len(parole) == 1:
-        return "#" + parole[0]
-    return parole[0] + " #" + "".join(parole[1:])
-
-
-def _hashtag_squadra(testo):
-    """Squadre: hashtag unico, con alias #Atleti."""
-    norm = " ".join(testo.split()).lower()
-    if "atletico" in norm or "atlético" in norm:
-        return "#Atleti"
-    return "#" + "".join(testo.split())
-
-
-def _hashtag_competizione(testo):
-    """Campionati e competizioni: hashtag unico o sigla UEFA."""
-    norm = " ".join(testo.split()).lower()
-    if "conference" in norm:
-        return "#UECL"
-    if "europa league" in norm or norm == "europa":
-        return "#UEL"
-    if "champions" in norm:
-        return "#UCL"
-    return "#" + "".join(testo.split())
-
-
-def render_v1(testo):
-    """
-    Versione con persone e squadre in grassetto; competizioni senza grassetto.
+    Persone e squadre in grassetto; competizioni senza grassetto.
     """
     testo = re.sub(
         r"<t>(.*?)</t>",
@@ -796,38 +766,14 @@ def render_v1(testo):
     return testo.strip()
 
 
-def render_v2(testo):
-    """Versione hashtag senza grassetto."""
-    testo = re.sub(
-        r"<b>(.*?)</b>",
-        lambda m: _hashtag_persona(m.group(1)),
-        testo,
-        flags=re.DOTALL | re.IGNORECASE,
-    )
-    testo = re.sub(
-        r"<t>(.*?)</t>",
-        lambda m: _hashtag_squadra(m.group(1)),
-        testo,
-        flags=re.DOTALL | re.IGNORECASE,
-    )
-    testo = re.sub(
-        r"<c>(.*?)</c>",
-        lambda m: _hashtag_competizione(m.group(1)),
-        testo,
-        flags=re.DOTALL | re.IGNORECASE,
-    )
-    testo = re.sub(r"</?(b|t|c)>", "", testo, flags=re.IGNORECASE)
-    testo = testo.replace("**", "")
-    return testo.strip()
-
-
 # Stato per il separatore: viene inserito tra due notizie.
 _prima_notizia_inviata = False
 
 
 def send_to_telegram(news_list):
     """
-    Invia le due versioni e restituisce True soltanto se ogni invio riesce.
+    Invia un solo messaggio per notizia, con la fonte in alto, e restituisce
+    True soltanto se ogni invio riesce.
     """
     global _prima_notizia_inviata
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -837,22 +783,16 @@ def send_to_telegram(news_list):
         "TUTTO": (
             '<tg-emoji emoji-id="6032834612990841221">📰</tg-emoji>',
             "Tuttosport",
-            "@tuttosport",
         ),
         "GAZZETTA": (
             '<tg-emoji emoji-id="6032862491623559282">📰</tg-emoji>',
             "Gazzetta dello Sport",
-            "@Gazzetta_it",
         ),
         "CORRIERE": (
             '<tg-emoji emoji-id="6030691308346019878">📰</tg-emoji>',
             "Corriere dello Sport",
-            "@CorSport",
         ),
     }
-    tg_reborn = (
-        '<tg-emoji emoji-id="5985659276327132147">👉</tg-emoji>'
-    )
 
     def _post(testo):
         for attempt in range(5):
@@ -900,27 +840,19 @@ def send_to_telegram(news_list):
             tutto_inviato = False
             continue
 
-        emoji_fonte, nome_fonte, handle_fonte = emoji_mapping[fonte]
-        corpo_v1 = render_v1(clean)
-        corpo_v2 = render_v2(clean)
+        emoji_fonte, nome_fonte = emoji_mapping[fonte]
+        corpo = render_testo(clean)
 
-        testo_v1 = (
-            f"{corpo_v1}\n\n{emoji_fonte} <i>{nome_fonte}</i>"
-            f"\n\n{tg_reborn} @Juventus_Reborn"
-        )
+        testo = f"{emoji_fonte} <i>{nome_fonte}</i>\n\n{corpo}"
 
         if _prima_notizia_inviata:
             tutto_inviato = _post(separatore) and tutto_inviato
             time.sleep(1)
 
-        esito_v1 = _post(testo_v1)
-        tutto_inviato = esito_v1 and tutto_inviato
-        if esito_v1:
+        esito = _post(testo)
+        tutto_inviato = esito and tutto_inviato
+        if esito:
             _prima_notizia_inviata = True
-        time.sleep(1)
-
-        testo_v2 = f"{corpo_v2}\n\n📲 {handle_fonte}"
-        tutto_inviato = _post(testo_v2) and tutto_inviato
         time.sleep(1)
 
     return tutto_inviato
