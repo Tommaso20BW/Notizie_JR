@@ -15,7 +15,7 @@ class FakeTelegramClient:
         self.token = token
         self.chat_id = chat_id
 
-    def send_article(self, article, *, photo_url=""):
+    def send_article(self, article, *, photo_url="", photo_urls=()):
         return DeliveryReceipt(message_id=100, mode="testo")
 
 
@@ -25,6 +25,9 @@ class FakePreviewResolver:
 
     def resolve(self, page_url, direct_image_url=""):
         return direct_image_url
+
+    def resolve_all(self, page_url, direct_image_urls=()):
+        return list(direct_image_urls)
 
 
 def sample_article():

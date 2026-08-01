@@ -16,6 +16,7 @@ class SampleArticle:
     summary: str = "Sommario"
     state_key: str = "sky:123"
     image_url: str = "https://example.com/photo.jpg"
+    image_urls: tuple = ()
     published: datetime = datetime(2026, 7, 26, tzinfo=timezone.utc)
 
     @property
