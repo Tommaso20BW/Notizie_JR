@@ -35,11 +35,6 @@ from zoneinfo import ZoneInfo
 import requests
 from bs4 import BeautifulSoup
 
-try:
-    from google import genai
-except ImportError:  # pragma: no cover - pacchetto opzionale
-    genai = None
-
 from article_journal import ArticleJournal
 from preview_image import PreviewImageResolver, normalize_image_url
 from telegram_notifier import (
@@ -68,10 +63,6 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 STATE_FILE = SCRIPT_DIR / ".seen_juve_press_news.json"
 PENDING_FILE = SCRIPT_DIR / ".pending_juve_press_news.json"
 MAX_SEEN = 2000
-
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-# Stessi modelli, con lo stesso ordine di fallback, usati da bot_giornali.py.
-GEMINI_TRANSLATION_MODELS = ["gemini-3.5-flash", "gemini-2.5-flash"]
 
 HEADERS = {
     "User-Agent": (
@@ -298,65 +289,6 @@ def is_juventus_x_post(text: str) -> bool:
 def clean_x_text(text: str) -> str:
     """Rimuove i simboli di hashtag e menzioni dai testi provenienti da X."""
     return text.translate(X_MARKER_TRANSLATION)
-
-
-_gemini_client = None
-_gemini_client_ready = False
-
-
-def _get_gemini_client():
-    """Crea il client Gemini una sola volta (nessun client se manca la chiave)."""
-    global _gemini_client, _gemini_client_ready
-    if _gemini_client_ready:
-        return _gemini_client
-    _gemini_client_ready = True
-    if genai is None or not GEMINI_API_KEY:
-        return None
-    try:
-        _gemini_client = genai.Client(api_key=GEMINI_API_KEY)
-    except Exception as error:  # difensivo: mai bloccare il bot per questo
-        print(f"[X] Client Gemini non inizializzato: {error}")
-        _gemini_client = None
-    return _gemini_client
-
-
-def translate_x_text_to_italian(text: str) -> str:
-    """Traduce in italiano i post X non in italiano. Se la traduzione non è
-    disponibile o fallisce, restituisce il testo originale invariato in modo
-    che la notizia venga comunque inviata."""
-    client = _get_gemini_client()
-    if client is None or not text.strip():
-        return text
-
-    prompt = (
-        "Sei un traduttore per un canale Telegram calcistico italiano. "
-        "Se il seguente testo di un post X è già in italiano, restituiscilo "
-        "identico. Se è in un'altra lingua, traducilo in italiano in modo "
-        "naturale, mantenendo invariati nomi propri, squadre, cifre e "
-        "hashtag/menzioni. Non aggiungere commenti, premesse o virgolette: "
-        "restituisci solo il testo finale.\n\n"
-        f"Testo: {text}"
-    )
-
-    ultimo_errore = None
-    for modello in GEMINI_TRANSLATION_MODELS:
-        try:
-            response = client.models.generate_content(
-                model=modello,
-                contents=[prompt],
-                config={"temperature": 0},
-            )
-            translated = (getattr(response, "text", "") or "").strip()
-            return translated or text
-        except Exception as error:
-            ultimo_errore = error
-            msg = str(error)
-            if "503" in msg or "UNAVAILABLE" in msg or "overloaded" in msg.lower():
-                continue
-            break
-
-    print(f"[X] Traduzione non riuscita, uso il testo originale: {ultimo_errore}")
-    return text
 
 
 def article_summary(card) -> str:
@@ -1161,12 +1093,11 @@ def scrape_x_profiles(
                     continue
 
                 keys_done.add(state_key)
-                translated_title = translate_x_text_to_italian(clean_x_text(title))
                 image_urls = tuple(_rss_item_images(item, raw_link))
                 articles.append(
                     Article(
                         source=f"X - {handle}",
-                        title=translated_title,
+                        title=clean_x_text(title),
                         url=tweet_url,
                         published=published,
                         state_key=state_key,
