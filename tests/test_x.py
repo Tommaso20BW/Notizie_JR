@@ -45,6 +45,24 @@ class XTests(unittest.TestCase):
             "Juventus con Reporter: 2-1!",
         )
 
+    def test_clean_x_text_splits_camel_case_hashtags(self):
+        self.assertEqual(
+            bot.clean_x_text("#ForzaJuve #FinoAllaFine #JuventusWomen"),
+            "Forza Juve Fino Alla Fine Juventus Women",
+        )
+
+    def test_clean_x_text_preserves_acronyms_and_mentions(self):
+        self.assertEqual(
+            bot.clean_x_text("#JUVE #JUVENews #U23Women con @JuveWomen"),
+            "JUVE JUVE News U23 Women con JuveWomen",
+        )
+
+    def test_clean_x_text_replaces_hashtag_underscores_with_spaces(self):
+        self.assertEqual(
+            bot.clean_x_text("#ÈSempre_Juve"),
+            "È Sempre Juve",
+        )
+
     def test_scraper_filters_raw_text_then_cleans_x_notification(self):
         accounts = (
             {

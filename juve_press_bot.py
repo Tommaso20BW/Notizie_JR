@@ -153,6 +153,7 @@ X_MEDIA_API_TIMEOUT_SECONDS = 12
 # Teniamo un margine per l'audio, che non è incluso nel bitrate video.
 TELEGRAM_REMOTE_VIDEO_TARGET_BYTES = 18_000_000
 X_STATUS_PATH_RE = re.compile(r"^/([A-Za-z0-9_]+)/status/(\d+)$")
+X_HASHTAG_RE = re.compile(r"#(\w+)", re.UNICODE)
 X_MARKER_TRANSLATION = str.maketrans("", "", "#@")
 
 SKY_MONTH_NAMES = {
@@ -297,8 +298,38 @@ def is_juventus_x_post(text: str) -> bool:
     )
 
 
+def split_x_hashtag(hashtag: str) -> str:
+    """Separa in parole un hashtag CamelCase, preservando gli acronimi."""
+    words = []
+    for segment in hashtag.split("_"):
+        current_word = []
+        for index, character in enumerate(segment):
+            previous = segment[index - 1] if index else ""
+            following = segment[index + 1] if index + 1 < len(segment) else ""
+            starts_word = (
+                bool(current_word)
+                and character.isupper()
+                and (
+                    previous.islower()
+                    or previous.isdigit()
+                    or (previous.isupper() and following.islower())
+                )
+            )
+            if starts_word:
+                words.append("".join(current_word))
+                current_word = []
+            current_word.append(character)
+        if current_word:
+            words.append("".join(current_word))
+    return " ".join(words)
+
+
 def clean_x_text(text: str) -> str:
-    """Rimuove i simboli di hashtag e menzioni dai testi provenienti da X."""
+    """Pulisce hashtag e menzioni nei testi provenienti da X."""
+    text = X_HASHTAG_RE.sub(
+        lambda match: split_x_hashtag(match.group(1)),
+        text,
+    )
     return text.translate(X_MARKER_TRANSLATION)
 
 
