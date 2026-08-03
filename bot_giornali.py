@@ -789,20 +789,36 @@ def send_to_telegram(news_list):
         ),
     }
 
-    def _post(testo):
+    def _post(testo, risposta_a=None):
         for attempt in range(5):
             try:
+                payload = {
+                    "chat_id": CHAT_ID,
+                    "text": testo,
+                    "parse_mode": "HTML",
+                }
+                if risposta_a is not None:
+                    payload["reply_parameters"] = {
+                        "message_id": risposta_a,
+                        "allow_sending_without_reply": True,
+                    }
+
                 resp = requests.post(
                     url,
-                    json={
-                        "chat_id": CHAT_ID,
-                        "text": testo,
-                        "parse_mode": "HTML",
-                    },
+                    json=payload,
                     timeout=10,
                 )
                 if resp.ok:
-                    return True
+                    message_id = (
+                        resp.json().get("result", {}).get("message_id")
+                    )
+                    if message_id is None:
+                        print(
+                            "Telegram ha confermato l'invio senza restituire "
+                            "il message_id."
+                        )
+                        return None
+                    return message_id
                 if resp.status_code == 429:
                     retry_after = (
                         resp.json()
@@ -817,13 +833,13 @@ def send_to_telegram(news_list):
                     continue
 
                 print(f"Errore Telegram: {resp.status_code} - {resp.text}")
-                return False
+                return None
             except Exception as e:
                 print(f"Errore invio Telegram: {e}")
-                return False
+                return None
 
         print("Telegram: tentativi esauriti, messaggio saltato.")
-        return False
+        return None
 
     tutto_inviato = True
 
@@ -837,6 +853,7 @@ def send_to_telegram(news_list):
 
         emoji_fonte, nome_fonte = emoji_mapping[fonte]
         parti = _dividi_testo_markup(clean)
+        risposta_a = None
 
         for numero, parte in enumerate(parti, start=1):
             corpo = render_testo(parte)
@@ -848,9 +865,13 @@ def send_to_telegram(news_list):
                 f"\n\n{corpo}"
             )
 
-            esito = _post(testo)
+            message_id = _post(testo, risposta_a=risposta_a)
+            esito = message_id is not None
             tutto_inviato = esito and tutto_inviato
             time.sleep(1)
+            if not esito:
+                break
+            risposta_a = message_id
 
     return tutto_inviato
 

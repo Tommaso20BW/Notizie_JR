@@ -93,6 +93,46 @@ class DivisioneMessaggiTests(unittest.TestCase):
         )
 
 
+class InvioTelegramTests(unittest.TestCase):
+    def test_parti_successive_rispondono_al_messaggio_precedente(self):
+        risposte = []
+        for message_id in (101, 102, 103):
+            risposta = Mock(ok=True)
+            risposta.json.return_value = {
+                "ok": True,
+                "result": {"message_id": message_id},
+            }
+            risposte.append(risposta)
+
+        notizie = [{"testo": "testo", "fonte": "TUTTO"}]
+        with (
+            patch.object(
+                bot_giornali,
+                "_dividi_testo_markup",
+                return_value=["prima", "seconda", "terza"],
+            ),
+            patch.object(
+                bot_giornali.requests,
+                "post",
+                side_effect=risposte,
+            ) as post,
+            patch.object(bot_giornali.time, "sleep"),
+        ):
+            risultato = bot_giornali.send_to_telegram(notizie)
+
+        self.assertTrue(risultato)
+        payload = [call.kwargs["json"] for call in post.call_args_list]
+        self.assertNotIn("reply_parameters", payload[0])
+        self.assertEqual(
+            payload[1]["reply_parameters"],
+            {"message_id": 101, "allow_sending_without_reply": True},
+        )
+        self.assertEqual(
+            payload[2]["reply_parameters"],
+            {"message_id": 102, "allow_sending_without_reply": True},
+        )
+
+
 class GestioneDropboxTests(unittest.TestCase):
     def _documento_temporaneo(self):
         handle = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
