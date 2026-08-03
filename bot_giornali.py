@@ -21,7 +21,7 @@ DROPBOX_FOLDER = "/NotizieJR"
 
 # Impostazioni regolabili senza modificare il codice
 # Telegram accetta messaggi fino a 4096 caratteri: si lascia margine per
-# l'intestazione con la fonte e per i tag HTML. Le notizie oltre soglia
+# l'intestazione con la fonte. Le notizie oltre soglia
 # vengono divise localmente, senza consumare altre richieste Gemini.
 MAX_CARATTERI_NOTIZIA = int(os.getenv("MAX_CARATTERI_NOTIZIA", "3800"))
 USA_DOPPIA_VERIFICA = os.getenv("USA_DOPPIA_VERIFICA", "false").lower() not in {
@@ -61,8 +61,8 @@ SCHEMA_NOTIZIE = {
                         "type": "string",
                         "description": (
                             "Testo fedele e autosufficiente della notizia. "
-                            "Usa <b>persona</b>, <t>squadra</t> e "
-                            "<c>competizione</c>. Nessun titolo o tag fonte."
+                            "Solo testo semplice: nessun titolo, tag HTML, "
+                            "Markdown o tag fonte."
                         ),
                     },
                     "fonte": {
@@ -396,8 +396,8 @@ Regole di contenuto:
   non trasformare mai "circa 50 milioni" in un intervallo inventato.
 - Usa M€ esclusivamente per importi in euro, non per altri valori espressi
   in milioni.
-- Per la formattazione usa soltanto: <b>nome persona</b>,
-  <t>nome squadra</t>, <c>competizione</c>. Non usare asterischi.
+- Restituisci esclusivamente testo semplice: non usare tag HTML, Markdown,
+  asterischi o altri marcatori di formattazione.
 - Il campo "riscontro" deve contenere un breve passaggio realmente leggibile
   nel PDF e sufficiente a controllare i dettagli più delicati della notizia.
 - Non includere una notizia se non riesci a fornire pagina e riscontro.
@@ -437,8 +437,8 @@ Per ciascun candidato:
 - formatta "10 milioni di euro" come "10M€", un intervallo esplicito come
   "40-50M€" e "circa 50 milioni di euro" come "circa 50M€"; non inventare
   intervalli e non perdere parole come "circa", "quasi", "oltre" o "almeno";
-- usa esclusivamente i tag <b>, <t> e <c> previsti e nessun tag fonte nel
-  testo;
+- usa esclusivamente testo semplice, senza tag HTML, Markdown, asterischi o
+  tag fonte;
 - restituisci un riscontro breve e fedele e la pagina corretta.
 
 Non aggiungere alcuna informazione per rendere il testo più scorrevole.
@@ -447,15 +447,6 @@ In caso di dubbio, ometti.
 CANDIDATI DA VERIFICARE:
 {candidati_json}
 """.strip()
-
-
-def _tag_bilanciati(testo):
-    for tag in ("b", "t", "c"):
-        aperture = len(re.findall(fr"<{tag}>", testo, flags=re.IGNORECASE))
-        chiusure = len(re.findall(fr"</{tag}>", testo, flags=re.IGNORECASE))
-        if aperture != chiusure:
-            return False
-    return True
 
 
 def _normalizza_importi_euro(testo):
@@ -516,11 +507,11 @@ def _normalizza_importi_euro(testo):
 
 def _sanitizza_markup(testo):
     """
-    Conserva soltanto i tag interni previsti ed esegue l'escape di tutto il
-    resto, così il parse_mode HTML di Telegram non può rompersi.
+    Rimuove qualsiasi formattazione dal corpo ed esegue l'escape del testo,
+    così soltanto l'intestazione aggiunta dal programma usa HTML su Telegram.
     """
     testo = html.unescape(str(testo))
-    testo = testo.replace("**", "")
+    testo = testo.replace("*", "").replace("`", "")
     testo = re.sub(r"\[NOTIZIA\]", "", testo, flags=re.IGNORECASE)
     testo = re.sub(
         r"\[FONTE_(?:TUTTO|GAZZETTA|CORRIERE)\]",
@@ -528,38 +519,16 @@ def _sanitizza_markup(testo):
         testo,
         flags=re.IGNORECASE,
     )
+    # Include anche varianti malformate prodotte dal modello, ad esempio
+    # "<b >nome" oppure "<strong class=...>nome</strong>".
+    testo = re.sub(r"<[^<>]*>", "", testo)
     testo = _normalizza_importi_euro(testo)
     testo = " ".join(testo.split()).strip()
-
-    if not _tag_bilanciati(testo):
-        testo = re.sub(r"</?(?:b|t|c)>", "", testo, flags=re.IGNORECASE)
-
-    segnaposto = {}
-
-    def salva_tag(match):
-        chiusura = "/" if match.group(1) else ""
-        tag = match.group(2).lower()
-        token = f"__TAG_CONSENTITO_{len(segnaposto)}__"
-        segnaposto[token] = f"<{chiusura}{tag}>"
-        return token
-
-    testo = re.sub(
-        r"<(/?)(b|t|c)>",
-        salva_tag,
-        testo,
-        flags=re.IGNORECASE,
-    )
-    testo = html.escape(testo, quote=False)
-
-    for token, tag in segnaposto.items():
-        testo = testo.replace(token, tag)
-
-    return testo.strip()
+    return html.escape(testo, quote=False)
 
 
 def _lunghezza_visibile(testo):
-    senza_tag = re.sub(r"</?(?:b|t|c)>", "", testo, flags=re.IGNORECASE)
-    return len(html.unescape(senza_tag))
+    return len(html.unescape(testo))
 
 
 def _valida_notizie(notizie, fonte_attesa):
@@ -678,17 +647,7 @@ def generate_news_from_pdf(path, nome_originale):
 
 
 def render_testo(testo):
-    """
-    Persone e squadre in grassetto; competizioni senza grassetto.
-    """
-    testo = re.sub(
-        r"<t>(.*?)</t>",
-        lambda m: "<b>" + m.group(1) + "</b>",
-        testo,
-        flags=re.DOTALL | re.IGNORECASE,
-    )
-    testo = re.sub(r"</?c>", "", testo, flags=re.IGNORECASE)
-    testo = testo.replace("**", "")
+    """Restituisce il corpo già sanitizzato senza aggiungere formattazione."""
     return testo.strip()
 
 
@@ -697,9 +656,7 @@ def _intervalli_testo(testo, limite):
     if limite < 1:
         raise ValueError("Il limite dei messaggi deve essere positivo.")
 
-    visibile = html.unescape(
-        re.sub(r"</?(?:b|t|c)>", "", testo, flags=re.IGNORECASE)
-    )
+    visibile = html.unescape(testo)
     intervalli = []
     inizio = 0
 
@@ -733,37 +690,17 @@ def _intervalli_testo(testo, limite):
     return intervalli
 
 
-def _estrai_intervallo_markup(testo, inizio, fine):
-    """Estrae un intervallo visibile riaprendo e chiudendo i tag interni."""
+def _estrai_intervallo_testo(testo, inizio, fine):
+    """Estrae un intervallo senza spezzare le entità HTML del testo."""
     token_re = re.compile(
-        r"</?(?:b|t|c)>|&(?:#\d+|#x[0-9a-f]+|[a-z][a-z0-9]+);|.",
+        r"&(?:#\d+|#x[0-9a-f]+|[a-z][a-z0-9]+);|.",
         flags=re.IGNORECASE | re.DOTALL,
     )
-    tag_re = re.compile(r"<(/?)(b|t|c)>", flags=re.IGNORECASE)
-    attivi = []
     risultato = []
     posizione = 0
-    iniziato = False
 
     for match in token_re.finditer(testo):
         token = match.group(0)
-        tag_match = tag_re.fullmatch(token)
-        if tag_match:
-            if posizione >= fine:
-                break
-
-            chiusura = bool(tag_match.group(1))
-            tag = tag_match.group(2).lower()
-            if iniziato:
-                risultato.append(f"</{tag}>" if chiusura else f"<{tag}>")
-
-            if chiusura:
-                if attivi and attivi[-1] == tag:
-                    attivi.pop()
-            else:
-                attivi.append(tag)
-            continue
-
         lunghezza = len(html.unescape(token))
         if posizione + lunghezza <= inizio:
             posizione += lunghezza
@@ -771,25 +708,19 @@ def _estrai_intervallo_markup(testo, inizio, fine):
         if posizione >= fine:
             break
 
-        if not iniziato:
-            risultato.extend(f"<{tag}>" for tag in attivi)
-            iniziato = True
         risultato.append(token)
         posizione += lunghezza
-
-    if iniziato:
-        risultato.extend(f"</{tag}>" for tag in reversed(attivi))
 
     return "".join(risultato).strip()
 
 
-def _dividi_testo_markup(testo, limite=MAX_CARATTERI_NOTIZIA):
-    """Divide senza riassumere, preservando testo e markup consentito."""
+def _dividi_testo(testo, limite=MAX_CARATTERI_NOTIZIA):
+    """Divide senza riassumere e senza perdere caratteri del testo."""
     if _lunghezza_visibile(testo) <= limite:
         return [testo]
 
     parti = [
-        _estrai_intervallo_markup(testo, inizio, fine)
+        _estrai_intervallo_testo(testo, inizio, fine)
         for inizio, fine in _intervalli_testo(testo, limite)
     ]
     return [parte for parte in parti if parte]
@@ -802,19 +733,10 @@ def send_to_telegram(news_list):
     """
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
-    emoji_mapping = {
-        "TUTTO": (
-            '<tg-emoji emoji-id="6032834612990841221">📰</tg-emoji>',
-            "Tuttosport",
-        ),
-        "GAZZETTA": (
-            '<tg-emoji emoji-id="6032862491623559282">📰</tg-emoji>',
-            "Gazzetta dello Sport",
-        ),
-        "CORRIERE": (
-            '<tg-emoji emoji-id="6030691308346019878">📰</tg-emoji>',
-            "Corriere dello Sport",
-        ),
+    nomi_fonti = {
+        "TUTTO": "Tuttosport",
+        "GAZZETTA": "Gazzetta dello Sport",
+        "CORRIERE": "Corriere dello Sport",
     }
 
     def _post(testo, risposta_a=None):
@@ -872,15 +794,15 @@ def send_to_telegram(news_list):
     tutto_inviato = True
 
     for news in news_list:
-        clean = news["testo"].strip()
+        clean = _sanitizza_markup(news["testo"])
         fonte = _normalizza_fonte(news["fonte"])
-        if not clean or fonte not in emoji_mapping:
+        if not clean or fonte not in nomi_fonti:
             print("Notizia saltata: testo vuoto o fonte non valida.")
             tutto_inviato = False
             continue
 
-        emoji_fonte, nome_fonte = emoji_mapping[fonte]
-        parti = _dividi_testo_markup(clean)
+        nome_fonte = nomi_fonti[fonte]
+        parti = _dividi_testo(clean)
         risposta_a = None
 
         for numero, parte in enumerate(parti, start=1):
@@ -889,7 +811,7 @@ def send_to_telegram(news_list):
                 f" ({numero}/{len(parti)})" if len(parti) > 1 else ""
             )
             testo = (
-                f"{emoji_fonte} <i>{nome_fonte}</i>{continuazione}"
+                f"📰 <b>{nome_fonte}</b>{continuazione}"
                 f"\n\n{corpo}"
             )
 

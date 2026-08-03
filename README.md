@@ -44,7 +44,7 @@ cancellazione da Dropbox dopo una lettura riuscita
 - elimina duplicati e markup non consentito;
 - cancella il file temporaneo da Gemini e dal runner.
 
-Per ogni notizia approvata invia una versione editoriale con persone e squadre evidenziate e la fonte in alto. Le eventuali parti sono numerate (`1/2`, `2/2`): dalla seconda in poi, ogni messaggio risponde alla parte precedente e forma una catena Telegram.
+Per ogni notizia approvata invia il corpo come testo semplice, senza tag o formattazione. Soltanto il nome della fonte nell'intestazione è in grassetto. Le eventuali parti sono numerate (`1/2`, `2/2`): dalla seconda in poi, ogni messaggio risponde alla parte precedente e forma una catena Telegram.
 
 Tra due giornali attende 20 secondi. Il PDF originale viene cancellato da Dropbox soltanto dopo che Gemini ha completato la lettura, anche quando non trova notizie Juventus. Se il download o l'elaborazione Gemini falliscono, il PDF resta su Dropbox per il run successivo. Dopo una lettura riuscita viene invece cancellato anche in caso di invio Telegram incompleto, evitando duplicati al run seguente.
 

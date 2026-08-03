@@ -1,6 +1,5 @@
 import html
 import os
-import re
 import tempfile
 import unittest
 from types import SimpleNamespace
@@ -13,9 +12,7 @@ import bot_giornali
 
 
 def _visibile(testo):
-    return html.unescape(
-        re.sub(r"</?(?:b|t|c)>", "", testo, flags=re.IGNORECASE)
-    )
+    return html.unescape(testo)
 
 
 class GeminiTests(unittest.TestCase):
@@ -98,20 +95,35 @@ class GeminiTests(unittest.TestCase):
 
 
 class DivisioneMessaggiTests(unittest.TestCase):
-    def test_divide_senza_perdere_testo_e_bilancia_i_tag(self):
+    def test_sanitizza_rimuove_anche_tag_html_malformati(self):
         testo = (
-            "<b>Mario &amp; Luigi</b> discutono con <t>Juventus</t>. "
+            "Per la porta, <b >Guglielmo Vicario è in pole. "
+            "Valutati anche <b>Lucas Chevalier</b> e **Noah Atubolu**."
+        )
+
+        risultato = bot_giornali._sanitizza_markup(testo)
+
+        self.assertEqual(
+            html.unescape(risultato),
+            "Per la porta, Guglielmo Vicario è in pole. "
+            "Valutati anche Lucas Chevalier e Noah Atubolu.",
+        )
+        self.assertNotIn("<", risultato)
+        self.assertNotIn("*", risultato)
+
+    def test_divide_senza_perdere_testo(self):
+        testo = (
+            "Mario &amp; Luigi discutono con la Juventus. "
             "La trattativa prosegue senza interruzioni e con nuovi incontri. "
             "La decisione finale arriverà domani."
         )
 
-        parti = bot_giornali._dividi_testo_markup(testo, limite=55)
+        parti = bot_giornali._dividi_testo(testo, limite=55)
 
         self.assertGreater(len(parti), 1)
         self.assertTrue(
             all(bot_giornali._lunghezza_visibile(parte) <= 55 for parte in parti)
         )
-        self.assertTrue(all(bot_giornali._tag_bilanciati(parte) for parte in parti))
         self.assertEqual(
             " ".join(_visibile(parte) for parte in parti),
             _visibile(testo),
@@ -133,7 +145,7 @@ class InvioTelegramTests(unittest.TestCase):
         with (
             patch.object(
                 bot_giornali,
-                "_dividi_testo_markup",
+                "_dividi_testo",
                 return_value=["prima", "seconda", "terza"],
             ),
             patch.object(
@@ -147,6 +159,10 @@ class InvioTelegramTests(unittest.TestCase):
 
         self.assertTrue(risultato)
         payload = [call.kwargs["json"] for call in post.call_args_list]
+        self.assertTrue(
+            payload[0]["text"].startswith("📰 <b>Tuttosport</b> (1/3)")
+        )
+        self.assertNotIn("<i>", payload[0]["text"])
         self.assertNotIn("reply_parameters", payload[0])
         self.assertEqual(
             payload[1]["reply_parameters"],
