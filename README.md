@@ -18,16 +18,16 @@ Dropbox /NotizieJR
 download dei PDF
         │
         ▼
-Gemini: estrazione JSON + verifica documentale
+Gemini: estrazione documentale in JSON
         │
         ▼
-controlli deterministici e limite caratteri
+controlli deterministici
         │
         ▼
-Telegram (due versioni per notizia)
+Telegram (divisione locale dei testi lunghi)
         │
         ▼
-cancellazione da Dropbox indipendentemente dall'esito
+cancellazione da Dropbox dopo una lettura riuscita
 ```
 
 `bot_giornali.py`:
@@ -35,24 +35,21 @@ cancellazione da Dropbox indipendentemente dall'esito
 - legge tutti i PDF presenti nella cartella Dropbox `/NotizieJR`;
 - ricava la testata dal nome del file quando contiene Tuttosport, Gazzetta o Corriere;
 - carica ogni PDF su Gemini e richiede un output JSON strutturato;
-- usa prima `gemini-3.5-flash` e passa a `gemini-2.5-flash` soltanto per errori `503`/servizio sovraccarico;
-- esegue di default una seconda lettura di verifica sullo stesso documento;
+- usa `gemini-3.5-flash-lite`, con fallback a `gemini-3.6-flash` e `gemini-3.5-flash` sui limiti `429` o sugli errori temporanei `503`;
+- esegue una sola lettura per impostazione predefinita; la seconda verifica sullo stesso documento resta opzionale;
 - richiede per ogni notizia fonte, pagina e un breve riscontro testuale;
-- mantiene ogni testo entro 280 caratteri visibili senza troncare frasi;
+- richiede testi entro 3.800 caratteri visibili e divide localmente quelli più lunghi in più messaggi Telegram, senza una nuova richiesta Gemini e senza riassumerli;
 - normalizza gli importi in milioni di euro (`10M€`, `40-50M€`) senza inventare intervalli;
 - elimina duplicati e markup non consentito;
 - cancella il file temporaneo da Gemini e dal runner.
 
-Per ogni notizia approvata invia:
+Per ogni notizia approvata invia una versione editoriale con persone e squadre evidenziate e la fonte in alto. Le eventuali parti sono numerate (`1/2`, `2/2`).
 
-1. una versione editoriale con persone/squadre evidenziate, fonte e firma `@Juventus_Reborn`;
-2. una versione con hashtag e handle della testata.
-
-Tra due giornali attende 20 secondi. Ogni PDF originale viene cancellato da Dropbox dopo il tentativo di elaborazione, anche se Gemini, la validazione o uno degli invii Telegram falliscono. Se fallisce il download, il bot tenta comunque la cancellazione del PDF remoto.
+Tra due giornali attende 20 secondi. Il PDF originale viene cancellato da Dropbox soltanto dopo che Gemini ha completato la lettura, anche quando non trova notizie Juventus. Se il download o l'elaborazione Gemini falliscono, il PDF resta su Dropbox per il run successivo. Dopo una lettura riuscita viene invece cancellato anche in caso di invio Telegram incompleto, evitando duplicati al run seguente.
 
 ### Workflow e configurazione
 
-Il workflow [`.github/workflows/run_giornali.yml`](.github/workflows/run_giornali.yml) è solo manuale, usa Python 3.10 ed esegue `bot_giornali.py`.
+Il workflow [`.github/workflows/run_giornali.yml`](.github/workflows/run_giornali.yml) è solo manuale, usa Python 3.14 ed esegue `bot_giornali.py`.
 
 Configura questi secret:
 
@@ -69,10 +66,10 @@ Impostazioni opzionali lette dal codice:
 
 | Variabile | Default | Effetto |
 |---|---:|---|
-| `MAX_CARATTERI_NOTIZIA` | `280` | Limite visibile per ogni notizia. |
-| `USA_DOPPIA_VERIFICA` | `true` | Abilita la seconda verifica Gemini. |
+| `MAX_CARATTERI_NOTIZIA` | `3800` | Limite visibile di ogni parte inviata a Telegram. |
+| `USA_DOPPIA_VERIFICA` | `false` | Abilita una seconda richiesta Gemini di verifica. |
 
-Il workflow corrente non passa queste due variabili opzionali: per cambiarle in Actions occorre aggiungerle al blocco `env`.
+Il workflow imposta esplicitamente `USA_DOPPIA_VERIFICA=false` per limitare il consumo della quota Gemini.
 
 ## Bot web: Juventus Press News
 

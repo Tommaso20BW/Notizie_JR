@@ -21,10 +21,10 @@ DROPBOX_FOLDER = "/NotizieJR"
 
 # Impostazioni regolabili senza modificare il codice
 # Telegram accetta messaggi fino a 4096 caratteri: si lascia margine per
-# l'intestazione con la fonte e per i tag HTML, così la notizia integrale
-# viene riassunta solo nei rari casi in cui superi davvero il limite reale.
+# l'intestazione con la fonte e per i tag HTML. Le notizie oltre soglia
+# vengono divise localmente, senza consumare altre richieste Gemini.
 MAX_CARATTERI_NOTIZIA = int(os.getenv("MAX_CARATTERI_NOTIZIA", "3800"))
-USA_DOPPIA_VERIFICA = os.getenv("USA_DOPPIA_VERIFICA", "true").lower() not in {
+USA_DOPPIA_VERIFICA = os.getenv("USA_DOPPIA_VERIFICA", "false").lower() not in {
     "0",
     "false",
     "no",
@@ -33,9 +33,13 @@ USA_DOPPIA_VERIFICA = os.getenv("USA_DOPPIA_VERIFICA", "true").lower() not in {
 # Inizializzazione del client ufficiale Google GenAI
 client = genai.Client(api_key=GEMINI_API_KEY)
 
-# Modelli in ordine di priorità. Il secondo viene usato solo se il primo
-# è temporaneamente sovraccarico o non disponibile.
-MODELLI = ["gemini-3.5-flash", "gemini-2.5-flash"]
+# Flash-Lite è ottimizzato per parsing documentale ad alto volume. Gli altri
+# modelli usano quote separate e fungono da riserva su 429/503.
+MODELLI = [
+    "gemini-3.5-flash-lite",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+]
 
 FONTI_VALIDE = ("TUTTO", "GAZZETTA", "CORRIERE")
 
@@ -85,36 +89,6 @@ SCHEMA_NOTIZIE = {
     },
     "required": ["notizie"],
 }
-
-# Schema usato soltanto per accorciare le notizie già verificate. Fonte,
-# pagina e riscontro non vengono rigenerati: il codice conserva gli originali.
-SCHEMA_RIASSUNTI = {
-    "type": "object",
-    "properties": {
-        "notizie": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "id": {
-                        "type": "integer",
-                        "description": "Identificatore numerico del candidato.",
-                    },
-                    "testo": {
-                        "type": "string",
-                        "description": (
-                            "Riassunto fedele, completo e autosufficiente "
-                            "entro il limite richiesto."
-                        ),
-                    },
-                },
-                "required": ["id", "testo"],
-            },
-        }
-    },
-    "required": ["notizie"],
-}
-
 
 def crea_dropbox_client():
     """Crea il client Dropbox con refresh token."""
@@ -177,15 +151,14 @@ def get_pdf_from_dropbox():
             print(f"Errore download {file.name}: {e}")
             print(
                 f"Il download di {file.name} è fallito: "
-                "il PDF verrà comunque cancellato da Dropbox."
+                "il PDF resterà su Dropbox per il prossimo tentativo."
             )
-            delete_files_from_dropbox([file.path_lower])
 
     return documenti
 
 
 def delete_files_from_dropbox(dropbox_paths):
-    """Cancella da Dropbox i PDF indicati, indipendentemente dall'esito."""
+    """Cancella da Dropbox i PDF indicati."""
     if not dropbox_paths:
         return
 
@@ -245,64 +218,113 @@ def _normalizza_fonte(fonte):
     return None
 
 
+def _secondi_attesa_gemini(messaggio):
+    """Ricava il retry delay suggerito dall'errore Gemini, con limite prudente."""
+    for pattern in (
+        r"Please retry in\s+([0-9.]+)s",
+        r"['\"]retryDelay['\"]\s*:\s*['\"]([0-9.]+)s",
+    ):
+        match = re.search(pattern, messaggio, flags=re.IGNORECASE)
+        if match:
+            return min(max(int(float(match.group(1))) + 2, 2), 60)
+    return 30
+
+
 def _genera_json(uploaded, prompt, schema=SCHEMA_NOTIZIE):
-    """Esegue una richiesta strutturata con fallback per i soli errori 503."""
+    """Esegue una richiesta strutturata con retry e fallback su 429/503."""
     ultimo_errore = None
 
     for modello in MODELLI:
-        try:
-            print(f"Tentativo con il modello {modello}...")
-            response = client.models.generate_content(
-                model=modello,
-                contents=[uploaded, prompt],
-                config={
-                    "response_mime_type": "application/json",
-                    "response_schema": schema,
-                    "temperature": 0,
-                    "max_output_tokens": 65536,
-                    # Con notizie integrali (non più tagliate a 280 caratteri)
-                    # il JSON di risposta è molto più grande: si riserva poco
-                    # budget al "pensiero" interno del modello, così non
-                    # sottrae spazio al testo effettivo delle notizie.
-                    "thinking_config": {"thinking_budget": 2048},
-                },
-            )
-
-            candidates = getattr(response, "candidates", None) or []
-            if candidates:
-                finish_reason = str(
-                    getattr(candidates[0], "finish_reason", "")
-                ).upper()
-                if "MAX_TOKENS" in finish_reason:
-                    raise RuntimeError(
-                        "Risposta Gemini incompleta: limite di output "
-                        "raggiunto. Il PDF verrà comunque cancellato."
-                    )
-
-            parsed = getattr(response, "parsed", None)
-            if hasattr(parsed, "model_dump"):
-                parsed = parsed.model_dump()
-            if not isinstance(parsed, dict):
-                parsed = json.loads(response.text)
-
-            notizie = parsed.get("notizie")
-            if not isinstance(notizie, list):
-                raise ValueError("Gemini non ha restituito una lista di notizie.")
-            return notizie
-        except Exception as e:
-            ultimo_errore = e
-            msg = str(e)
-            if (
-                "503" in msg
-                or "UNAVAILABLE" in msg
-                or "overloaded" in msg.lower()
-            ):
+        for tentativo in range(1, 3):
+            try:
                 print(
-                    f"Modello {modello} non disponibile (503). "
-                    "Passo al modello successivo..."
+                    f"Tentativo con il modello {modello} "
+                    f"({tentativo}/2)..."
                 )
-                continue
-            raise
+                response = client.models.generate_content(
+                    model=modello,
+                    contents=[uploaded, prompt],
+                    config={
+                        "response_mime_type": "application/json",
+                        "response_schema": schema,
+                        "temperature": 0,
+                        "max_output_tokens": 65536,
+                        # Si riserva poco budget al pensiero interno del modello,
+                        # così non sottrae spazio al JSON delle notizie.
+                        "thinking_config": {"thinking_budget": 2048},
+                    },
+                )
+
+                candidates = getattr(response, "candidates", None) or []
+                if candidates:
+                    finish_reason = str(
+                        getattr(candidates[0], "finish_reason", "")
+                    ).upper()
+                    if "MAX_TOKENS" in finish_reason:
+                        raise RuntimeError(
+                            "Risposta Gemini incompleta: limite di output "
+                            "raggiunto. Il PDF resterà su Dropbox."
+                        )
+
+                parsed = getattr(response, "parsed", None)
+                if hasattr(parsed, "model_dump"):
+                    parsed = parsed.model_dump()
+                if not isinstance(parsed, dict):
+                    parsed = json.loads(response.text)
+
+                notizie = parsed.get("notizie")
+                if not isinstance(notizie, list):
+                    raise ValueError(
+                        "Gemini non ha restituito una lista di notizie."
+                    )
+                return notizie
+            except Exception as e:
+                ultimo_errore = e
+                msg = str(e)
+                errore_quota = "429" in msg or "RESOURCE_EXHAUSTED" in msg
+                errore_temporaneo = (
+                    "503" in msg
+                    or "UNAVAILABLE" in msg
+                    or "overloaded" in msg.lower()
+                )
+
+                if errore_quota:
+                    quota_giornaliera = bool(
+                        re.search(
+                            r"GenerateRequestsPerDay|requests? per day|"
+                            r"daily quota",
+                            msg,
+                            flags=re.IGNORECASE,
+                        )
+                    )
+                    if tentativo == 1 and not quota_giornaliera:
+                        attesa = _secondi_attesa_gemini(msg)
+                        print(
+                            f"Quota temporanea per {modello}: attendo "
+                            f"{attesa}s prima di riprovare..."
+                        )
+                        time.sleep(attesa)
+                        continue
+
+                    motivo = (
+                        "quota giornaliera esaurita"
+                        if quota_giornaliera
+                        else "quota ancora non disponibile dopo il retry"
+                    )
+                    print(
+                        f"{modello}: {motivo}. "
+                        "Passo al modello successivo..."
+                    )
+                    break
+
+                if errore_temporaneo:
+                    print(
+                        f"Modello {modello} non disponibile (503). "
+                        "Passo al modello successivo..."
+                    )
+                    break
+
+                raise
 
     raise ultimo_errore
 
@@ -395,42 +417,6 @@ Non aggiungere alcuna informazione per rendere il testo più scorrevole.
 In caso di dubbio, ometti.
 
 CANDIDATI DA VERIFICARE:
-{candidati_json}
-""".strip()
-
-
-def _prompt_riassunto(nome_originale, candidati):
-    candidati_json = json.dumps(
-        {"notizie": candidati},
-        ensure_ascii=False,
-        separators=(",", ":"),
-    )
-
-    return f"""
-Sei l'ultimo redattore di controllo del PDF "{nome_originale}". I candidati
-qui sotto sono già stati verificati sul documento, ma superano il limite di
-{MAX_CARATTERI_NOTIZIA} caratteri visibili.
-
-Riscrivi ciascun candidato rispettando tassativamente queste priorità:
-1. conserva il fatto centrale: soggetto, azione o situazione e oggetto;
-2. conserva attribuzione e grado di certezza ("potrebbe", "valuta",
-   "secondo...", dichiarazioni e indiscrezioni);
-3. conserva cifre, condizioni e scadenze quando sono essenziali al fatto;
-4. elimina soltanto contesto secondario, ripetizioni e aggettivi;
-5. non aggiungere sinonimi che rendano il fatto più certo o più forte;
-6. non introdurre informazioni assenti dal candidato e dal suo riscontro;
-7. produci una frase completa e autosufficiente: non troncare mai;
-8. resta entro {MAX_CARATTERI_NOTIZIA} caratteri visibili, esclusi i tag;
-9. conserva soltanto i tag <b>, <t> e <c> già previsti;
-10. usa il formato compatto 10M€, 100M€ e 40-50M€ per gli importi in
-    milioni di euro; conserva "circa" in forme come "circa 50M€" e non
-    trasformarlo in un intervallo.
-
-Restituisci esattamente un risultato per ciascun id ricevuto. Non eliminare,
-unire o dividere candidati. Restituisci soltanto id e nuovo testo: fonte,
-pagina e riscontro saranno conservati dal programma.
-
-CANDIDATI DA RIASSUMERE:
 {candidati_json}
 """.strip()
 
@@ -548,96 +534,8 @@ def _lunghezza_visibile(testo):
     return len(html.unescape(senza_tag))
 
 
-def _trova_notizie_lunghe(notizie):
-    lunghe = []
-    for indice, notizia in enumerate(notizie):
-        if not isinstance(notizia, dict):
-            continue
-        testo = _sanitizza_markup(notizia.get("testo", ""))
-        if _lunghezza_visibile(testo) > MAX_CARATTERI_NOTIZIA:
-            lunghe.append(
-                {
-                    "id": indice,
-                    "testo": testo,
-                    "fonte": notizia.get("fonte", ""),
-                    "pagina": notizia.get("pagina", ""),
-                    "riscontro": notizia.get("riscontro", ""),
-                }
-            )
-    return lunghe
-
-
-def _riassumi_notizie_lunghe(uploaded, nome_originale, notizie):
-    """
-    Accorcia soltanto le notizie oltre soglia, conservando invariati fonte,
-    pagina e riscontro. Non usa mai un taglio meccanico del testo.
-    """
-    notizie = [dict(notizia) for notizia in notizie]
-
-    for tentativo in range(1, 4):
-        lunghe = _trova_notizie_lunghe(notizie)
-        if not lunghe:
-            return notizie
-
-        etichetta = "notizia" if len(lunghe) == 1 else "notizie"
-        print(
-            f"Riassunto mirato di {len(lunghe)} {etichetta} oltre "
-            f"{MAX_CARATTERI_NOTIZIA} caratteri "
-            f"(tentativo {tentativo}/3)..."
-        )
-        risultati = _genera_json(
-            uploaded,
-            _prompt_riassunto(nome_originale, lunghe),
-            schema=SCHEMA_RIASSUNTI,
-        )
-
-        attesi = {elemento["id"] for elemento in lunghe}
-        ricevuti = set()
-
-        for risultato in risultati:
-            if not isinstance(risultato, dict):
-                continue
-            try:
-                indice = int(risultato.get("id"))
-            except (TypeError, ValueError):
-                continue
-            if indice not in attesi or indice in ricevuti:
-                continue
-
-            nuovo_testo = _sanitizza_markup(risultato.get("testo", ""))
-            if not nuovo_testo:
-                continue
-
-            # Cambia esclusivamente il testo: la provenienza documentale
-            # verificata rimane quella del candidato originale.
-            notizie[indice]["testo"] = nuovo_testo
-            ricevuti.add(indice)
-
-        mancanti = attesi - ricevuti
-        if mancanti:
-            raise RuntimeError(
-                "Gemini non ha restituito tutti i riassunti richiesti. "
-                "Il PDF verrà comunque cancellato."
-            )
-
-    ancora_lunghe = _trova_notizie_lunghe(notizie)
-    if ancora_lunghe:
-        raise RuntimeError(
-            "Impossibile riassumere fedelmente tutte le notizie entro "
-            f"{MAX_CARATTERI_NOTIZIA} caratteri dopo 3 tentativi. "
-            "Nessun testo verrà troncato; il PDF verrà comunque cancellato."
-        )
-
-    return notizie
-
-
 def _valida_notizie(notizie, fonte_attesa):
-    """
-    Applica controlli deterministici.
-
-    Non tronca e non scarta per lunghezza: ogni testo oltre soglia deve essere
-    già passato dalla fase di riassunto mirato.
-    """
+    """Applica controlli deterministici senza accorciare il testo."""
     valide = []
     gia_viste = set()
 
@@ -667,9 +565,9 @@ def _valida_notizie(notizie, fonte_attesa):
 
         lunghezza = _lunghezza_visibile(testo)
         if lunghezza > MAX_CARATTERI_NOTIZIA:
-            raise RuntimeError(
-                f"Notizia {indice} ancora troppo lunga: {lunghezza} "
-                f"caratteri. Nessun testo verrà troncato o scartato."
+            print(
+                f"Notizia {indice}: {lunghezza} caratteri; verrà divisa "
+                "in più messaggi Telegram senza riassumerla."
             )
 
         chiave = re.sub(
@@ -696,8 +594,8 @@ def _valida_notizie(notizie, fonte_attesa):
 
 def generate_news_from_pdf(path, nome_originale):
     """
-    Estrae le notizie in JSON e, normalmente, esegue una seconda verifica
-    indipendente sullo stesso PDF prima dell'invio.
+    Estrae le notizie in JSON e, solo se richiesto, esegue una seconda verifica
+    sullo stesso PDF prima dell'invio.
     """
     fonte_attesa = _fonte_da_nome_file(nome_originale)
     if fonte_attesa:
@@ -732,11 +630,6 @@ def generate_news_from_pdf(path, nome_originale):
                 ),
             )
 
-        candidati = _riassumi_notizie_lunghe(
-            uploaded,
-            nome_originale,
-            candidati,
-        )
         notizie = _valida_notizie(candidati, fonte_attesa)
         print(
             f"Notizie approvate: {len(notizie)} su "
@@ -771,10 +664,113 @@ def render_testo(testo):
     return testo.strip()
 
 
+def _intervalli_testo(testo, limite):
+    """Restituisce intervalli leggibili, preferendo frasi e spazi."""
+    if limite < 1:
+        raise ValueError("Il limite dei messaggi deve essere positivo.")
+
+    visibile = html.unescape(
+        re.sub(r"</?(?:b|t|c)>", "", testo, flags=re.IGNORECASE)
+    )
+    intervalli = []
+    inizio = 0
+
+    while len(visibile) - inizio > limite:
+        fine_massima = inizio + limite
+        finestra = visibile[inizio : fine_massima + 1]
+        fine = None
+
+        frasi = list(re.finditer(r"(?<=[.!?;:])\s+", finestra))
+        if frasi:
+            candidata = inizio + frasi[-1].start()
+            if candidata - inizio >= max(1, limite // 2):
+                fine = candidata
+
+        if fine is None:
+            spazi = list(re.finditer(r"\s+", finestra))
+            if spazi:
+                fine = inizio + spazi[-1].start()
+
+        if fine is None or fine <= inizio:
+            fine = fine_massima
+
+        intervalli.append((inizio, fine))
+        inizio = fine
+        while inizio < len(visibile) and visibile[inizio].isspace():
+            inizio += 1
+
+    if inizio < len(visibile):
+        intervalli.append((inizio, len(visibile)))
+
+    return intervalli
+
+
+def _estrai_intervallo_markup(testo, inizio, fine):
+    """Estrae un intervallo visibile riaprendo e chiudendo i tag interni."""
+    token_re = re.compile(
+        r"</?(?:b|t|c)>|&(?:#\d+|#x[0-9a-f]+|[a-z][a-z0-9]+);|.",
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    tag_re = re.compile(r"<(/?)(b|t|c)>", flags=re.IGNORECASE)
+    attivi = []
+    risultato = []
+    posizione = 0
+    iniziato = False
+
+    for match in token_re.finditer(testo):
+        token = match.group(0)
+        tag_match = tag_re.fullmatch(token)
+        if tag_match:
+            if posizione >= fine:
+                break
+
+            chiusura = bool(tag_match.group(1))
+            tag = tag_match.group(2).lower()
+            if iniziato:
+                risultato.append(f"</{tag}>" if chiusura else f"<{tag}>")
+
+            if chiusura:
+                if attivi and attivi[-1] == tag:
+                    attivi.pop()
+            else:
+                attivi.append(tag)
+            continue
+
+        lunghezza = len(html.unescape(token))
+        if posizione + lunghezza <= inizio:
+            posizione += lunghezza
+            continue
+        if posizione >= fine:
+            break
+
+        if not iniziato:
+            risultato.extend(f"<{tag}>" for tag in attivi)
+            iniziato = True
+        risultato.append(token)
+        posizione += lunghezza
+
+    if iniziato:
+        risultato.extend(f"</{tag}>" for tag in reversed(attivi))
+
+    return "".join(risultato).strip()
+
+
+def _dividi_testo_markup(testo, limite=MAX_CARATTERI_NOTIZIA):
+    """Divide senza riassumere, preservando testo e markup consentito."""
+    if _lunghezza_visibile(testo) <= limite:
+        return [testo]
+
+    parti = [
+        _estrai_intervallo_markup(testo, inizio, fine)
+        for inizio, fine in _intervalli_testo(testo, limite)
+    ]
+    return [parte for parte in parti if parte]
+
+
 def send_to_telegram(news_list):
     """
-    Invia un solo messaggio per notizia, con la fonte in alto, e restituisce
-    True soltanto se ogni invio riesce.
+    Invia ogni notizia con la fonte in alto. I testi oltre soglia vengono
+    divisi localmente; True indica che ogni parte è stata consegnata.
     """
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
@@ -840,15 +836,61 @@ def send_to_telegram(news_list):
             continue
 
         emoji_fonte, nome_fonte = emoji_mapping[fonte]
-        corpo = render_testo(clean)
+        parti = _dividi_testo_markup(clean)
 
-        testo = f"{emoji_fonte} <i>{nome_fonte}</i>\n\n{corpo}"
+        for numero, parte in enumerate(parti, start=1):
+            corpo = render_testo(parte)
+            continuazione = (
+                f" ({numero}/{len(parti)})" if len(parti) > 1 else ""
+            )
+            testo = (
+                f"{emoji_fonte} <i>{nome_fonte}</i>{continuazione}"
+                f"\n\n{corpo}"
+            )
 
-        esito = _post(testo)
-        tutto_inviato = esito and tutto_inviato
-        time.sleep(1)
+            esito = _post(testo)
+            tutto_inviato = esito and tutto_inviato
+            time.sleep(1)
 
     return tutto_inviato
+
+
+def elabora_documento(documento):
+    """Elabora un PDF e lo rimuove da Dropbox solo dopo una lettura riuscita."""
+    path = documento["local_path"]
+    nome_originale = documento["original_name"]
+    lettura_completata = False
+
+    print(f"Elaborazione {nome_originale}...")
+    try:
+        lista = generate_news_from_pdf(path, nome_originale)
+        lettura_completata = True
+        if lista:
+            print(f"Notizie pronte per l'invio: {len(lista)}")
+            if not send_to_telegram(lista):
+                print(
+                    "Invio Telegram incompleto: il PDF verrà cancellato "
+                    "per evitare invii duplicati al prossimo avvio."
+                )
+        else:
+            print("Nessuna notizia Juventus verificata nel PDF.")
+    except Exception as e:
+        print(f"Errore durante l'elaborazione: {e}")
+        print(
+            f"{nome_originale} resterà su Dropbox e verrà ritentato "
+            "alla prossima esecuzione."
+        )
+    finally:
+        if lettura_completata:
+            print(
+                f"Lettura completata: cancellazione di {nome_originale} "
+                "da Dropbox..."
+            )
+            delete_files_from_dropbox([documento["dropbox_path"]])
+        if os.path.exists(path):
+            os.remove(path)
+
+    return lettura_completata
 
 
 if __name__ == "__main__":
@@ -858,31 +900,7 @@ if __name__ == "__main__":
         print("Nessun PDF nuovo. Chiusura.")
     else:
         for i, documento in enumerate(documenti):
-            path = documento["local_path"]
-            nome_originale = documento["original_name"]
-
-            print(f"Elaborazione {nome_originale}...")
-            try:
-                lista = generate_news_from_pdf(path, nome_originale)
-                if lista:
-                    print(f"Notizie pronte per l'invio: {len(lista)}")
-                    if not send_to_telegram(lista):
-                        print(
-                            "Invio incompleto: il PDF verrà comunque "
-                            "cancellato da Dropbox."
-                        )
-                else:
-                    print("Nessuna notizia Juventus verificata nel PDF.")
-            except Exception as e:
-                print(f"Errore durante l'elaborazione: {e}")
-            finally:
-                print(
-                    f"Cancellazione di {nome_originale} da Dropbox "
-                    "indipendentemente dall'esito..."
-                )
-                delete_files_from_dropbox([documento["dropbox_path"]])
-                if os.path.exists(path):
-                    os.remove(path)
+            elabora_documento(documento)
 
             if i < len(documenti) - 1:
                 print(
