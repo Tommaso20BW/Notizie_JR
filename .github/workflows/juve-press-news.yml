@@ -94,7 +94,19 @@ jobs:
           ffprobe -version
 
       - name: Verifica invio Telegram
-        run: python -m unittest discover -s tests -v
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for test_file in tests/test_*.py; do
+            if [[ "$(basename "$test_file")" == "test_bot_giornali.py" ]]; then
+              echo "Salto $test_file: appartiene al bot dei giornali."
+              continue
+            fi
+
+            echo "Eseguo $test_file"
+            python -m unittest "$test_file" -v
+          done
 
       - name: Controlla le notizie di oggi
         run: python -u juve_press_bot.py
