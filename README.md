@@ -35,7 +35,8 @@ cancellazione da Dropbox dopo una lettura riuscita
 - legge tutti i PDF presenti nella cartella Dropbox `/NotizieJR`;
 - ricava la testata dal nome del file quando contiene Tuttosport, Gazzetta o Corriere;
 - carica ogni PDF su Gemini e richiede un output JSON strutturato;
-- usa `gemini-3.5-flash-lite`, con fallback a `gemini-3.6-flash` e `gemini-3.5-flash` sui limiti `429` o sugli errori temporanei `503`;
+- usa `gemini-3.5-flash-lite`, con fallback a `gemini-3.1-flash-lite`, `gemini-3.6-flash` e `gemini-3.5-flash` sui limiti `429` o sugli errori temporanei `503`;
+- se tutti i modelli sono temporaneamente occupati, attende con backoff e ripete l'intero giro fino a tre volte; i modelli con quota giornaliera esaurita vengono esclusi dai cicli successivi;
 - esegue una sola lettura per impostazione predefinita; la seconda verifica sullo stesso documento resta opzionale;
 - richiede per ogni notizia fonte, pagina e un breve riscontro testuale;
 - richiede testi entro 3.800 caratteri visibili e divide localmente quelli più lunghi in più messaggi Telegram, senza una nuova richiesta Gemini e senza riassumerli;
@@ -68,6 +69,8 @@ Impostazioni opzionali lette dal codice:
 |---|---:|---|
 | `MAX_CARATTERI_NOTIZIA` | `3800` | Limite visibile di ogni parte inviata a Telegram. |
 | `USA_DOPPIA_VERIFICA` | `false` | Abilita una seconda richiesta Gemini di verifica. |
+| `MAX_CICLI_GEMINI` | `3` | Numero massimo di giri completi sui modelli dopo errori temporanei. |
+| `ATTESA_503_GEMINI` | `20` | Attesa iniziale in secondi tra i cicli; raddoppia fino a 60 secondi. |
 
 Il workflow imposta esplicitamente `USA_DOPPIA_VERIFICA=false` per limitare il consumo della quota Gemini.
 

@@ -29,6 +29,8 @@ USA_DOPPIA_VERIFICA = os.getenv("USA_DOPPIA_VERIFICA", "false").lower() not in {
     "false",
     "no",
 }
+MAX_CICLI_GEMINI = max(1, int(os.getenv("MAX_CICLI_GEMINI", "3")))
+ATTESA_503_GEMINI = max(1, int(os.getenv("ATTESA_503_GEMINI", "20")))
 
 # Inizializzazione del client ufficiale Google GenAI
 client = genai.Client(api_key=GEMINI_API_KEY)
@@ -37,6 +39,7 @@ client = genai.Client(api_key=GEMINI_API_KEY)
 # modelli usano quote separate e fungono da riserva su 429/503.
 MODELLI = [
     "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite",
     "gemini-3.6-flash",
     "gemini-3.5-flash",
 ]
@@ -231,15 +234,23 @@ def _secondi_attesa_gemini(messaggio):
 
 
 def _genera_json(uploaded, prompt, schema=SCHEMA_NOTIZIE):
-    """Esegue una richiesta strutturata con retry e fallback su 429/503."""
+    """Prova tutti i modelli e ripete il giro con backoff su 429/503."""
     ultimo_errore = None
+    modelli_con_quota_giornaliera_esaurita = set()
 
-    for modello in MODELLI:
-        for tentativo in range(1, 3):
+    for ciclo in range(1, MAX_CICLI_GEMINI + 1):
+        attesa_ciclo = None
+        modelli_tentati = 0
+
+        for modello in MODELLI:
+            if modello in modelli_con_quota_giornaliera_esaurita:
+                continue
+
+            modelli_tentati += 1
             try:
                 print(
                     f"Tentativo con il modello {modello} "
-                    f"({tentativo}/2)..."
+                    f"(ciclo {ciclo}/{MAX_CICLI_GEMINI})..."
                 )
                 response = client.models.generate_content(
                     model=modello,
@@ -297,35 +308,52 @@ def _genera_json(uploaded, prompt, schema=SCHEMA_NOTIZIE):
                             flags=re.IGNORECASE,
                         )
                     )
-                    if tentativo == 1 and not quota_giornaliera:
-                        attesa = _secondi_attesa_gemini(msg)
+                    if quota_giornaliera:
+                        modelli_con_quota_giornaliera_esaurita.add(modello)
                         print(
-                            f"Quota temporanea per {modello}: attendo "
-                            f"{attesa}s prima di riprovare..."
+                            f"{modello}: quota giornaliera esaurita. "
+                            "Lo escludo dai prossimi cicli..."
                         )
-                        time.sleep(attesa)
                         continue
 
-                    motivo = (
-                        "quota giornaliera esaurita"
-                        if quota_giornaliera
-                        else "quota ancora non disponibile dopo il retry"
+                    attesa_quota = _secondi_attesa_gemini(msg)
+                    attesa_ciclo = max(
+                        attesa_ciclo or 0,
+                        attesa_quota,
                     )
                     print(
-                        f"{modello}: {motivo}. "
-                        "Passo al modello successivo..."
+                        f"Quota temporanea per {modello}. "
+                        "Provo il modello successivo..."
                     )
-                    break
+                    continue
 
                 if errore_temporaneo:
-                    print(
-                        f"Modello {modello} non disponibile (503). "
-                        "Passo al modello successivo..."
+                    attesa_503 = min(
+                        ATTESA_503_GEMINI * (2 ** (ciclo - 1)),
+                        60,
                     )
-                    break
+                    attesa_ciclo = max(attesa_ciclo or 0, attesa_503)
+                    print(
+                        f"Modello {modello} temporaneamente non disponibile "
+                        "(503). Provo il modello successivo..."
+                    )
+                    continue
 
                 raise
 
+        if ciclo >= MAX_CICLI_GEMINI or modelli_tentati == 0:
+            break
+        if attesa_ciclo is None:
+            break
+
+        print(
+            "Tutti i modelli disponibili sono temporaneamente occupati. "
+            f"Attendo {attesa_ciclo}s prima del ciclo successivo..."
+        )
+        time.sleep(attesa_ciclo)
+
+    if ultimo_errore is None:
+        raise RuntimeError("Nessun modello Gemini configurato.")
     raise ultimo_errore
 
 

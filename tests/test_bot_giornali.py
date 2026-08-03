@@ -71,6 +71,31 @@ class GeminiTests(unittest.TestCase):
         self.assertEqual(risultato, [{"testo": "Notizia"}])
         sleep.assert_called_once_with(4)
 
+    def test_503_riprova_tutti_i_modelli_dopo_backoff(self):
+        models = Mock()
+        models.generate_content.side_effect = [
+            RuntimeError("503 UNAVAILABLE: high demand"),
+            RuntimeError("503 UNAVAILABLE: high demand"),
+            self._response(),
+        ]
+        client = SimpleNamespace(models=models)
+
+        with (
+            patch.object(bot_giornali, "client", client),
+            patch.object(bot_giornali, "MODELLI", ["primo", "secondo"]),
+            patch.object(bot_giornali, "MAX_CICLI_GEMINI", 3),
+            patch.object(bot_giornali, "ATTESA_503_GEMINI", 5),
+            patch.object(bot_giornali.time, "sleep") as sleep,
+        ):
+            risultato = bot_giornali._genera_json(object(), "prompt")
+
+        self.assertEqual(risultato, [{"testo": "Notizia"}])
+        self.assertEqual(
+            [call.kwargs["model"] for call in models.generate_content.call_args_list],
+            ["primo", "secondo", "primo"],
+        )
+        sleep.assert_called_once_with(5)
+
 
 class DivisioneMessaggiTests(unittest.TestCase):
     def test_divide_senza_perdere_testo_e_bilancia_i_tag(self):
