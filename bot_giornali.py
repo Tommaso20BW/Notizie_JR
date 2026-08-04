@@ -46,6 +46,25 @@ MODELLI = [
 
 FONTI_VALIDE = ("TUTTO", "GAZZETTA", "CORRIERE")
 
+# Nome visibile, ID emoji personalizzata Telegram e carattere fallback.
+FONTI_TELEGRAM = {
+    "GAZZETTA": {
+        "nome": "La Gazzetta dello Sport",
+        "emoji_id": "6032862491623559282",
+        "fallback": "📰",
+    },
+    "CORRIERE": {
+        "nome": "Corriere dello Sport",
+        "emoji_id": "6030691308346019878",
+        "fallback": "📰",
+    },
+    "TUTTO": {
+        "nome": "Tuttosport",
+        "emoji_id": "6032834612990841221",
+        "fallback": "📰",
+    },
+}
+
 # L'output strutturato impedisce che le notizie vengano divise in base
 # a righe vuote, titoli o paragrafi generati liberamente dal modello.
 SCHEMA_NOTIZIE = {
@@ -93,6 +112,7 @@ SCHEMA_NOTIZIE = {
     "required": ["notizie"],
 }
 
+
 def crea_dropbox_client():
     """Crea il client Dropbox con refresh token."""
     return dropbox.Dropbox(
@@ -114,18 +134,20 @@ def get_pdf_from_dropbox():
     try:
         result = dbx.files_list_folder(DROPBOX_FOLDER)
         entries = list(result.entries)
+
         while result.has_more:
             result = dbx.files_list_folder_continue(result.cursor)
             entries.extend(result.entries)
+
     except dropbox.exceptions.ApiError as e:
         print(f"Errore accesso cartella Dropbox: {e}")
         return []
 
     pdf_files = [
-        f
-        for f in entries
-        if isinstance(f, dropbox.files.FileMetadata)
-        and f.name.lower().endswith(".pdf")
+        file
+        for file in entries
+        if isinstance(file, dropbox.files.FileMetadata)
+        and file.name.lower().endswith(".pdf")
     ]
 
     if not pdf_files:
@@ -137,11 +159,14 @@ def get_pdf_from_dropbox():
 
     for idx, file in enumerate(pdf_files):
         local_filename = f"giornale_{idx}.pdf"
+
         try:
             print(f"Download {file.name}...")
             _, response = dbx.files_download(file.path_lower)
-            with open(local_filename, "wb") as f:
-                f.write(response.content)
+
+            with open(local_filename, "wb") as local_file:
+                local_file.write(response.content)
+
             documenti.append(
                 {
                     "local_path": local_filename,
@@ -149,7 +174,9 @@ def get_pdf_from_dropbox():
                     "original_name": file.name,
                 }
             )
+
             print(f"Scaricato: {file.name}")
+
         except Exception as e:
             print(f"Errore download {file.name}: {e}")
             print(
@@ -177,6 +204,7 @@ def delete_files_from_dropbox(dropbox_paths):
                 dbx.files_delete_v2(path)
                 print(f"File {path} cancellato da Dropbox.")
                 break
+
             except Exception as e:
                 if tentativo == 3:
                     print(
@@ -201,23 +229,31 @@ def _senza_accenti(testo):
 def _fonte_da_nome_file(nome):
     """Ricava la fonte dal nome del PDF quando è indicata chiaramente."""
     norm = _senza_accenti(nome).lower()
+
     if "tuttosport" in norm or re.search(r"\btutto\b", norm):
         return "TUTTO"
+
     if "gazzetta" in norm:
         return "GAZZETTA"
+
     if "corriere" in norm or "corsport" in norm:
         return "CORRIERE"
+
     return None
 
 
 def _normalizza_fonte(fonte):
     norm = _senza_accenti(str(fonte)).upper().strip()
+
     if "TUTTO" in norm:
         return "TUTTO"
+
     if "GAZZETTA" in norm:
         return "GAZZETTA"
+
     if "CORRIERE" in norm or "CORSPORT" in norm:
         return "CORRIERE"
+
     return None
 
 
@@ -228,8 +264,10 @@ def _secondi_attesa_gemini(messaggio):
         r"['\"]retryDelay['\"]\s*:\s*['\"]([0-9.]+)s",
     ):
         match = re.search(pattern, messaggio, flags=re.IGNORECASE)
+
         if match:
             return min(max(int(float(match.group(1))) + 2, 2), 60)
+
     return 30
 
 
@@ -247,11 +285,13 @@ def _genera_json(uploaded, prompt, schema=SCHEMA_NOTIZIE):
                 continue
 
             modelli_tentati += 1
+
             try:
                 print(
                     f"Tentativo con il modello {modello} "
                     f"(ciclo {ciclo}/{MAX_CICLI_GEMINI})..."
                 )
+
                 response = client.models.generate_content(
                     model=modello,
                     contents=[uploaded, prompt],
@@ -262,15 +302,19 @@ def _genera_json(uploaded, prompt, schema=SCHEMA_NOTIZIE):
                         "max_output_tokens": 65536,
                         # Si riserva poco budget al pensiero interno del modello,
                         # così non sottrae spazio al JSON delle notizie.
-                        "thinking_config": {"thinking_budget": 2048},
+                        "thinking_config": {
+                            "thinking_budget": 2048,
+                        },
                     },
                 )
 
                 candidates = getattr(response, "candidates", None) or []
+
                 if candidates:
                     finish_reason = str(
                         getattr(candidates[0], "finish_reason", "")
                     ).upper()
+
                     if "MAX_TOKENS" in finish_reason:
                         raise RuntimeError(
                             "Risposta Gemini incompleta: limite di output "
@@ -278,21 +322,31 @@ def _genera_json(uploaded, prompt, schema=SCHEMA_NOTIZIE):
                         )
 
                 parsed = getattr(response, "parsed", None)
+
                 if hasattr(parsed, "model_dump"):
                     parsed = parsed.model_dump()
+
                 if not isinstance(parsed, dict):
                     parsed = json.loads(response.text)
 
                 notizie = parsed.get("notizie")
+
                 if not isinstance(notizie, list):
                     raise ValueError(
                         "Gemini non ha restituito una lista di notizie."
                     )
+
                 return notizie
+
             except Exception as e:
                 ultimo_errore = e
                 msg = str(e)
-                errore_quota = "429" in msg or "RESOURCE_EXHAUSTED" in msg
+
+                errore_quota = (
+                    "429" in msg
+                    or "RESOURCE_EXHAUSTED" in msg
+                )
+
                 errore_temporaneo = (
                     "503" in msg
                     or "UNAVAILABLE" in msg
@@ -308,6 +362,7 @@ def _genera_json(uploaded, prompt, schema=SCHEMA_NOTIZIE):
                             flags=re.IGNORECASE,
                         )
                     )
+
                     if quota_giornaliera:
                         modelli_con_quota_giornaliera_esaurita.add(modello)
                         print(
@@ -321,6 +376,7 @@ def _genera_json(uploaded, prompt, schema=SCHEMA_NOTIZIE):
                         attesa_ciclo or 0,
                         attesa_quota,
                     )
+
                     print(
                         f"Quota temporanea per {modello}. "
                         "Provo il modello successivo..."
@@ -332,7 +388,12 @@ def _genera_json(uploaded, prompt, schema=SCHEMA_NOTIZIE):
                         ATTESA_503_GEMINI * (2 ** (ciclo - 1)),
                         60,
                     )
-                    attesa_ciclo = max(attesa_ciclo or 0, attesa_503)
+
+                    attesa_ciclo = max(
+                        attesa_ciclo or 0,
+                        attesa_503,
+                    )
+
                     print(
                         f"Modello {modello} temporaneamente non disponibile "
                         "(503). Provo il modello successivo..."
@@ -343,6 +404,7 @@ def _genera_json(uploaded, prompt, schema=SCHEMA_NOTIZIE):
 
         if ciclo >= MAX_CICLI_GEMINI or modelli_tentati == 0:
             break
+
         if attesa_ciclo is None:
             break
 
@@ -354,6 +416,7 @@ def _genera_json(uploaded, prompt, schema=SCHEMA_NOTIZIE):
 
     if ultimo_errore is None:
         raise RuntimeError("Nessun modello Gemini configurato.")
+
     raise ultimo_errore
 
 
@@ -464,7 +527,7 @@ def _normalizza_importi_euro(testo):
     testo = re.sub(
         rf"\b(?:tra|fra)\s+(?:i\s+)?({numero})\s+e\s+(?:i\s+)?"
         rf"({numero})\s+{valuta}(?!\w)",
-        lambda m: f"{m.group(1)}-{m.group(2)}M€",
+        lambda match: f"{match.group(1)}-{match.group(2)}M€",
         testo,
         flags=re.IGNORECASE,
     )
@@ -472,7 +535,7 @@ def _normalizza_importi_euro(testo):
     # "da/dai 40 a/ai 50 milioni di euro" -> "40-50M€"
     testo = re.sub(
         rf"\bda(?:i)?\s+({numero})\s+a(?:i)?\s+({numero})\s+{valuta}(?!\w)",
-        lambda m: f"{m.group(1)}-{m.group(2)}M€",
+        lambda match: f"{match.group(1)}-{match.group(2)}M€",
         testo,
         flags=re.IGNORECASE,
     )
@@ -480,17 +543,18 @@ def _normalizza_importi_euro(testo):
     # "40-50 milioni di euro" -> "40-50M€"
     testo = re.sub(
         rf"\b({numero})\s*[-–—]\s*({numero})\s+{valuta}(?!\w)",
-        lambda m: f"{m.group(1)}-{m.group(2)}M€",
+        lambda match: f"{match.group(1)}-{match.group(2)}M€",
         testo,
         flags=re.IGNORECASE,
     )
 
-    # Conserva l'eventuale approssimazione: "circa 50 milioni" non diventa
-    # mai un intervallo deciso dal programma.
+    # Conserva l'eventuale approssimazione.
     testo = re.sub(
         rf"\b((?:circa|quasi|oltre|almeno|meno\s+di|più\s+di)\s+)?"
         rf"({numero})\s+{valuta}(?!\w)",
-        lambda m: f"{m.group(1) or ''}{m.group(2)}M€",
+        lambda match: (
+            f"{match.group(1) or ''}{match.group(2)}M€"
+        ),
         testo,
         flags=re.IGNORECASE,
     )
@@ -502,6 +566,7 @@ def _normalizza_importi_euro(testo):
         testo,
         flags=re.IGNORECASE,
     )
+
     return testo
 
 
@@ -512,18 +577,26 @@ def _sanitizza_markup(testo):
     """
     testo = html.unescape(str(testo))
     testo = testo.replace("*", "").replace("`", "")
-    testo = re.sub(r"\[NOTIZIA\]", "", testo, flags=re.IGNORECASE)
+
     testo = re.sub(
-        r"\[FONTE_(?:TUTTO|GAZZETTA|CORRIERE)\]",
+        r"$begin:math:display$NOTIZIA$end:math:display$",
         "",
         testo,
         flags=re.IGNORECASE,
     )
-    # Include anche varianti malformate prodotte dal modello, ad esempio
-    # "<b >nome" oppure "<strong class=...>nome</strong>".
+
+    testo = re.sub(
+        r"$begin:math:display$FONTE\_\(\?\:TUTTO\|GAZZETTA\|CORRIERE\)$end:math:display$",
+        "",
+        testo,
+        flags=re.IGNORECASE,
+    )
+
+    # Include anche varianti malformate prodotte dal modello.
     testo = re.sub(r"<[^<>]*>", "", testo)
     testo = _normalizza_importi_euro(testo)
     testo = " ".join(testo.split()).strip()
+
     return html.escape(testo, quote=False)
 
 
@@ -542,12 +615,22 @@ def _valida_notizie(notizie, fonte_attesa):
             continue
 
         testo = _sanitizza_markup(notizia.get("testo", ""))
-        pagina = " ".join(str(notizia.get("pagina", "")).split()).strip()
-        riscontro = " ".join(str(notizia.get("riscontro", "")).split()).strip()
-        fonte_modello = _normalizza_fonte(notizia.get("fonte", ""))
+        pagina = " ".join(
+            str(notizia.get("pagina", "")).split()
+        ).strip()
+        riscontro = " ".join(
+            str(notizia.get("riscontro", "")).split()
+        ).strip()
+        fonte_modello = _normalizza_fonte(
+            notizia.get("fonte", "")
+        )
         fonte = fonte_attesa or fonte_modello
 
-        if fonte_attesa and fonte_modello and fonte_modello != fonte_attesa:
+        if (
+            fonte_attesa
+            and fonte_modello
+            and fonte_modello != fonte_attesa
+        ):
             print(
                 f"Notizia {indice}: fonte del modello corretta da "
                 f"{fonte_modello} a {fonte_attesa} in base al nome del PDF."
@@ -561,6 +644,7 @@ def _valida_notizie(notizie, fonte_attesa):
             continue
 
         lunghezza = _lunghezza_visibile(testo)
+
         if lunghezza > MAX_CARATTERI_NOTIZIA:
             print(
                 f"Notizia {indice}: {lunghezza} caratteri; verrà divisa "
@@ -570,13 +654,20 @@ def _valida_notizie(notizie, fonte_attesa):
         chiave = re.sub(
             r"\W+",
             "",
-            re.sub(r"</?(?:b|t|c)>", "", testo, flags=re.IGNORECASE).lower(),
+            re.sub(
+                r"</?(?:b|t|c)>",
+                "",
+                testo,
+                flags=re.IGNORECASE,
+            ).lower(),
         )
+
         if not chiave or chiave in gia_viste:
             print(f"Notizia {indice} scartata: duplicata o vuota.")
             continue
 
         gia_viste.add(chiave)
+
         valide.append(
             {
                 "testo": testo,
@@ -595,6 +686,7 @@ def generate_news_from_pdf(path, nome_originale):
     sullo stesso PDF prima dell'invio.
     """
     fonte_attesa = _fonte_da_nome_file(nome_originale)
+
     if fonte_attesa:
         print(f"Fonte ricavata dal nome del file: {fonte_attesa}.")
     else:
@@ -608,9 +700,13 @@ def generate_news_from_pdf(path, nome_originale):
 
     try:
         print("Prima lettura: estrazione delle notizie...")
+
         candidati = _genera_json(
             uploaded,
-            _prompt_estrazione(nome_originale, fonte_attesa),
+            _prompt_estrazione(
+                nome_originale,
+                fonte_attesa,
+            ),
         )
 
         if USA_DOPPIA_VERIFICA and candidati:
@@ -618,6 +714,7 @@ def generate_news_from_pdf(path, nome_originale):
                 f"Seconda lettura: verifica documentale di "
                 f"{len(candidati)} candidati..."
             )
+
             candidati = _genera_json(
                 uploaded,
                 _prompt_verifica(
@@ -627,18 +724,26 @@ def generate_news_from_pdf(path, nome_originale):
                 ),
             )
 
-        notizie = _valida_notizie(candidati, fonte_attesa)
+        notizie = _valida_notizie(
+            candidati,
+            fonte_attesa,
+        )
+
         print(
             f"Notizie approvate: {len(notizie)} su "
             f"{len(candidati)} dopo i controlli finali."
         )
+
         for indice, notizia in enumerate(notizie, start=1):
             estratto = notizia["riscontro"][:180]
+
             print(
                 f"  [{indice}] {notizia['fonte']} - pagina "
                 f"{notizia['pagina']} - riscontro: {estratto}"
             )
+
         return notizie
+
     finally:
         try:
             client.files.delete(name=uploaded.name)
@@ -665,14 +770,22 @@ def _intervalli_testo(testo, limite):
         finestra = visibile[inizio : fine_massima + 1]
         fine = None
 
-        frasi = list(re.finditer(r"(?<=[.!?;:])\s+", finestra))
+        frasi = list(
+            re.finditer(
+                r"(?<=[.!?;:])\s+",
+                finestra,
+            )
+        )
+
         if frasi:
             candidata = inizio + frasi[-1].start()
+
             if candidata - inizio >= max(1, limite // 2):
                 fine = candidata
 
         if fine is None:
             spazi = list(re.finditer(r"\s+", finestra))
+
             if spazi:
                 fine = inizio + spazi[-1].start()
 
@@ -681,11 +794,20 @@ def _intervalli_testo(testo, limite):
 
         intervalli.append((inizio, fine))
         inizio = fine
-        while inizio < len(visibile) and visibile[inizio].isspace():
+
+        while (
+            inizio < len(visibile)
+            and visibile[inizio].isspace()
+        ):
             inizio += 1
 
     if inizio < len(visibile):
-        intervalli.append((inizio, len(visibile)))
+        intervalli.append(
+            (
+                inizio,
+                len(visibile),
+            )
+        )
 
     return intervalli
 
@@ -696,15 +818,18 @@ def _estrai_intervallo_testo(testo, inizio, fine):
         r"&(?:#\d+|#x[0-9a-f]+|[a-z][a-z0-9]+);|.",
         flags=re.IGNORECASE | re.DOTALL,
     )
+
     risultato = []
     posizione = 0
 
     for match in token_re.finditer(testo):
         token = match.group(0)
         lunghezza = len(html.unescape(token))
+
         if posizione + lunghezza <= inizio:
             posizione += lunghezza
             continue
+
         if posizione >= fine:
             break
 
@@ -720,24 +845,35 @@ def _dividi_testo(testo, limite=MAX_CARATTERI_NOTIZIA):
         return [testo]
 
     parti = [
-        _estrai_intervallo_testo(testo, inizio, fine)
-        for inizio, fine in _intervalli_testo(testo, limite)
+        _estrai_intervallo_testo(
+            testo,
+            inizio,
+            fine,
+        )
+        for inizio, fine in _intervalli_testo(
+            testo,
+            limite,
+        )
     ]
-    return [parte for parte in parti if parte]
+
+    return [
+        parte
+        for parte in parti
+        if parte
+    ]
 
 
 def send_to_telegram(news_list):
     """
-    Invia ogni notizia con la fonte in alto. I testi oltre soglia vengono
-    divisi localmente; True indica che ogni parte è stata consegnata.
+    Invia ogni notizia con la fonte e la relativa emoji Telegram personalizzata.
+
+    Il carattere 📰 dentro <tg-emoji> viene utilizzato come fallback nei client
+    che non visualizzano l'emoji personalizzata.
+
+    I testi oltre soglia vengono divisi localmente.
+    True indica che ogni parte è stata consegnata.
     """
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-
-    nomi_fonti = {
-        "TUTTO": "Tuttosport",
-        "GAZZETTA": "Gazzetta dello Sport",
-        "CORRIERE": "Corriere dello Sport",
-    }
 
     def _post(testo, risposta_a=None):
         for attempt in range(5):
@@ -747,6 +883,7 @@ def send_to_telegram(news_list):
                     "text": testo,
                     "parse_mode": "HTML",
                 }
+
                 if risposta_a is not None:
                     payload["reply_parameters"] = {
                         "message_id": risposta_a,
@@ -758,32 +895,69 @@ def send_to_telegram(news_list):
                     json=payload,
                     timeout=10,
                 )
+
                 if resp.ok:
+                    try:
+                        dati = resp.json()
+                    except ValueError:
+                        print(
+                            "Telegram ha restituito una risposta non JSON."
+                        )
+                        return None
+
                     message_id = (
-                        resp.json().get("result", {}).get("message_id")
+                        dati
+                        .get("result", {})
+                        .get("message_id")
                     )
+
                     if message_id is None:
                         print(
                             "Telegram ha confermato l'invio senza restituire "
                             "il message_id."
                         )
                         return None
+
                     return message_id
+
                 if resp.status_code == 429:
-                    retry_after = (
-                        resp.json()
-                        .get("parameters", {})
-                        .get("retry_after", 30)
-                    )
+                    try:
+                        retry_after = (
+                            resp.json()
+                            .get("parameters", {})
+                            .get("retry_after", 30)
+                        )
+                    except ValueError:
+                        retry_after = 30
+
                     print(
                         f"Rate limit Telegram, attendo {retry_after + 1}s "
                         f"(tentativo {attempt + 1}/5)..."
                     )
+
                     time.sleep(retry_after + 1)
                     continue
 
-                print(f"Errore Telegram: {resp.status_code} - {resp.text}")
+                print(
+                    f"Errore Telegram: "
+                    f"{resp.status_code} - {resp.text}"
+                )
                 return None
+
+            except requests.RequestException as e:
+                print(
+                    f"Errore di rete durante l'invio Telegram "
+                    f"(tentativo {attempt + 1}/5): {e}"
+                )
+
+                if attempt < 4:
+                    attesa = min(2 ** attempt, 16)
+                    print(f"Nuovo tentativo tra {attesa}s...")
+                    time.sleep(attesa)
+                    continue
+
+                return None
+
             except Exception as e:
                 print(f"Errore invio Telegram: {e}")
                 return None
@@ -794,34 +968,66 @@ def send_to_telegram(news_list):
     tutto_inviato = True
 
     for news in news_list:
-        clean = _sanitizza_markup(news["testo"])
-        fonte = _normalizza_fonte(news["fonte"])
-        if not clean or fonte not in nomi_fonti:
-            print("Notizia saltata: testo vuoto o fonte non valida.")
+        clean = _sanitizza_markup(
+            news.get("testo", "")
+        )
+        fonte = _normalizza_fonte(
+            news.get("fonte", "")
+        )
+        configurazione = FONTI_TELEGRAM.get(fonte)
+
+        if not clean or configurazione is None:
+            print(
+                "Notizia saltata: testo vuoto o fonte non valida."
+            )
             tutto_inviato = False
             continue
 
-        nome_fonte = nomi_fonti[fonte]
+        nome_fonte = configurazione["nome"]
+        emoji_id = configurazione["emoji_id"]
+        fallback = configurazione["fallback"]
+
+        emoji_personalizzata = (
+            f'<tg-emoji emoji-id="{emoji_id}">'
+            f"{fallback}"
+            f"</tg-emoji>"
+        )
+
         parti = _dividi_testo(clean)
         risposta_a = None
 
         for numero, parte in enumerate(parti, start=1):
             corpo = render_testo(parte)
+
             continuazione = (
-                f" ({numero}/{len(parti)})" if len(parti) > 1 else ""
+                f" ({numero}/{len(parti)})"
+                if len(parti) > 1
+                else ""
             )
+
             testo = (
-                f"📰 <b>{nome_fonte}</b>{continuazione}"
+                f"{emoji_personalizzata} "
+                f"<b>{nome_fonte}</b>{continuazione}"
                 f"\n\n{corpo}"
             )
 
-            message_id = _post(testo, risposta_a=risposta_a)
+            message_id = _post(
+                testo,
+                risposta_a=risposta_a,
+            )
+
             esito = message_id is not None
             tutto_inviato = esito and tutto_inviato
-            time.sleep(1)
+
             if not esito:
+                print(
+                    f"Invio interrotto per la fonte {nome_fonte}, "
+                    f"parte {numero}/{len(parti)}."
+                )
                 break
+
             risposta_a = message_id
+            time.sleep(1)
 
     return tutto_inviato
 
@@ -833,31 +1039,47 @@ def elabora_documento(documento):
     lettura_completata = False
 
     print(f"Elaborazione {nome_originale}...")
+
     try:
-        lista = generate_news_from_pdf(path, nome_originale)
+        lista = generate_news_from_pdf(
+            path,
+            nome_originale,
+        )
         lettura_completata = True
+
         if lista:
-            print(f"Notizie pronte per l'invio: {len(lista)}")
+            print(
+                f"Notizie pronte per l'invio: {len(lista)}"
+            )
+
             if not send_to_telegram(lista):
                 print(
                     "Invio Telegram incompleto: il PDF verrà cancellato "
                     "per evitare invii duplicati al prossimo avvio."
                 )
         else:
-            print("Nessuna notizia Juventus verificata nel PDF.")
+            print(
+                "Nessuna notizia Juventus verificata nel PDF."
+            )
+
     except Exception as e:
         print(f"Errore durante l'elaborazione: {e}")
         print(
             f"{nome_originale} resterà su Dropbox e verrà ritentato "
             "alla prossima esecuzione."
         )
+
     finally:
         if lettura_completata:
             print(
                 f"Lettura completata: cancellazione di {nome_originale} "
                 "da Dropbox..."
             )
-            delete_files_from_dropbox([documento["dropbox_path"]])
+
+            delete_files_from_dropbox(
+                [documento["dropbox_path"]]
+            )
+
         if os.path.exists(path):
             os.remove(path)
 
@@ -869,6 +1091,7 @@ if __name__ == "__main__":
 
     if not documenti:
         print("Nessun PDF nuovo. Chiusura.")
+
     else:
         for i, documento in enumerate(documenti):
             elabora_documento(documento)
