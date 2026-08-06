@@ -22,7 +22,6 @@ SOURCE_EMOJIS = (
     ("La Gazzetta dello Sport", "6032862491623559282", "📰"),
     ("Corriere dello Sport", "6030691308346019878", "📰"),
     ("Tuttosport", "6032834612990841221", "📰"),
-    ("Instagram - ", "5796331302533731179", "📲"),
     ("X - ", "5796663209016431644", "📲"),
     ("YouTube - ", "6032683730789732131", "🖥"),
     ("Gianluca Di Marzio", "5785253271912324677", "📲"),
@@ -374,104 +373,6 @@ class TelegramClient:
             if entry.get("message_id") is not None
         ]
 
-    def send_prepared_media_group(
-        self,
-        media_items: Sequence[tuple[str, str, bool]],
-        caption: str,
-    ) -> list[int]:
-        """Invia foto remote e video locali nello stesso album, nell'ordine dato."""
-        media = []
-        file_specs: list[tuple[str, str, str, str]] = []
-        for index, (kind, value, upload) in enumerate(media_items):
-            item: dict = {"type": kind}
-            if upload:
-                field_name = f"media_{index}"
-                item["media"] = f"attach://{field_name}"
-                filename = f"media-{index}.mp4" if kind == "video" else f"media-{index}.jpg"
-                mime_type = "video/mp4" if kind == "video" else "image/jpeg"
-                file_specs.append((field_name, value, filename, mime_type))
-            else:
-                item["media"] = value
-            if kind == "video":
-                item["supports_streaming"] = True
-            if index == 0 and caption:
-                item["caption"] = caption
-                item["parse_mode"] = "HTML"
-            media.append(item)
-
-        payload = {
-            "chat_id": self.chat_id,
-            "media": json.dumps(media, ensure_ascii=False),
-        }
-        if file_specs:
-            result = self._deliver_files_result(
-                "sendMediaGroup",
-                payload,
-                file_specs,
-            )
-        else:
-            result = self._deliver_result(
-                "sendMediaGroup",
-                {"chat_id": self.chat_id, "media": media},
-            )
-        return [
-            int(entry["message_id"])
-            for entry in (result or [])
-            if entry.get("message_id") is not None
-        ]
-
-    def send_prepared_media_item(
-        self,
-        media_item: tuple[str, str, bool],
-        caption: str,
-    ) -> int | None:
-        kind, value, upload = media_item
-        if kind == "video":
-            if upload:
-                return self.send_video_file(value, caption)
-            return self.send_video(value, caption)
-        if upload:
-            raise TelegramDeliveryError("Upload locale delle foto non supportato.")
-        return self.send_photo(value, caption)
-
-    def send_prepared_media(
-        self,
-        article: ArticleLike,
-        media_items: Sequence[tuple[str, str, bool]],
-    ) -> DeliveryReceipt:
-        """Invia tutti i media di un singolo post, in album da massimo 10."""
-        items = [
-            (kind, value, upload)
-            for kind, value, upload in media_items
-            if kind in {"photo", "video"} and value
-        ][:20]
-        if not items:
-            return DeliveryReceipt(
-                self.send_message(format_article_message(article)),
-                "testo",
-            )
-
-        caption = format_article_message(
-            article,
-            max_length=TELEGRAM_MAX_CAPTION_LENGTH,
-        )
-        first_message_id: int | None = None
-        chunks = [items[index:index + 10] for index in range(0, len(items), 10)]
-        for chunk_index, chunk in enumerate(chunks):
-            chunk_caption = caption if chunk_index == 0 else ""
-            if len(chunk) == 1:
-                message_id = self.send_prepared_media_item(chunk[0], chunk_caption)
-                message_ids = [message_id] if message_id is not None else []
-            else:
-                message_ids = self.send_prepared_media_group(chunk, chunk_caption)
-            if first_message_id is None and message_ids:
-                first_message_id = message_ids[0]
-
-        mode = "album" if len(items) > 1 else (
-            "video" if items[0][0] == "video" else "foto"
-        )
-        return DeliveryReceipt(first_message_id, mode)
-
     def send_article(
         self,
         article: ArticleLike,
@@ -481,20 +382,7 @@ class TelegramClient:
         video_thumbnail_url: str = "",
         photo_url: str = "",
         photo_urls: Sequence[str] = (),
-        prepared_media_items: Sequence[tuple[str, str, bool]] = (),
     ) -> DeliveryReceipt:
-        if prepared_media_items:
-            try:
-                return self.send_prepared_media(article, prepared_media_items)
-            except (TelegramDeliveryError, ValueError):
-                message_id = self.send_message(format_article_message(article))
-                return DeliveryReceipt(
-                    message_id,
-                    "testo",
-                    photo_fallback=any(item[0] == "photo" for item in prepared_media_items),
-                    video_fallback=any(item[0] == "video" for item in prepared_media_items),
-                )
-
         # Telegram consente al massimo 10 elementi per album.
         urls = list(photo_urls)[:10] if photo_urls else (
             [photo_url] if photo_url else []
