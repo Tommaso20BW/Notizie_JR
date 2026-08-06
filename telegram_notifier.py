@@ -17,7 +17,7 @@ TELEGRAM_MAX_CAPTION_LENGTH = 1024
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 
 SOURCE_EMOJIS = (
-    ("Sky Sport - ", "6033058586945392520", "📰"),
+    ("Sky Sport", "6033058586945392520", "📰"),
     ("La Gazzetta dello Sport", "6032862491623559282", "📰"),
     ("Corriere dello Sport", "6030691308346019878", "📰"),
     ("Tuttosport", "6032834612990841221", "📰"),
