@@ -178,6 +178,7 @@ SKY_MONTH_NAMES = {
 URL_DATE_RE = re.compile(r"/(\d{4})/(\d{2})/(\d{2})(?:-|/)")
 JUVE_KEYWORD_RE = re.compile(r"\b(?:juventus|juve)\b", re.IGNORECASE)
 JUVENTUS_KEYWORD_RE = re.compile(r"\bjuventus\b", re.IGNORECASE)
+GAZZETTA_ENGLISH_PATH_RE = re.compile(r"^/en(?:/|$)", re.IGNORECASE)
 X_JUVENTUS_MENTION_RE = re.compile(r"(?<!\w)@juventusfc\b", re.IGNORECASE)
 SKY_RECAP_TITLE_RE = re.compile(
     r"^calciomercato,.*\bnews\b.*\boggi\b",
@@ -468,12 +469,17 @@ def scrape_gazzetta(
             continue
 
         url = normalize_url(raw_url)
-        host = urlsplit(url).netloc.lower()
+        url_parts = urlsplit(url)
+        host = url_parts.netloc.lower()
         if not (
             host == "www.gazzetta.it"
             or host == "video.gazzetta.it"
             or host.endswith(".gazzetta.it")
         ):
+            continue
+        # Il feed Juventus include anche le traduzioni inglesi pubblicate
+        # sotto /en/: notifichiamo soltanto gli articoli in italiano.
+        if GAZZETTA_ENGLISH_PATH_RE.match(url_parts.path):
             continue
         if url in urls_done:
             continue
