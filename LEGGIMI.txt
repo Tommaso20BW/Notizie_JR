@@ -1,0 +1,30 @@
+FILE DA SOSTITUIRE/AGGIUNGERE NEL REPOSITORY
+
+Sostituisci:
+- juve_press_bot.py
+- telegram_notifier.py
+- article_journal.py
+- requirements-juve-press.txt
+- .github/workflows/juve-press-news.yml
+
+Aggiungi:
+- instagram_source.py
+- video_media.py
+- tests/test_instagram.py
+
+FUNZIONAMENTO
+- Il workflow esegue: python -u juve_press_bot.py
+- juve_press_bot.py importa e chiama instagram_source.py
+- Instagram viene letto anonimamente, senza username, password o secret
+- Sono controllati post e Reel del profilo pubblico @juventus
+- Sono accettati soltanto contenuti pubblicati nella data odierna italiana
+- Foto e video dello stesso post vengono inviati insieme e nello stesso ordine
+- Telegram permette massimo 10 media per album; oltre 10 vengono inviati in gruppi consecutivi
+- Emoji personalizzata Instagram: 5796331302533731179, fallback 📲
+- FFmpeg è incluso tramite imageio-ffmpeg ed entra nella cache pip
+
+SECRET NECESSARI
+- TELEGRAM_TOKEN
+- CHAT_ID
+
+Non servono secret Instagram.

@@ -12,6 +12,7 @@ Controlla le notizie Juventus pubblicate OGGI su:
 - Borsa Italiana (notizie sull'azione Juventus)
 - YouTube: Fabrizio Romano in Italiano e Romeo Agresti
 - X: profili configurati (filtri e repost definiti per account)
+- Instagram: profilo ufficiale Juventus, con foto e video raggruppati per post
 
 Ogni notizia viene inviata su Telegram una sola volta. Lo stato è salvato nel file
 .seen_juve_press_news.json accanto allo script.
@@ -24,6 +25,7 @@ import re
 import sys
 import time
 from collections.abc import Callable, Iterable
+from contextlib import ExitStack
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -37,6 +39,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from article_journal import ArticleJournal
+from instagram_source import InstagramSourceError, fetch_instagram_posts
 from preview_image import PreviewImageResolver, normalize_image_url
 from telegram_notifier import (
     TELEGRAM_MAX_CAPTION_LENGTH,
@@ -221,6 +224,7 @@ class Article:
     image_urls: tuple[str, ...] = ()
     video_url: str = ""
     video_thumbnail_url: str = ""
+    media_items: tuple[tuple[str, str, str], ...] = ()
 
     @property
     def notification_key(self) -> str:
@@ -1552,6 +1556,32 @@ def scrape_x_profiles(
     return articles
 
 
+def scrape_instagram(
+    session: requests.Session,
+    requested_dates: set[date],
+) -> list[Article]:
+    """Recupera i post odierni del profilo Instagram ufficiale Juventus."""
+    del session  # Instaloader mantiene una sessione autenticata dedicata.
+    articles: list[Article] = []
+    for post in fetch_instagram_posts(requested_dates):
+        articles.append(
+            Article(
+                source="Instagram - Juventus",
+                title=(
+                    "Nuovo Reel della Juventus"
+                    if "/reel/" in post.url
+                    else "Nuovo post della Juventus"
+                ),
+                url=post.url,
+                published=post.published,
+                summary=post.caption,
+                state_key=f"instagram:juventus:{post.shortcode}",
+                media_items=post.media_items,
+            )
+        )
+    return articles
+
+
 def load_seen(state_date: date) -> list[str]:
     if not STATE_FILE.exists():
         return []
@@ -1620,6 +1650,11 @@ def article_from_journal(entry: dict) -> Article:
             image_urls=tuple(entry.get("image_urls") or ()),
             video_url=str(entry.get("video_url", "")),
             video_thumbnail_url=str(entry.get("video_thumbnail_url", "")),
+            media_items=tuple(
+                (str(item[0]), str(item[1]), str(item[2] if len(item) > 2 else ""))
+                for item in (entry.get("media_items") or ())
+                if isinstance(item, (list, tuple)) and len(item) >= 2
+            ),
         )
     except (KeyError, ValueError, TypeError) as error:
         raise RuntimeError(
@@ -1643,6 +1678,7 @@ def collect_articles(
         ("Alfredo Pedullà", scrape_alfredo_pedulla),
         ("Borsa Italiana", scrape_borsa_italiana),
         ("YouTube", scrape_youtube_channels),
+        ("Instagram", scrape_instagram),
         ("X", scrape_x_profiles),
     )
     articles_by_key: dict[str, Article] = {}
@@ -1656,6 +1692,7 @@ def collect_articles(
             ValueError,
             KeyError,
             ET.ParseError,
+            InstagramSourceError,
         ) as error:
             errors.append(f"{source}: {error}")
             print(f"[{source}] errore durante il recupero: {error}")
@@ -1721,6 +1758,19 @@ def run(
             on_article=save_discovered,
         )
 
+        stale_pending = {
+            pending_article.notification_key
+            for entry in journal.entries
+            if (pending_article := article_from_journal(entry)).published.date()
+            not in requested_dates
+        }
+        stale_removed = journal.discard_all(stale_pending)
+        if stale_removed:
+            print(
+                f"[STATO] rimosse {stale_removed} notizie pendenti "
+                "fuori dalla data richiesta."
+            )
+
     # I siti mostrano prima le notizie più recenti. Telegram le riceve invece
     # dalla più vecchia alla più nuova, per mantenere l'ordine cronologico.
     articles.sort(key=lambda item: (item.published, item.source, item.title))
@@ -1743,6 +1793,12 @@ def run(
                     article.all_image_urls,
                 )
                 print("\n--- ANTEPRIMA TELEGRAM ---")
+                if article.media_items:
+                    media_summary = ", ".join(
+                        f"{kind}:{url}"
+                        for kind, url, _ in article.media_items
+                    )
+                    print(f"[MEDIA POST] {len(article.media_items)}: {media_summary}")
                 if article.video_url:
                     print(f"[VIDEO] {article.video_url}")
                 if article.video_thumbnail_url:
@@ -1756,7 +1812,7 @@ def run(
                         article,
                         max_length=(
                             TELEGRAM_MAX_CAPTION_LENGTH
-                            if image_urls or article.video_url
+                            if image_urls or article.video_url or article.media_items
                             else TELEGRAM_MAX_MESSAGE_LENGTH
                         ),
                     )
@@ -1792,7 +1848,37 @@ def run(
     sent_count = 0
     for article in pending:
         image_urls = preview_resolver.resolve_all(article.url, article.all_image_urls)
-        if article.video_url:
+        if article.media_items:
+            with ExitStack() as media_stack:
+                prepared_media: list[tuple[str, str, bool]] = []
+                video_prepare_failed = False
+                for kind, media_url, thumbnail_url in article.media_items:
+                    if kind == "video":
+                        try:
+                            video_file = media_stack.enter_context(
+                                prepare_telegram_video(session, media_url)
+                            )
+                            prepared_media.append(("video", str(video_file), True))
+                        except VideoPreparationError as error:
+                            video_prepare_failed = True
+                            if thumbnail_url:
+                                prepared_media.append(("photo", thumbnail_url, False))
+                            print(
+                                f"[NEWS] video Instagram non preparabile ({error}): "
+                                "uso la copertina statica quando disponibile."
+                            )
+                    elif kind == "photo" and media_url:
+                        prepared_media.append(("photo", media_url, False))
+
+                receipt = telegram.send_article(
+                    article,
+                    prepared_media_items=prepared_media,
+                )
+                if video_prepare_failed and not receipt.video_fallback:
+                    # La copertina è stata inviata correttamente, ma nei log va
+                    # comunque segnalata la perdita del video originale.
+                    print("[NEWS] uno o più video Instagram inviati come copertina.")
+        elif article.video_url:
             try:
                 with prepare_telegram_video(
                     session,

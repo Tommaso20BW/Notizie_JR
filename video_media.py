@@ -9,6 +9,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
+import imageio_ffmpeg
 import requests
 
 MAX_VIDEO_FILE_BYTES = 49_000_000
@@ -19,28 +20,34 @@ class VideoPreparationError(RuntimeError):
     """Il video non può essere preparato in modo sicuro per Telegram."""
 
 
-def _media_tool(name: str) -> str:
-    executable = shutil.which(name)
-    if not executable:
-        raise VideoPreparationError(f"Comando {name} non disponibile.")
-    return executable
+def _ffmpeg_executable() -> str:
+    """Restituisce il binario FFmpeg incluso nella dipendenza Python."""
+    try:
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except RuntimeError as error:
+        raise VideoPreparationError(
+            f"Binario FFmpeg incluso non disponibile: {error}"
+        ) from error
 
 
 def has_audio_track(video_path: Path) -> bool:
-    """Controlla se l'MP4 contiene almeno una traccia audio."""
+    """Controlla la presenza dell'audio usando il solo binario FFmpeg."""
     try:
         result = subprocess.run(
             [
-                _media_tool("ffprobe"),
-                "-v",
+                _ffmpeg_executable(),
+                "-hide_banner",
+                "-loglevel",
                 "error",
-                "-select_streams",
-                "a",
-                "-show_entries",
-                "stream=index",
-                "-of",
-                "csv=p=0",
+                "-i",
                 str(video_path),
+                "-map",
+                "0:a:0",
+                "-c",
+                "copy",
+                "-f",
+                "null",
+                "-",
             ],
             capture_output=True,
             text=True,
@@ -49,13 +56,24 @@ def has_audio_track(video_path: Path) -> bool:
         )
     except (OSError, subprocess.SubprocessError) as error:
         raise VideoPreparationError(
-            f"ffprobe non può essere eseguito: {error}"
+            f"FFmpeg non può essere eseguito: {error}"
         ) from error
-    if result.returncode != 0:
-        raise VideoPreparationError(
-            f"ffprobe non riesce a leggere il video: {result.stderr.strip()}"
-        )
-    return bool(result.stdout.strip())
+
+    if result.returncode == 0:
+        return True
+
+    error_text = (result.stderr or "").lower()
+    no_audio_markers = (
+        "matches no streams",
+        "does not contain any stream",
+        "stream map '0:a:0' matches no streams",
+    )
+    if any(marker in error_text for marker in no_audio_markers):
+        return False
+
+    raise VideoPreparationError(
+        f"FFmpeg non riesce a leggere il video: {result.stderr.strip()}"
+    )
 
 
 def add_silent_audio_track(source: Path, destination: Path) -> None:
@@ -63,7 +81,7 @@ def add_silent_audio_track(source: Path, destination: Path) -> None:
     try:
         result = subprocess.run(
             [
-                _media_tool("ffmpeg"),
+                _ffmpeg_executable(),
                 "-y",
                 "-loglevel",
                 "error",

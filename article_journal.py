@@ -18,6 +18,7 @@ class JournalArticle(Protocol):
     image_urls: tuple[str, ...]
     video_url: str
     video_thumbnail_url: str
+    media_items: tuple[tuple[str, str, str], ...]
     published: object
 
     @property
@@ -63,9 +64,7 @@ class ArticleJournal:
 
     def add(self, article: JournalArticle) -> bool:
         key = article.notification_key
-        if key in self._entries:
-            return False
-        self._entries[key] = {
+        entry = {
             "notification_key": key,
             "source": article.source,
             "title": article.title,
@@ -77,9 +76,18 @@ class ArticleJournal:
             "image_urls": list(article.image_urls),
             "video_url": article.video_url,
             "video_thumbnail_url": article.video_thumbnail_url,
+            "media_items": [
+                list(item) for item in getattr(article, "media_items", ())
+            ],
         }
+        is_new = key not in self._entries
+        if self._entries.get(key) == entry:
+            return False
+        # Gli URL CDN di Instagram sono firmati e possono cambiare: anche una
+        # voce già pendente viene aggiornata con gli URL freschi del nuovo run.
+        self._entries[key] = entry
         self._save()
-        return True
+        return is_new
 
     def remove(self, notification_key: str) -> bool:
         if self._entries.pop(notification_key, None) is None:
