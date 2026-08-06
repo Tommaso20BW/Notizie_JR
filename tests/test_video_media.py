@@ -3,6 +3,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import imageio_ffmpeg
+
 from video_media import add_silent_audio_track, has_audio_track
 
 
@@ -11,9 +13,10 @@ class VideoMediaTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "silent.mp4"
             prepared = Path(directory) / "prepared.mp4"
+
             subprocess.run(
                 [
-                    "ffmpeg",
+                    imageio_ffmpeg.get_ffmpeg_exe(),
                     "-y",
                     "-loglevel",
                     "error",
