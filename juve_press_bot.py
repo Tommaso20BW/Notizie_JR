@@ -10,7 +10,7 @@ Controlla le notizie Juventus pubblicate OGGI su:
 - Juventus.com
 - Gianluca Di Marzio (titolo o testo con "Juventus") e Alfredo Pedullà
 - Borsa Italiana (notizie sull'azione Juventus)
-- YouTube: Fabrizio Romano in Italiano e Romeo Agresti
+- YouTube: Juventus, Fabrizio Romano in Italiano e Romeo Agresti
 - X: profili configurati (filtri e repost definiti per account)
 
 Ogni notizia viene inviata su Telegram una sola volta. Lo stato è salvato nel file
@@ -106,6 +106,11 @@ BORSA_ITALIANA_JUVENTUS_URL = (
     "elenco-completo-notizie.html?isin=IT0005572778&lang=it"
 )
 YOUTUBE_CHANNELS = (
+    {
+        "source": "YouTube - Fabrizio Romano in Italiano",
+        "channel_id": "UCLzKhsxrExAC6yAdtZ-BOWw",
+        "channel_url": "https://www.youtube.com/@Juventus",
+    },
     {
         "source": "YouTube - Fabrizio Romano in Italiano",
         "channel_id": "UC7pT9g1-oKwVgbpipZODvBA",
