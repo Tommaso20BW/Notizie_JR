@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Callable, Sequence
+from contextlib import ExitStack
 from dataclasses import dataclass
 from html import escape
 from pathlib import Path
@@ -21,6 +22,7 @@ SOURCE_EMOJIS = (
     ("La Gazzetta dello Sport", "6032862491623559282", "📰"),
     ("Corriere dello Sport", "6030691308346019878", "📰"),
     ("Tuttosport", "6032834612990841221", "📰"),
+    ("Instagram - ", "5796331302533731179", "📲"),
     ("X - ", "5796663209016431644", "📲"),
     ("YouTube - ", "6032683730789732131", "🖥"),
     ("Gianluca Di Marzio", "5785253271912324677", "📲"),
@@ -52,7 +54,9 @@ class DeliveryReceipt:
 def source_emoji(source: str) -> str:
     for source_prefix, emoji_id, fallback_emoji in SOURCE_EMOJIS:
         if source.startswith(source_prefix):
-            return f'<tg-emoji emoji-id="{emoji_id}">{fallback_emoji}</tg-emoji>'
+            if emoji_id:
+                return f'<tg-emoji emoji-id="{emoji_id}">{fallback_emoji}</tg-emoji>'
+            return fallback_emoji
     return "📰"
 
 
@@ -166,29 +170,26 @@ class TelegramClient:
             f"tentativi: {last_error}"
         )
 
-    def _deliver_file_result(
+    def _deliver_files_result(
         self,
         method: str,
         payload: dict,
-        video_file_path: str,
+        file_specs: Sequence[tuple[str, str, str, str]],
     ):
-        """Invia un MP4 multipart riaprendo il file a ogni tentativo."""
+        """Invia uno o più file multipart riaprendoli a ogni tentativo."""
         last_error = "errore sconosciuto"
-        path = Path(video_file_path)
 
         for attempt in range(1, self.max_attempts + 1):
             try:
-                with path.open("rb") as video_file:
+                with ExitStack() as stack:
+                    files = {}
+                    for field_name, file_path, filename, mime_type in file_specs:
+                        handle = stack.enter_context(Path(file_path).open("rb"))
+                        files[field_name] = (filename, handle, mime_type)
                     response = self.session.post(
                         f"{self.api_root}/{method}",
                         data=payload,
-                        files={
-                            "video": (
-                                "video.mp4",
-                                video_file,
-                                "video/mp4",
-                            )
-                        },
+                        files=files,
                         timeout=60,
                     )
             except (OSError, requests.RequestException) as error:
@@ -214,6 +215,19 @@ class TelegramClient:
         raise TelegramDeliveryError(
             f"Telegram {method} fallito dopo {self.max_attempts} "
             f"tentativi: {last_error}"
+        )
+
+    def _deliver_file_result(
+        self,
+        method: str,
+        payload: dict,
+        video_file_path: str,
+    ):
+        """Compatibilità: invia un singolo MP4 multipart."""
+        return self._deliver_files_result(
+            method,
+            payload,
+            (("video", video_file_path, "video.mp4", "video/mp4"),),
         )
 
     def send_message(self, text: str) -> int | None:
@@ -360,6 +374,104 @@ class TelegramClient:
             if entry.get("message_id") is not None
         ]
 
+    def send_prepared_media_group(
+        self,
+        media_items: Sequence[tuple[str, str, bool]],
+        caption: str,
+    ) -> list[int]:
+        """Invia foto remote e video locali nello stesso album, nell'ordine dato."""
+        media = []
+        file_specs: list[tuple[str, str, str, str]] = []
+        for index, (kind, value, upload) in enumerate(media_items):
+            item: dict = {"type": kind}
+            if upload:
+                field_name = f"media_{index}"
+                item["media"] = f"attach://{field_name}"
+                filename = f"media-{index}.mp4" if kind == "video" else f"media-{index}.jpg"
+                mime_type = "video/mp4" if kind == "video" else "image/jpeg"
+                file_specs.append((field_name, value, filename, mime_type))
+            else:
+                item["media"] = value
+            if kind == "video":
+                item["supports_streaming"] = True
+            if index == 0 and caption:
+                item["caption"] = caption
+                item["parse_mode"] = "HTML"
+            media.append(item)
+
+        payload = {
+            "chat_id": self.chat_id,
+            "media": json.dumps(media, ensure_ascii=False),
+        }
+        if file_specs:
+            result = self._deliver_files_result(
+                "sendMediaGroup",
+                payload,
+                file_specs,
+            )
+        else:
+            result = self._deliver_result(
+                "sendMediaGroup",
+                {"chat_id": self.chat_id, "media": media},
+            )
+        return [
+            int(entry["message_id"])
+            for entry in (result or [])
+            if entry.get("message_id") is not None
+        ]
+
+    def send_prepared_media_item(
+        self,
+        media_item: tuple[str, str, bool],
+        caption: str,
+    ) -> int | None:
+        kind, value, upload = media_item
+        if kind == "video":
+            if upload:
+                return self.send_video_file(value, caption)
+            return self.send_video(value, caption)
+        if upload:
+            raise TelegramDeliveryError("Upload locale delle foto non supportato.")
+        return self.send_photo(value, caption)
+
+    def send_prepared_media(
+        self,
+        article: ArticleLike,
+        media_items: Sequence[tuple[str, str, bool]],
+    ) -> DeliveryReceipt:
+        """Invia tutti i media di un singolo post, in album da massimo 10."""
+        items = [
+            (kind, value, upload)
+            for kind, value, upload in media_items
+            if kind in {"photo", "video"} and value
+        ][:20]
+        if not items:
+            return DeliveryReceipt(
+                self.send_message(format_article_message(article)),
+                "testo",
+            )
+
+        caption = format_article_message(
+            article,
+            max_length=TELEGRAM_MAX_CAPTION_LENGTH,
+        )
+        first_message_id: int | None = None
+        chunks = [items[index:index + 10] for index in range(0, len(items), 10)]
+        for chunk_index, chunk in enumerate(chunks):
+            chunk_caption = caption if chunk_index == 0 else ""
+            if len(chunk) == 1:
+                message_id = self.send_prepared_media_item(chunk[0], chunk_caption)
+                message_ids = [message_id] if message_id is not None else []
+            else:
+                message_ids = self.send_prepared_media_group(chunk, chunk_caption)
+            if first_message_id is None and message_ids:
+                first_message_id = message_ids[0]
+
+        mode = "album" if len(items) > 1 else (
+            "video" if items[0][0] == "video" else "foto"
+        )
+        return DeliveryReceipt(first_message_id, mode)
+
     def send_article(
         self,
         article: ArticleLike,
@@ -369,7 +481,20 @@ class TelegramClient:
         video_thumbnail_url: str = "",
         photo_url: str = "",
         photo_urls: Sequence[str] = (),
+        prepared_media_items: Sequence[tuple[str, str, bool]] = (),
     ) -> DeliveryReceipt:
+        if prepared_media_items:
+            try:
+                return self.send_prepared_media(article, prepared_media_items)
+            except (TelegramDeliveryError, ValueError):
+                message_id = self.send_message(format_article_message(article))
+                return DeliveryReceipt(
+                    message_id,
+                    "testo",
+                    photo_fallback=any(item[0] == "photo" for item in prepared_media_items),
+                    video_fallback=any(item[0] == "video" for item in prepared_media_items),
+                )
+
         # Telegram consente al massimo 10 elementi per album.
         urls = list(photo_urls)[:10] if photo_urls else (
             [photo_url] if photo_url else []
