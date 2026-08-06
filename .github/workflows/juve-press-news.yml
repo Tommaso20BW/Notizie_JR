@@ -65,7 +65,7 @@ jobs:
     if: needs.controlla-run.outputs.procedi == 'true'
 
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
 
     steps:
       - name: Scarica il repository
