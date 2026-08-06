@@ -1758,10 +1758,17 @@ def run(
             on_article=save_discovered,
         )
 
+        # Gli URL CDN di Instagram scadono rapidamente: un post rimasto
+        # pendente non deve essere inviato in un giorno successivo. Le altre
+        # fonti, invece, restano nel journal finché l'invio non riesce, così un
+        # errore temporaneo di Telegram non fa perdere la notizia.
         stale_pending = {
             pending_article.notification_key
             for entry in journal.entries
-            if (pending_article := article_from_journal(entry)).published.date()
+            if (pending_article := article_from_journal(entry)).state_key.startswith(
+                "instagram:"
+            )
+            and pending_article.published.astimezone(ROME).date()
             not in requested_dates
         }
         stale_removed = journal.discard_all(stale_pending)
