@@ -107,7 +107,7 @@ BORSA_ITALIANA_JUVENTUS_URL = (
 )
 YOUTUBE_CHANNELS = (
     {
-        "source": "YouTube - Fabrizio Romano in Italiano",
+        "source": "YouTube - Juventus",
         "channel_id": "UCLzKhsxrExAC6yAdtZ-BOWw",
         "channel_url": "https://www.youtube.com/@Juventus",
     },
