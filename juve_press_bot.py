@@ -1190,10 +1190,9 @@ def is_youtube_short(session: requests.Session, video_id: str) -> bool:
     try:
         response = session.get(shorts_url, timeout=15, allow_redirects=True)
         response.raise_for_status()
-    except requests.RequestException as error:
-        # Se YouTube non consente la verifica, non blocchiamo un video normale
-        # per errore: il contenuto resta eleggibile e il problema viene loggato.
-        print(f"[YouTube] impossibile verificare Short {video_id}: {error}")
+    except requests.RequestException:
+        # Se YouTube non consente la verifica, non blocchiamo un video normale.
+        # Nessun log dedicato agli Shorts.
         return False
 
     expected_path = f"/shorts/{video_id}"
@@ -1249,7 +1248,6 @@ def scrape_youtube_channels(
             if not is_requested_date(published, requested_dates):
                 continue
             if is_youtube_short(session, video_id):
-                print(f"[YouTube] Short ignorato: {channel['source']} | {title}")
                 continue
 
             state_key = f"youtube:{channel['channel_id']}:{video_id}"
