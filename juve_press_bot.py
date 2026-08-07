@@ -125,6 +125,7 @@ YOUTUBE_CHANNELS = (
 YOUTUBE_FEED_TEMPLATE = (
     "https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
 )
+YOUTUBE_SHORTS_URL_TEMPLATE = "https://www.youtube.com/shorts/{video_id}"
 ATOM_NS = "{http://www.w3.org/2005/Atom}"
 YOUTUBE_NS = "{http://www.youtube.com/xml/schemas/2015}"
 X_ACCOUNTS = (
@@ -1183,6 +1184,35 @@ def scrape_borsa_italiana(
     return articles
 
 
+def is_youtube_short(session: requests.Session, video_id: str) -> bool:
+    """Restituisce True se il video ID appartiene a uno YouTube Short."""
+    shorts_url = YOUTUBE_SHORTS_URL_TEMPLATE.format(video_id=video_id)
+    try:
+        response = session.get(shorts_url, timeout=15, allow_redirects=True)
+        response.raise_for_status()
+    except requests.RequestException as error:
+        # Se YouTube non consente la verifica, non blocchiamo un video normale
+        # per errore: il contenuto resta eleggibile e il problema viene loggato.
+        print(f"[YouTube] impossibile verificare Short {video_id}: {error}")
+        return False
+
+    expected_path = f"/shorts/{video_id}"
+    final_path = urlsplit(response.url).path.rstrip("/")
+    if final_path == expected_path:
+        return True
+
+    # Fallback: in alcuni casi YouTube mantiene/riscrive l'URL lato pagina.
+    # Il canonical permette comunque di riconoscere lo stesso Short.
+    soup = BeautifulSoup(response.text, "html.parser")
+    canonical = soup.find("link", rel="canonical", href=True)
+    if canonical:
+        canonical_path = urlsplit(str(canonical.get("href") or "")).path.rstrip("/")
+        if canonical_path == expected_path:
+            return True
+
+    return False
+
+
 def scrape_youtube_channels(
     session: requests.Session,
     requested_dates: set[date],
@@ -1217,6 +1247,9 @@ def scrape_youtube_channels(
             except ValueError:
                 continue
             if not is_requested_date(published, requested_dates):
+                continue
+            if is_youtube_short(session, video_id):
+                print(f"[YouTube] Short ignorato: {channel['source']} | {title}")
                 continue
 
             state_key = f"youtube:{channel['channel_id']}:{video_id}"
