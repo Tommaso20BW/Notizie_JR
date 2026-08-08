@@ -1,175 +1,146 @@
+<div align="center">
+
 # 📰 Notizie JR
 
-Repository con **due bot Telegram distinti** per le notizie sulla Juventus:
+**Due bot Telegram per le notizie Juventus: rassegna PDF con Gemini e monitoraggio delle fonti web.**
 
-1. `bot_giornali.py` legge i PDF dei quotidiani da Dropbox e usa Gemini per estrarre notizie verificate;
-2. `juve_press_bot.py` monitora siti web, canali YouTube e profili X, quindi segnala soltanto i contenuti delle date richieste che non risultano già notificati.
+[![Python 3.14](https://img.shields.io/badge/Python-3.14-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![Notizie web](https://github.com/Tommaso20BW/Notizie_JR/actions/workflows/juve-press-news.yml/badge.svg)](https://github.com/Tommaso20BW/Notizie_JR/actions/workflows/juve-press-news.yml)
+[![Quotidiani PDF](https://github.com/Tommaso20BW/Notizie_JR/actions/workflows/run_giornali.yml/badge.svg)](https://github.com/Tommaso20BW/Notizie_JR/actions/workflows/run_giornali.yml)
 
-I due flussi hanno workflow, dipendenze e stato separati.
+</div>
 
-## Bot PDF: quotidiani sportivi
+## Panoramica
+
+Il repository contiene due flussi separati, con dipendenze, workflow e stato indipendenti.
+
+| Bot | Punto di ingresso | Sorgenti | Output |
+| --- | --- | --- | --- |
+| Quotidiani PDF | `bot_giornali.py` | PDF presenti in Dropbox | Notizie verificate ed estratte con Gemini |
+| Notizie web | `juve_press_bot.py` | Siti, feed YouTube e profili X | Articoli e post della data richiesta |
+
+## Quotidiani PDF
 
 ### Flusso
 
 ```text
 Dropbox /NotizieJR
-        │
-        ▼
+        ↓
 download dei PDF
-        │
-        ▼
-Gemini: estrazione documentale in JSON
-        │
-        ▼
-controlli deterministici
-        │
-        ▼
-Telegram (divisione locale dei testi lunghi)
-        │
-        ▼
-cancellazione da Dropbox dopo una lettura riuscita
+        ↓
+Gemini: estrazione JSON
+        ↓
+validazione deterministica
+        ↓
+Telegram
+        ↓
+rimozione del PDF dopo una lettura riuscita
 ```
 
 `bot_giornali.py`:
 
-- legge tutti i PDF presenti nella cartella Dropbox `/NotizieJR`;
-- ricava la testata dal nome del file quando contiene Tuttosport, Gazzetta o Corriere;
-- carica ogni PDF su Gemini e richiede un output JSON strutturato;
-- usa `gemini-3.5-flash-lite`, con fallback a `gemini-3.1-flash-lite`, `gemini-3.6-flash` e `gemini-3.5-flash` sui limiti `429` o sugli errori temporanei `503`;
-- se tutti i modelli sono temporaneamente occupati, attende con backoff e ripete l'intero giro fino a tre volte; i modelli con quota giornaliera esaurita vengono esclusi dai cicli successivi;
-- esegue una sola lettura per impostazione predefinita; la seconda verifica sullo stesso documento resta opzionale;
-- richiede per ogni notizia fonte, pagina e un breve riscontro testuale;
-- richiede testi entro 3.800 caratteri visibili e divide localmente quelli più lunghi in più messaggi Telegram, senza una nuova richiesta Gemini e senza riassumerli;
-- normalizza gli importi in milioni di euro (`10M€`, `40-50M€`) senza inventare intervalli;
-- elimina duplicati e markup non consentito;
-- cancella il file temporaneo da Gemini e dal runner.
+- elenca tutti i PDF nella cartella Dropbox `/NotizieJR`;
+- riconosce Tuttosport, La Gazzetta dello Sport e Corriere dello Sport dal nome del file quando possibile;
+- carica ogni documento su Gemini e richiede notizie Juventus in JSON strutturato;
+- pretende per ogni notizia fonte, pagina e un breve riscontro testuale tratto dal PDF;
+- normalizza importi in milioni di euro, elimina duplicati e rimuove markup non consentito;
+- divide localmente i testi oltre 3.800 caratteri, senza una nuova richiesta al modello;
+- invia le parti come una catena di risposte Telegram;
+- attende 20 secondi prima di elaborare il giornale successivo.
 
-Per ogni notizia approvata invia il corpo come testo semplice, senza tag o formattazione. Soltanto il nome della fonte nell'intestazione è in grassetto. Le eventuali parti sono numerate (`1/2`, `2/2`): dalla seconda in poi, ogni messaggio risponde alla parte precedente e forma una catena Telegram.
+La catena Gemini predefinita è:
 
-Tra due giornali attende 20 secondi. Il PDF originale viene cancellato da Dropbox soltanto dopo che Gemini ha completato la lettura, anche quando non trova notizie Juventus. Se il download o l'elaborazione Gemini falliscono, il PDF resta su Dropbox per il run successivo. Dopo una lettura riuscita viene invece cancellato anche in caso di invio Telegram incompleto, evitando duplicati al run seguente.
+1. `gemini-3.5-flash-lite`;
+2. `gemini-3.1-flash-lite`;
+3. `gemini-3.6-flash`;
+4. `gemini-3.5-flash`.
 
-### Workflow e configurazione
+In caso di limiti `429` o errori temporanei `5xx`, il bot passa al modello successivo e può ripetere l'intero ciclo. I modelli con quota giornaliera esaurita vengono esclusi dai tentativi successivi.
 
-Il workflow [`.github/workflows/run_giornali.yml`](.github/workflows/run_giornali.yml) è solo manuale, usa Python 3.14 ed esegue `bot_giornali.py`.
+> [!NOTE]
+> Il PDF viene rimosso da Dropbox dopo una lettura Gemini completata, anche se non contiene notizie o se l'invio Telegram resta parziale. Se download o lettura falliscono, il file resta disponibile per il run seguente.
 
-Configura questi secret:
+### Configurazione PDF
 
-| Secret | Uso |
-|---|---|
-| `TELEGRAM_TOKEN` | Token del bot Telegram. |
-| `CHAT_ID` | Chat o canale di destinazione. |
-| `GEMINI_API_KEY` | Accesso ai modelli Gemini. |
-| `DROPBOX_APP_KEY` | App key Dropbox. |
-| `DROPBOX_APP_SECRET` | App secret Dropbox. |
-| `DROPBOX_REFRESH_TOKEN` | Refresh token OAuth2 Dropbox. |
+| Variabile o secret | Obbligatoria | Uso |
+| --- | ---: | --- |
+| `TELEGRAM_TOKEN` | sì | Token del bot Telegram |
+| `CHAT_ID` | sì | Chat o canale di destinazione |
+| `GEMINI_API_KEY` | sì | Accesso ai modelli Gemini |
+| `DROPBOX_APP_KEY` | sì | App key Dropbox |
+| `DROPBOX_APP_SECRET` | sì | App secret Dropbox |
+| `DROPBOX_REFRESH_TOKEN` | sì | Refresh token OAuth2 Dropbox |
+| `MAX_CARATTERI_NOTIZIA` | no | Lunghezza visibile di ogni parte; default `3800` |
+| `USA_DOPPIA_VERIFICA` | no | Seconda lettura Gemini; default `false` |
+| `MAX_CICLI_GEMINI` | no | Cicli completi sui modelli; default `3` |
+| `ATTESA_503_GEMINI` | no | Attesa iniziale tra i cicli; default `20` secondi |
 
-Impostazioni opzionali lette dal codice:
+Il workflow imposta esplicitamente `USA_DOPPIA_VERIFICA=false`.
 
-| Variabile | Default | Effetto |
-|---|---:|---|
-| `MAX_CARATTERI_NOTIZIA` | `3800` | Limite visibile di ogni parte inviata a Telegram. |
-| `USA_DOPPIA_VERIFICA` | `false` | Abilita una seconda richiesta Gemini di verifica. |
-| `MAX_CICLI_GEMINI` | `3` | Numero massimo di giri completi sui modelli dopo errori temporanei. |
-| `ATTESA_503_GEMINI` | `20` | Attesa iniziale in secondi tra i cicli; raddoppia fino a 60 secondi. |
-
-Il workflow imposta esplicitamente `USA_DOPPIA_VERIFICA=false` per limitare il consumo della quota Gemini.
-
-## Bot web: Juventus Press News
+## Notizie web
 
 ### Fonti monitorate
 
-Nell’esecuzione normale `juve_press_bot.py` raccoglie i contenuti pubblicati nella data italiana corrente.
+Il bot seleziona normalmente i contenuti pubblicati nella data italiana corrente.
 
-| Gruppo | Fonti | Regola principale |
-|---|---|---|
-| Quotidiani | Tuttosport, Corriere dello Sport, La Gazzetta dello Sport | Sezioni o feed dedicati alla Juventus. |
-| Altri siti | Sky Sport – Calciomercato, Juventus.com, Gianluca Di Marzio, Alfredo Pedullà, Borsa Italiana | Sky esclude i titoli contenenti `video`; Gianluca Di Marzio accetta solo titoli contenenti `Juventus`; le altre fonti applicano i rispettivi filtri. |
-| YouTube | Fabrizio Romano in Italiano, Romeo Agresti | Tutti i video pubblicati nella data richiesta, letti dai feed Atom ufficiali dei canali. |
-| X | 11 profili configurati | Lettura tramite mirror RSS pubblici, conversione dei collegamenti in URL `x.com`, rimozione dei simboli `#` e `@` dal testo e separazione degli hashtag CamelCase in parole (`#ForzaJuve` diventa `Forza Juve`). I post con un video nativo vengono inviati come video Telegram. |
+| Gruppo | Fonti | Regole principali |
+| --- | --- | --- |
+| Quotidiani | Tuttosport, Corriere dello Sport, La Gazzetta dello Sport | Sezioni Juventus, deduplicazione e filtro per data |
+| Sky Sport | Calciomercato del giorno e pagina Juventus | Esclude recap generici, titoli con `video` e riferimenti alla Juve Stabia |
+| Siti | Juventus.com, Gianluca Di Marzio, Alfredo Pedullà, Borsa Italiana | Feed o pagine dedicate; Di Marzio richiede Juve/Juventus nel titolo |
+| YouTube | Juventus, Fabrizio Romano in Italiano, Romeo Agresti | Tutti i video della data richiesta dai feed Atom ufficiali |
+| X | 11 profili | Feed RSS pubblici, filtro Juventus dove configurato, nessun repost |
 
-I profili X configurati sono:
+I profili X sono:
 
-| Profilo | Contenuti accettati | Repost |
-|---|---|---:|
-| `@juventusfc` | Tutti i post | inclusi |
-| `@Glongari` | Solo post che citano Juve/Juventus | esclusi |
-| `@romeoagresti` | Tutti i post | inclusi |
-| `@NicoSchira` | Solo post che citano Juve/Juventus | esclusi |
-| `@AlfredoPedulla` | Solo post che citano Juve/Juventus | esclusi |
-| `@MatteMoretto` | Solo post che citano Juve/Juventus | esclusi |
-| `@FabrizioRomano` | Solo post che citano Juve/Juventus | esclusi |
-| `@DiMarzio` | Solo post che citano Juve/Juventus | esclusi |
-| `@_Morik92_` | Tutti i post | inclusi |
-| `@ilbianconerocom` | Tutti i post | inclusi |
+| Profilo | Contenuti accettati |
+| --- | --- |
+| `@juventusfc` | Tutti i post originali |
+| `@Glongari` | Solo post che citano Juve o Juventus |
+| `@romeoagresti` | Tutti i post originali |
+| `@NicoSchira` | Solo post che citano Juve o Juventus |
+| `@AlfredoPedulla` | Solo post che citano Juve o Juventus |
+| `@MatteMoretto` | Solo post che citano Juve o Juventus |
+| `@FabrizioRomano` | Solo post che citano Juve o Juventus |
+| `@DiMarzio` | Solo post che citano Juve o Juventus |
+| `@_Morik92_` | Tutti i post originali |
+| `@ilbianconerocom` | Tutti i post originali |
+| `@BaridonMarco` | Tutti i post originali |
 
-Per Sky il bot controlla esclusivamente la pagina della data richiesta. Se la pagina odierna non esiste ancora (`404`), la fonte viene ignorata senza mostrare errori nei log. Juventus.com viene letto attraverso il feed datato e la relativa paginazione.
+I link dei mirror vengono convertiti in URL `x.com`. Nel testo vengono rimossi i simboli `#` e `@`, mentre gli hashtag CamelCase vengono separati in parole leggibili.
 
-Gli articoli vengono normalizzati, deduplicati e ordinati dal più vecchio al più recente. Il messaggio Telegram usa un solo formato: fonte, titolo, eventuale sommario e link al contenuto. Se un post X contiene un vero video nativo, il bot usa `sendVideo`; se contiene anche foto reali, invia video e foto insieme con `sendMediaGroup`. Prima dell'upload il bot verifica le tracce con FFmpeg e aggiunge audio silenzioso agli MP4 muti, impedendo a Telegram di mostrarli come GIF. Le GIF animate dichiarate da X non vengono inviate: il bot usa soltanto la loro copertina statica. Se il video non può essere preparato o viene rifiutato, il bot ripiega sulle foto, sulla copertina o sul testo. Se il contenuto espone una foto tramite feed RSS, YouTube, Open Graph o Twitter Card, il bot usa `sendPhoto` e inserisce il testo nella didascalia; se Telegram rifiuta la foto, ripiega sul messaggio testuale. Il client Telegram è separato dagli scraper, restituisce il `message_id` confermato dall'API e ritenta gli errori di rete, i rate limit `429` e gli errori temporanei `5xx`. Lo stato viene aggiornato soltanto dopo la conferma dell'invio.
+### Media e invio Telegram
+
+Per ogni contenuto il bot prova a recuperare le anteprime da feed RSS, YouTube, Open Graph o Twitter Card.
+
+- Le foto vengono inviate con `sendPhoto`; più immagini possono formare un album.
+- Per i video nativi X, FxTwitter e VxTwitter forniscono l'MP4 quando disponibile.
+- FFmpeg verifica le tracce e aggiunge audio silenzioso ai video muti, evitando che Telegram li mostri come GIF.
+- Le GIF animate di X usano soltanto una copertina statica.
+- Se un media non è disponibile o viene rifiutato, il bot ripiega su foto, copertina o messaggio testuale.
+- Il client Telegram gestisce errori di rete, rate limit `429` e risposte temporanee `5xx`.
+
+Gli articoli vengono deduplicati e ordinati dal più vecchio al più recente. Lo stato viene aggiornato soltanto dopo una risposta Telegram valida contenente il `message_id`.
 
 ### Stato anti-duplicati
 
-Gli identificativi notificati sono salvati in `.seen_juve_press_news.json` insieme alla data di riferimento. Al primo run di un nuovo giorno il file viene azzerato automaticamente, perché le fonti ordinarie controllano soltanto i contenuti della data richiesta.
+| File | Ruolo |
+| --- | --- |
+| `.seen_juve_press_news.json` | Chiavi già inviate e data di riferimento |
+| `.pending_juve_press_news.json` | Journal delle notizie scoperte ma non ancora confermate da Telegram |
 
-Ogni notizia appena scoperta viene scritta immediatamente in `.pending_juve_press_news.json`, senza attendere il completamento delle altre fonti. Dopo la conferma dell’invio Telegram viene aggiunta allo stato delle notizie inviate e rimossa dal journal. Se una fonte successiva o Telegram falliscono, la notizia rimane nel journal e viene ritentata al run seguente.
+Al cambio di giorno lo stato degli elementi inviati viene azzerato. Ogni notizia scoperta viene registrata subito nel journal; dopo l'invio confermato passa nello stato `seen` e viene rimossa dai pending.
 
-In GitHub Actions lo stato viene salvato nel repository come `.seen_juve_press_news.json`. Il workflow imposta `BASELINE_IF_NO_STATE=true`: se il file non esiste ancora, registra le notizie correnti senza inviarle, evitando una raffica al primo avvio. Dopo ogni esecuzione aggiorna il file con un commit, così lo stato resta disponibile anche nei run successivi.
+Il workflow usa `BASELINE_IF_NO_STATE=true`: se lo stato non esiste, registra i contenuti correnti senza inviarli, evitando una raffica al primo avvio. Al termine committa entrambi i file di stato quando cambiano.
 
-### Workflow e configurazione
-
-Il workflow [`.github/workflows/juve-press-news.yml`](.github/workflows/juve-press-news.yml):
-
-- è avviabile solo manualmente;
-- usa Python 3.14;
-- legge e aggiorna lo stato versionato `.seen_juve_press_news.json`;
-- installa `requirements-juve-press.txt`;
-- esegue `python juve_press_bot.py`.
-
-Richiede soltanto:
+### Configurazione web
 
 | Secret | Uso |
-|---|---|
-| `TELEGRAM_TOKEN` | Token del bot Telegram. |
-| `CHAT_ID` | Chat o canale di destinazione. |
+| --- | --- |
+| `TELEGRAM_TOKEN` | Token del bot Telegram |
+| `CHAT_ID` | Chat o canale di destinazione |
 
-Il bot supporta anche una modalità di sola verifica:
-
-```bash
-python juve_press_bot.py --dry-run
-```
-
-La modalità `--dry-run` recupera e stampa le notizie senza leggere lo stato e senza usare Telegram.
-
-Per visualizzare anche il messaggio HTML esatto che verrebbe inviato:
-
-```bash
-python juve_press_bot.py --dry-run --preview-messages
-```
-
-Per i test si può includere anche il giorno precedente:
-
-```bash
-python juve_press_bot.py --dry-run --include-yesterday
-```
-
-`--include-yesterday` amplia la raccolta a oggi e ieri. L’opzione non è usata dal workflow e va considerata uno strumento di test; senza `--dry-run` potrebbe inviare anche contenuti del giorno precedente non presenti nello stato.
-
-## Avvio locale
-
-### PDF
-
-```bash
-python -m pip install -r requirements.txt
-python bot_giornali.py
-```
-
-### Web
-
-```bash
-python -m pip install -r requirements-juve-press.txt
-python juve_press_bot.py --dry-run
-```
-
-Per gli invii reali imposta le variabili d’ambiente richieste dal relativo bot.
+Non servono chiavi API per le fonti web, YouTube o X.
 
 ## Struttura
 
@@ -177,22 +148,90 @@ Per gli invii reali imposta le variabili d’ambiente richieste dal relativo bot
 Notizie_JR/
 ├── bot_giornali.py
 ├── juve_press_bot.py
+├── telegram_notifier.py
+├── article_journal.py
+├── preview_image.py
+├── video_media.py
 ├── requirements.txt
 ├── requirements-juve-press.txt
+├── tests/
 └── .github/workflows/
     ├── run_giornali.yml
     └── juve-press-news.yml
 ```
 
+## Requisiti
+
+Entrambi i workflow usano Python 3.14.
+
+Per il bot PDF:
+
+```bash
+python -m pip install -r requirements.txt
+```
+
+Per il bot web:
+
+```bash
+python -m pip install -r requirements-juve-press.txt
+```
+
+## Avvio locale
+
+Bot PDF:
+
+```bash
+python bot_giornali.py
+```
+
+Bot web con invio reale:
+
+```bash
+python juve_press_bot.py
+```
+
+Raccolta senza stato e senza Telegram:
+
+```bash
+python juve_press_bot.py --dry-run
+python juve_press_bot.py --dry-run --preview-messages
+```
+
+Per includere anche il giorno precedente durante i test:
+
+```bash
+python juve_press_bot.py --dry-run --include-yesterday
+```
+
+`--preview-messages` richiede `--dry-run`. `--include-yesterday` non è usato dal workflow e, senza `--dry-run`, può inviare contenuti di ieri non ancora presenti nello stato.
+
+## Test
+
+Dopo aver installato entrambi i file di dipendenze:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+Il workflow web esegue tutti i test dedicati al monitoraggio online e salta `test_bot_giornali.py`; il workflow PDF non esegue attualmente una fase di test.
+
+## GitHub Actions
+
+| Workflow | Comportamento |
+| --- | --- |
+| `run_giornali.yml` | Avvio manuale del bot PDF, con permessi di sola lettura sul contenuto del repository |
+| `juve-press-news.yml` | Blocca run concorrenti, testa il bot web, controlla le notizie e salva lo stato |
+
+Entrambi usano Python 3.14, sono avviabili soltanto con `workflow_dispatch` ed eliminano i propri run completati dalla cronologia. Nel repository non è configurato uno `schedule`.
+
 ## Limiti noti
 
-- L’estrazione PDF dipende dalla leggibilità del documento e dalla risposta di Gemini; i controlli riducono, ma non eliminano, il rischio di errori.
-- I selettori HTML e gli endpoint non documentati delle fonti web possono cambiare.
-- Il monitoraggio X dipende dai mirror RSS pubblici configurati e, per ricavare gli MP4 dei video nativi, dalle API pubbliche FxTwitter/VxTwitter: se i servizi disponibili sono indisponibili o cambiano formato, il post conserva comunque la copertina e il link a X.
-- I feed YouTube includono tutti i video dei due canali configurati, senza un ulteriore filtro Juventus sul titolo.
-- Entrambi i workflow sono manuali: il repository non contiene uno `schedule`.
-- Lo stato del bot web vive nel file versionato `.seen_juve_press_news.json`; il workflow usa un gruppo di concorrenza per evitare esecuzioni sovrapposte.
+- L'estrazione PDF dipende dalla qualità del documento e dall'output di Gemini; i controlli riducono, ma non eliminano, possibili errori.
+- Selettori HTML, feed e endpoint non documentati possono cambiare senza preavviso.
+- Il monitoraggio X dipende dalla disponibilità dei mirror RSS pubblici e, per i video, da FxTwitter o VxTwitter.
+- I feed YouTube non applicano un ulteriore filtro Juventus al titolo dei tre canali configurati.
+- Il bot PDF elimina un documento dopo una lettura riuscita anche se Telegram non consegna tutte le notizie.
 
 ---
 
-Progetto amatoriale, non affiliato con Juventus FC, Telegram, Google, Dropbox o le fonti citate.
+Progetto amatoriale, non affiliato con Juventus Football Club, Telegram, Google, Dropbox o le fonti citate.
