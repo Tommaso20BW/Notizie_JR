@@ -5,8 +5,6 @@ Controlla le notizie Juventus pubblicate OGGI su:
 - Tuttosport
 - Corriere dello Sport
 - La Gazzetta dello Sport
-- JuventusNews24
-- TuttoJuve (solo contenuti Juventus)
 - Sky Sport Calciomercato ("Juve"/"Juventus", esclusi i titoli "video")
 - Sky Sport: pagina notizie Juventus
 - Juventus.com
@@ -87,11 +85,6 @@ GAZZETTA_PAGE_URL = (
 GAZZETTA_API_URL = (
     "https://appservice.gazzetta.it/gaz/app/api/mygazzetta/search"
 )
-JUVENTUSNEWS24_URL = "https://www.juventusnews24.com/"
-JUVENTUSNEWS24_FEED_URL = "https://www.juventusnews24.com/feed/"
-TUTTOJUVE_URL = "https://m.tuttojuve.com/"
-TUTTOJUVE_RSS_INFO_URL = "https://www.tuttojuve.com/info_rss/"
-TUTTOJUVE_ALLOWED_HOSTS = {"www.tuttojuve.com", "m.tuttojuve.com"}
 SKY_URL_TEMPLATE = (
     "https://sport.sky.it/calciomercato/{year}/{month:02d}/{day:02d}/"
     "calciomercato-news-trattative-oggi-{day}-{month_name}"
@@ -234,25 +227,6 @@ ITALIAN_MONTHS = {
     "novembre": 11,
     "dicembre": 12,
 }
-TUTTOJUVE_ARTICLE_PATH_RE = re.compile(r"^/[^/]+/[^/]+-\d+$")
-JUVENTUSNEWS24_EXCLUDED_ROOT_PATHS = {
-    "",
-    "news",
-    "calciomercato-juve",
-    "juventus-next-gen",
-    "juventus-women",
-    "settore-giovanile",
-    "esclusive",
-    "audio-zone",
-    "video",
-    "social",
-    "hanno-detto",
-    "redazione",
-    "contatti",
-    "privacy-policy",
-}
-
-
 @dataclass(frozen=True)
 class Article:
     source: str
@@ -571,6 +545,15 @@ def _scrape_sky_calciomercato_for_date(
             continue
 
         title = title_tag.get_text(" ", strip=True)
+        # I TAG SEO di Sky possono finire attaccati al titolo del blocco.
+        # Vanno rimossi prima del filtro Juve/Juventus, altrimenti una news
+        # su un'altra squadra può diventare un falso positivo.
+        title = re.split(
+            r"\s*\bTAG:\s*",
+            title,
+            maxsplit=1,
+            flags=re.IGNORECASE,
+        )[0].strip()
         if (
             SKY_RECAP_TITLE_RE.search(title)
             or SKY_VIDEO_TITLE_RE.search(title)
@@ -957,63 +940,6 @@ def _parse_italian_calendar_date(text: str) -> datetime | None:
         return None
 
 
-def _parse_tuttojuve_visible_date(
-    soup: BeautifulSoup,
-    now: datetime | None = None,
-) -> datetime | None:
-    """Fallback per il formato TuttoJuve 'Oggi/Ieri alle HH:MM'."""
-    now = (now or datetime.now(ROME)).astimezone(ROME)
-    text = soup.get_text(" ", strip=True)
-    match = re.search(
-        r"\b(Oggi|Ieri)\s+alle\s+(\d{1,2}):(\d{2})\b",
-        text,
-        flags=re.IGNORECASE,
-    )
-    if match:
-        target_date = now.date()
-        if match.group(1).casefold() == "ieri":
-            target_date -= timedelta(days=1)
-        try:
-            return datetime.combine(
-                target_date,
-                datetime.min.time(),
-                tzinfo=ROME,
-            ).replace(
-                hour=int(match.group(2)),
-                minute=int(match.group(3)),
-            )
-        except ValueError:
-            return None
-
-    numeric_match = re.search(
-        r"\b(\d{1,2})[./-](\d{1,2})[./-](\d{4})"
-        r"(?:\s+(?:alle\s+)?(\d{1,2}):(\d{2}))?\b",
-        text,
-        flags=re.IGNORECASE,
-    )
-    if not numeric_match:
-        return None
-    try:
-        return datetime(
-            int(numeric_match.group(3)),
-            int(numeric_match.group(2)),
-            int(numeric_match.group(1)),
-            int(numeric_match.group(4) or 0),
-            int(numeric_match.group(5) or 0),
-            tzinfo=ROME,
-        )
-    except ValueError:
-        return None
-
-
-def _juventusnews24_article_candidate(url: str) -> bool:
-    parts = urlsplit(url)
-    if parts.netloc.lower() != "www.juventusnews24.com":
-        return False
-    path_parts = [part for part in parts.path.split("/") if part]
-    if len(path_parts) != 1:
-        return False
-    return path_parts[0].casefold() not in JUVENTUSNEWS24_EXCLUDED_ROOT_PATHS
 
 
 def _scrape_article_detail_candidates(
@@ -1067,202 +993,8 @@ def _scrape_article_detail_candidates(
     return articles
 
 
-def scrape_juventusnews24(
-    session: requests.Session,
-    requested_dates: set[date],
-) -> list[Article]:
-    """Monitora JuventusNews24 e accetta esclusivamente le date richieste."""
-    articles_by_key: dict[str, Article] = {}
-    feed_available = False
-
-    # WordPress espone normalmente il feed a pagine. Scorriamo finché gli
-    # articoli diventano più vecchi della data minima richiesta.
-    minimum_date = min(requested_dates)
-    for page in range(1, 11):
-        try:
-            response = session.get(
-                JUVENTUSNEWS24_FEED_URL,
-                params={"paged": page},
-                timeout=30,
-            )
-            response.raise_for_status()
-            source_articles = _feed_articles_from_xml(
-                response.content,
-                source="JuventusNews24",
-                base_url=JUVENTUSNEWS24_URL,
-                allowed_hosts={"www.juventusnews24.com"},
-                requested_dates=requested_dates,
-            )
-            # Se il parse XML riesce, il feed esiste anche quando questa pagina
-            # non contiene articoli della data richiesta.
-            root = ET.fromstring(response.content)
-            feed_available = True
-        except (requests.RequestException, ET.ParseError):
-            # Se una pagina successiva non esiste, manteniamo comunque i dati
-            # già letti dal feed. Il fallback serve solo se fallisce pagina 1.
-            if page == 1:
-                feed_available = False
-            break
-
-        for article in source_articles:
-            articles_by_key.setdefault(article.notification_key, article)
-
-        raw_dates = []
-        for item in root.findall(".//item"):
-            published = _parse_feed_published(
-                _feed_item_text(item, "pubDate", "published", "date")
-            )
-            if published is not None:
-                raw_dates.append(published.date())
-        if raw_dates and min(raw_dates) < minimum_date:
-            break
-        if not root.findall(".//item"):
-            break
-
-    if feed_available:
-        return list(articles_by_key.values())
-
-    # Fallback nel caso il feed venga disabilitato o cambi URL.
-    response = session.get(JUVENTUSNEWS24_URL, timeout=30)
-    response.raise_for_status()
-    soup = BeautifulSoup(response.text, "html.parser")
-    candidate_urls: list[str] = []
-    urls_done: set[str] = set()
-    for link in soup.select("a[href]"):
-        url = normalize_url(
-            urljoin(JUVENTUSNEWS24_URL, str(link.get("href") or ""))
-        )
-        if not _juventusnews24_article_candidate(url) or url in urls_done:
-            continue
-        if len(link.get_text(" ", strip=True)) < 12:
-            continue
-        urls_done.add(url)
-        candidate_urls.append(url)
-        if len(candidate_urls) >= 120:
-            break
-
-    return _scrape_article_detail_candidates(
-        session,
-        source="JuventusNews24",
-        candidate_urls=candidate_urls,
-        requested_dates=requested_dates,
-        juventus_only=False,
-        visible_date_parser=lambda article_soup: _parse_italian_calendar_date(
-            article_soup.get_text(" ", strip=True)
-        ),
-    )
 
 
-def _discover_tuttojuve_feed_urls(
-    session: requests.Session,
-) -> list[str]:
-    """Legge dalla pagina RSS ufficiale gli endpoint feed disponibili."""
-    response = session.get(TUTTOJUVE_RSS_INFO_URL, timeout=30)
-    response.raise_for_status()
-    soup = BeautifulSoup(response.text, "html.parser")
-    candidates: list[str] = []
-    seen: set[str] = set()
-    for link in soup.select("a[href]"):
-        raw_href = str(link.get("href") or "").strip()
-        if not raw_href:
-            continue
-        url = urljoin(TUTTOJUVE_RSS_INFO_URL, raw_href)
-        parts = urlsplit(url)
-        if parts.netloc.lower() not in TUTTOJUVE_ALLOWED_HOSTS:
-            continue
-        lowered_path = parts.path.casefold()
-        if "rss" not in lowered_path or lowered_path.rstrip("/") == "/info_rss":
-            continue
-        if "syndication2.php" in lowered_path:
-            continue
-        if url in seen:
-            continue
-        seen.add(url)
-        candidates.append(url)
-    return candidates
-
-
-def _try_tuttojuve_rss(
-    session: requests.Session,
-    requested_dates: set[date],
-) -> tuple[bool, list[Article]]:
-    """Prova il feed generale ufficiale trovato dinamicamente nella pagina RSS."""
-    try:
-        feed_urls = _discover_tuttojuve_feed_urls(session)
-    except requests.RequestException:
-        return False, []
-
-    for feed_url in feed_urls[:8]:
-        try:
-            response = session.get(feed_url, timeout=30)
-            response.raise_for_status()
-            root = ET.fromstring(response.content)
-        except (requests.RequestException, ET.ParseError):
-            continue
-
-        items = root.findall(".//item")
-        atom_entries = [
-            node
-            for node in root.iter()
-            if node.tag.rsplit("}", 1)[-1].casefold() == "entry"
-        ]
-        if not items and not atom_entries:
-            continue
-
-        try:
-            articles = _feed_articles_from_xml(
-                response.content,
-                source="TuttoJuve",
-                base_url=TUTTOJUVE_URL,
-                allowed_hosts=TUTTOJUVE_ALLOWED_HOSTS,
-                requested_dates=requested_dates,
-                juventus_only=True,
-            )
-        except ET.ParseError:
-            continue
-        return True, articles
-
-    return False, []
-
-
-def scrape_tuttojuve(
-    session: requests.Session,
-    requested_dates: set[date],
-) -> list[Article]:
-    """Monitora TuttoJuve, scartando news generiche non juventine."""
-    feed_ok, articles = _try_tuttojuve_rss(session, requested_dates)
-    if feed_ok:
-        return articles
-
-    # Fallback alla home: i veri articoli TuttoJuve terminano con un ID numerico.
-    response = session.get(TUTTOJUVE_URL, timeout=30)
-    response.raise_for_status()
-    page_url = response.url or TUTTOJUVE_URL
-    soup = BeautifulSoup(response.text, "html.parser")
-    candidate_urls: list[str] = []
-    urls_done: set[str] = set()
-    for link in soup.select("a[href]"):
-        url = normalize_url(urljoin(page_url, str(link.get("href") or "")))
-        parts = urlsplit(url)
-        if parts.netloc.lower() not in TUTTOJUVE_ALLOWED_HOSTS:
-            continue
-        if not TUTTOJUVE_ARTICLE_PATH_RE.match(parts.path):
-            continue
-        if url in urls_done:
-            continue
-        urls_done.add(url)
-        candidate_urls.append(url)
-        if len(candidate_urls) >= 140:
-            break
-
-    return _scrape_article_detail_candidates(
-        session,
-        source="TuttoJuve",
-        candidate_urls=candidate_urls,
-        requested_dates=requested_dates,
-        juventus_only=True,
-        visible_date_parser=_parse_tuttojuve_visible_date,
-    )
 
 
 def scrape_sky_juventus_news(
@@ -2251,8 +1983,6 @@ def collect_articles(
         ("Tuttosport", scrape_tuttosport),
         ("Corriere dello Sport", scrape_corriere),
         ("La Gazzetta dello Sport", scrape_gazzetta),
-        ("JuventusNews24", scrape_juventusnews24),
-        ("TuttoJuve", scrape_tuttojuve),
         ("Sky Sport - Calciomercato", scrape_sky_calciomercato),
         ("Sky Sport - Juventus", scrape_sky_juventus_news),
         ("Juventus.com", scrape_juventus_official),
