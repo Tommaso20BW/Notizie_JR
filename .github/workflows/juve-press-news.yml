@@ -2,74 +2,32 @@ name: Notizie Web
 
 on:
   workflow_dispatch:
+  # Rete di sicurezza: mantiene sempre un run di riserva in coda su main.
+  schedule:
+    - cron: "*/5 * * * *"
+
+# Un solo worker per branch. Un avvio manuale o automatico resta in coda e
+# non interrompe mai quello che sta salvando lo stato corrente.
+concurrency:
+  group: notizie-web-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
   actions: write
   contents: write
 
 jobs:
-  controlla-run:
-    name: Controlla se il bot è già attivo
+  worker:
+    name: Worker notizie web
     runs-on: ubuntu-latest
-    timeout-minutes: 1
-
-    outputs:
-      procedi: ${{ steps.verifica.outputs.procedi }}
-
-    steps:
-      - name: Interrompi questo run se ne esiste già uno
-        id: verifica
-        env:
-          GH_TOKEN: ${{ github.token }}
-          CURRENT_RUN_ID: ${{ github.run_id }}
-          CURRENT_RUN_NUMBER: ${{ github.run_number }}
-        run: |
-          RUN_ATTIVO="$(
-            gh api \
-              "repos/${GITHUB_REPOSITORY}/actions/workflows/juve-press-news.yml/runs?per_page=100" \
-              --jq ".workflow_runs[]
-                | select(.id != ${CURRENT_RUN_ID})
-                | select(.run_number < ${CURRENT_RUN_NUMBER})
-                | select(
-                    .status == \"queued\" or
-                    .status == \"in_progress\" or
-                    .status == \"waiting\" or
-                    .status == \"pending\" or
-                    .status == \"requested\"
-                  )
-                | .id" |
-            head -n 1
-          )"
-
-          if [[ -n "$RUN_ATTIVO" ]]; then
-            echo "Il run $RUN_ATTIVO è già attivo."
-            echo "Interrompo il nuovo run $CURRENT_RUN_ID."
-
-            echo "procedi=false" >> "$GITHUB_OUTPUT"
-
-            gh api \
-              --method POST \
-              "repos/${GITHUB_REPOSITORY}/actions/runs/${CURRENT_RUN_ID}/cancel" \
-              || true
-
-            sleep 5
-            exit 0
-          fi
-
-          echo "Nessun altro run attivo. Il bot può partire."
-          echo "procedi=true" >> "$GITHUB_OUTPUT"
-
-  check-news:
-    name: Controlla le notizie
-    needs: controlla-run
-    if: needs.controlla-run.outputs.procedi == 'true'
-
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 65
 
     steps:
       - name: Scarica il repository
         uses: actions/checkout@v6
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
 
       - name: Configura Python
         uses: actions/setup-python@v6
@@ -81,77 +39,113 @@ jobs:
       - name: Installa le dipendenze dalla cache pip
         run: python -m pip install --disable-pip-version-check -r requirements-juve-press.txt
 
-      - name: Verifica il supporto video incluso
+      - name: Configura i checkpoint dello stato
         run: |
-          python - <<'PY'
-          import imageio_ffmpeg
-          print("FFmpeg incluso:", imageio_ffmpeg.get_ffmpeg_version())
-          PY
+          git config user.name "notizie-jr-bot[bot]"
+          git config user.email "notizie-jr-bot[bot]@users.noreply.github.com"
 
-      - name: Verifica invio Telegram
+      - name: Controlla e pubblica le notizie per circa un'ora
+        id: news_worker
         shell: bash
         run: |
           set -euo pipefail
 
-          for test_file in tests/test_*.py; do
-            if [[ "$(basename "$test_file")" == "test_bot_giornali.py" ]]; then
-              echo "Salto $test_file: appartiene al bot dei giornali."
-              continue
-            fi
+          touch "$WORKER_HEARTBEAT_FILE"
+          setsid python -u juve_press_bot.py \
+            --worker \
+            --duration-seconds 3300 \
+            --interval-seconds 30 &
+          BOT_PID=$!
 
-            echo "Eseguo $test_file"
-            python -m unittest "$test_file" -v
-          done
+          # Se per cinque minuti il bot non completa nessun progresso, termina
+          # l'intero gruppo di processi. I passi successivi salvano lo stato e
+          # accodano immediatamente un worker sostitutivo.
+          (
+            while kill -0 "$BOT_PID" 2>/dev/null; do
+              sleep 30
+              if ! kill -0 "$BOT_PID" 2>/dev/null; then
+                exit 0
+              fi
 
-      - name: Controlla le notizie di oggi
-        run: python -u juve_press_bot.py
+              NOW="$(date +%s)"
+              LAST_HEARTBEAT="$(stat -c %Y "$WORKER_HEARTBEAT_FILE")"
+              if (( NOW - LAST_HEARTBEAT > 300 )); then
+                echo "Worker bloccato: nessun progresso da oltre 5 minuti."
+                kill -TERM -- "-$BOT_PID" 2>/dev/null || true
+                sleep 10
+                kill -KILL -- "-$BOT_PID" 2>/dev/null || true
+                exit 0
+              fi
+            done
+          ) &
+          WATCHDOG_PID=$!
+
+          set +e
+          wait "$BOT_PID"
+          BOT_STATUS=$?
+          kill "$WATCHDOG_PID" 2>/dev/null || true
+          wait "$WATCHDOG_PID" 2>/dev/null || true
+          set -e
+
+          exit "$BOT_STATUS"
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
           BASELINE_IF_NO_STATE: "true"
+          CHECKPOINT_STATE_TO_GIT: "true"
+          WORKER_HEARTBEAT_FILE: ${{ runner.temp }}/juve-press-worker-heartbeat
 
-      - name: Salva lo stato delle notizie nel repository
+      - name: Salva lo stato per il worker successivo
+        id: persist_state
         if: always()
+        env:
+          TARGET_REF: ${{ github.ref_name }}
+        shell: bash
         run: |
-          if [[ -z "$(git status --porcelain -- .seen_juve_press_news.json .pending_juve_press_news.json)" ]]; then
-            echo "Stato invariato: nessun commit necessario."
-            exit 0
+          set -euo pipefail
+
+          if [[ -n "$(git status --porcelain -- .seen_juve_press_news.json .pending_juve_press_news.json)" ]]; then
+            git add .seen_juve_press_news.json .pending_juve_press_news.json
+            git commit -m "chore: aggiorna stato notizie"
+          else
+            echo "Nessuna modifica locale da aggiungere al checkpoint."
           fi
 
-          git config user.name "notizie-jr-bot[bot]"
-          git config user.email "notizie-jr-bot[bot]@users.noreply.github.com"
+          # Pubblica anche eventuali checkpoint già committati dal bot ma non
+          # ancora arrivati al remote per un errore di rete transitorio.
+          git pull --rebase origin "$TARGET_REF"
+          git push origin "HEAD:$TARGET_REF"
 
-          git add \
-            .seen_juve_press_news.json \
-            .pending_juve_press_news.json
-
-          git commit -m "chore: aggiorna stato notizie"
-          git push origin "HEAD:${GITHUB_REF}"
+      - name: Avvia il worker successivo
+        if: >-
+          always() &&
+          steps.persist_state.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_REF: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh workflow run juve-press-news.yml --ref "$TARGET_REF"
+          echo "Worker successivo accodato sul branch $TARGET_REF."
 
       - name: Pulisci la cronologia dei run
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
-          KEEP: "0"
+          KEEP: "3"
+        shell: bash
         run: |
+          set -euo pipefail
+
           gh api \
             "repos/${GITHUB_REPOSITORY}/actions/workflows/juve-press-news.yml/runs?status=completed&per_page=100" \
-            --jq '.workflow_runs
-              | sort_by(.created_at)
-              | reverse
-              | .['"$KEEP"':]
-              | .[].id' |
+            --jq '.workflow_runs | sort_by(.created_at) | reverse | .['"$KEEP"':] | .[].id' |
           while read -r RUN_ID; do
-            if [[ -z "$RUN_ID" ]]; then
-              continue
+            if [[ -n "$RUN_ID" ]]; then
+              gh api --method DELETE \
+                "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}" || true
             fi
-
-            echo "Elimino run $RUN_ID"
-
-            gh api \
-              --method DELETE \
-              "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}" \
-              || true
           done
 
           echo "Pulizia completata."
