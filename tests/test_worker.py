@@ -39,6 +39,23 @@ class WorkerTests(unittest.TestCase):
     def test_default_pause_is_fifteen_seconds_after_each_cycle(self):
         self.assertEqual(bot.DEFAULT_POLL_INTERVAL_SECONDS, 15)
 
+    def test_collection_always_overlaps_today_and_yesterday(self):
+        self.assertEqual(
+            bot.collection_dates(datetime(2026, 8, 13).date()),
+            {
+                datetime(2026, 8, 12).date(),
+                datetime(2026, 8, 13).date(),
+            },
+        )
+
+    def test_migration_warms_up_before_enabling_yesterday(self):
+        today = datetime(2026, 8, 13).date()
+        self.assertEqual(bot.collection_dates(today, today), {today})
+        self.assertEqual(
+            bot.collection_dates(today, datetime(2026, 8, 12).date()),
+            {today, datetime(2026, 8, 12).date()},
+        )
+
     def test_heartbeat_file_is_refreshed(self):
         with tempfile.TemporaryDirectory() as directory:
             heartbeat = Path(directory) / "heartbeat"

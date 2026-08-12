@@ -343,6 +343,18 @@ def is_today(published: datetime, today: date) -> bool:
     return is_requested_date(published, {today})
 
 
+def collection_dates(
+    today: date,
+    coverage_start: date | None = None,
+) -> set[date]:
+    """Include ieri appena lo stato contiene una deduplica completa per quel giorno."""
+    requested_dates = {today}
+    yesterday = today - timedelta(days=1)
+    if coverage_start is None or coverage_start <= yesterday:
+        requested_dates.add(yesterday)
+    return requested_dates
+
+
 def is_juventus_title(title: str) -> bool:
     """Esclude omonimie, come la squadra Juve Stabia."""
     return bool(
@@ -1950,9 +1962,138 @@ def scrape_x_profiles(
     return articles
 
 
-def load_seen(state_date: date) -> list[str]:
-    if not STATE_FILE.exists():
-        return []
+def _invalid_seen_state() -> RuntimeError:
+    return RuntimeError(
+        f"Formato non valido in {STATE_FILE.name}; "
+        "interrompo per evitare notifiche duplicate."
+    )
+
+
+def _decode_seen_state(
+    data: object,
+    state_date: date,
+) -> tuple[dict[date, list[str]], date]:
+    """Legge il formato corrente e i due formati storici dello stato."""
+    if isinstance(data, list):
+        if not all(isinstance(item, str) for item in data):
+            raise _invalid_seen_state()
+        return {state_date: list(dict.fromkeys(data))}, state_date
+
+    if not isinstance(data, dict):
+        raise _invalid_seen_state()
+
+    # Formato precedente: {"date": "YYYY-MM-DD", "items": [...]}.
+    if "date" in data or "items" in data:
+        stored_date = data.get("date")
+        items = data.get("items")
+        if (
+            not isinstance(stored_date, str)
+            or not isinstance(items, list)
+            or not all(isinstance(item, str) for item in items)
+        ):
+            raise _invalid_seen_state()
+        try:
+            parsed_date = date.fromisoformat(stored_date)
+        except ValueError as error:
+            raise _invalid_seen_state() from error
+        return {parsed_date: list(dict.fromkeys(items))}, parsed_date
+
+    raw_buckets = data.get("dates")
+    raw_coverage_start = data.get("coverage_start")
+    if not isinstance(raw_buckets, dict) or not isinstance(
+        raw_coverage_start,
+        str,
+    ):
+        raise _invalid_seen_state()
+    try:
+        coverage_start = date.fromisoformat(raw_coverage_start)
+    except ValueError as error:
+        raise _invalid_seen_state() from error
+
+    buckets: dict[date, list[str]] = {}
+    for raw_date, items in raw_buckets.items():
+        if (
+            not isinstance(raw_date, str)
+            or not isinstance(items, list)
+            or not all(isinstance(item, str) for item in items)
+        ):
+            raise _invalid_seen_state()
+        try:
+            parsed_date = date.fromisoformat(raw_date)
+        except ValueError as error:
+            raise _invalid_seen_state() from error
+        buckets[parsed_date] = list(dict.fromkeys(items))
+    return buckets, coverage_start
+
+
+def _retained_seen_buckets(
+    buckets: dict[date, list[str]],
+    state_date: date,
+) -> dict[date, list[str]]:
+    retained_dates = collection_dates(state_date)
+    retained = {
+        bucket_date: list(items)
+        for bucket_date, items in buckets.items()
+        if bucket_date in retained_dates
+    }
+    retained.setdefault(state_date, [])
+
+    # Una chiave appartiene al primo giorno in cui è stata registrata.
+    # Il limite vale per giornata: applicarlo alle due giornate insieme
+    # potrebbe espellere proprio le chiavi di ieri che evitano i reinvii.
+    normalized: dict[date, list[str]] = {}
+    known: set[str] = set()
+    for bucket_date in sorted(retained):
+        unique_items: list[str] = []
+        for item in retained[bucket_date]:
+            if item not in known:
+                known.add(item)
+                unique_items.append(item)
+        # Anche un bucket vuoto prova che quel giorno è stato seguito.
+        normalized[bucket_date] = unique_items[-MAX_SEEN:]
+    return normalized
+
+
+def _normalized_coverage_start(
+    coverage_start: date,
+    buckets: dict[date, list[str]],
+    state_date: date,
+) -> date:
+    if coverage_start > state_date:
+        raise _invalid_seen_state()
+    yesterday = state_date - timedelta(days=1)
+    if coverage_start <= yesterday and yesterday not in buckets:
+        # Dopo uno stop di più giorni non conosciamo le chiavi di ieri:
+        # ripartiamo da oggi per non reinviare in blocco vecchie notizie.
+        return state_date
+    return coverage_start
+
+
+def _write_seen_buckets(
+    buckets: dict[date, list[str]],
+    coverage_start: date,
+) -> None:
+    temporary = STATE_FILE.with_suffix(".json.tmp")
+    temporary.write_text(
+        json.dumps(
+            {
+                "coverage_start": coverage_start.isoformat(),
+                "dates": {
+                    bucket_date.isoformat(): items
+                    for bucket_date, items in sorted(buckets.items())
+                }
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    os.replace(temporary, STATE_FILE)
+
+
+def _read_seen_buckets(
+    state_date: date,
+) -> tuple[dict[date, list[str]], bool, date]:
     try:
         data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
@@ -1960,49 +2101,75 @@ def load_seen(state_date: date) -> list[str]:
             f"Stato non leggibile ({STATE_FILE.name}); "
             "interrompo per evitare notifiche duplicate."
         ) from error
-    # Migrazione trasparente dal vecchio formato, che era una semplice lista.
-    if isinstance(data, list) and all(isinstance(item, str) for item in data):
-        values = list(dict.fromkeys(data))
-        save_seen(values, state_date)
-        return values
+    is_current_format = (
+        isinstance(data, dict)
+        and "coverage_start" in data
+        and "dates" in data
+    )
+    buckets, coverage_start = _decode_seen_state(data, state_date)
+    return buckets, is_current_format, coverage_start
 
-    if not isinstance(data, dict):
-        raise RuntimeError(
-            f"Formato non valido in {STATE_FILE.name}; "
-            "interrompo per evitare notifiche duplicate."
-        )
-    stored_date = data.get("date")
-    items = data.get("items")
-    if not isinstance(stored_date, str) or not isinstance(items, list) or not all(
-        isinstance(item, str) for item in items
+
+def load_seen_state(state_date: date) -> tuple[list[str], date]:
+    if not STATE_FILE.exists():
+        return [], state_date
+
+    buckets, is_current_format, coverage_start = _read_seen_buckets(state_date)
+    retained = _retained_seen_buckets(buckets, state_date)
+    normalized_coverage_start = _normalized_coverage_start(
+        coverage_start,
+        retained,
+        state_date,
+    )
+    if (
+        retained != buckets
+        or not is_current_format
+        or normalized_coverage_start != coverage_start
     ):
-        raise RuntimeError(
-            f"Formato non valido in {STATE_FILE.name}; "
-            "interrompo per evitare notifiche duplicate."
+        _write_seen_buckets(retained, normalized_coverage_start)
+        print(
+            f"[STATO] finestra aggiornata al {state_date.isoformat()}: "
+            "deduplica di oggi e ieri conservata."
         )
 
-    if stored_date != state_date.isoformat():
-        save_seen([], state_date)
-        print(
-            f"[STATO] nuovo giorno ({state_date.isoformat()}): "
-            "cache delle notizie inviate azzerata."
-        )
-        return []
-    return list(dict.fromkeys(items))
+    seen = [
+        item
+        for bucket_date in sorted(retained)
+        for item in retained[bucket_date]
+    ]
+    return seen, normalized_coverage_start
+
+
+def load_seen(state_date: date) -> list[str]:
+    return load_seen_state(state_date)[0]
 
 
 def save_seen(seen: Iterable[str], state_date: date) -> None:
-    values = list(dict.fromkeys(seen))[-MAX_SEEN:]
-    temporary = STATE_FILE.with_suffix(".json.tmp")
-    temporary.write_text(
-        json.dumps(
-            {"date": state_date.isoformat(), "items": values},
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
+    if STATE_FILE.exists():
+        stored_buckets, _, coverage_start = _read_seen_buckets(state_date)
+        buckets = _retained_seen_buckets(stored_buckets, state_date)
+        coverage_start = _normalized_coverage_start(
+            coverage_start,
+            buckets,
+            state_date,
+        )
+    else:
+        buckets = {state_date: []}
+        coverage_start = state_date
+    known = {
+        item
+        for items in buckets.values()
+        for item in items
+    }
+    current_items = buckets.setdefault(state_date, [])
+    for item in dict.fromkeys(seen):
+        if item not in known:
+            known.add(item)
+            current_items.append(item)
+    _write_seen_buckets(
+        _retained_seen_buckets(buckets, state_date),
+        coverage_start,
     )
-    os.replace(temporary, STATE_FILE)
 
 
 def checkpoint_state_to_git() -> bool:
@@ -2234,11 +2401,9 @@ def _run_cycle(
     preview_messages: bool = False,
 ) -> int:
     today = datetime.now(ROME).date()
-    requested_dates = {today}
-    if include_yesterday:
-        requested_dates.add(today - timedelta(days=1))
 
     if dry_run:
+        requested_dates = collection_dates(today)
         articles, _ = collect_articles(session, requested_dates)
         articles.sort(key=lambda item: (item.published, item.source, item.title))
         preview_resolver = PreviewImageResolver(session)
@@ -2287,7 +2452,11 @@ def _run_cycle(
         )
 
     state_was_missing = not STATE_FILE.exists()
-    seen_list = load_seen(today)
+    seen_list, coverage_start = load_seen_state(today)
+    requested_dates = collection_dates(
+        today,
+        None if include_yesterday else coverage_start,
+    )
     seen = set(seen_list)
     journal = ArticleJournal(PENDING_FILE)
     journal.discard_all(seen)
@@ -2460,7 +2629,10 @@ def main() -> None:
     parser.add_argument(
         "--include-yesterday",
         action="store_true",
-        help="TEST: aggiunge alle notizie di oggi anche quelle di ieri.",
+        help=(
+            "Compatibilità: le notizie di ieri sono ora controllate "
+            "automaticamente."
+        ),
     )
     parser.add_argument(
         "--preview-messages",
