@@ -2,9 +2,6 @@ name: Notizie Web
 
 on:
   workflow_dispatch:
-  # Rete di sicurezza: mantiene sempre un run di riserva in coda su main.
-  schedule:
-    - cron: "*/5 * * * *"
 
 # Un solo worker per branch. Un avvio manuale o automatico resta in coda e
 # non interrompe mai quello che sta salvando lo stato corrente.
