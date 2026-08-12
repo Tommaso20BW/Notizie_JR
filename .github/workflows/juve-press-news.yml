@@ -54,7 +54,7 @@ jobs:
           setsid python -u juve_press_bot.py \
             --worker \
             --duration-seconds 3300 \
-            --interval-seconds 30 &
+            --interval-seconds 15 &
           BOT_PID=$!
 
           # Se per cinque minuti il bot non completa nessun progresso, termina
