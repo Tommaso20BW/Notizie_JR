@@ -2,7 +2,7 @@ import json
 import os
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -56,6 +56,11 @@ def sample_article():
     )
 
 
+def stored_seen_items(path):
+    data = json.loads(path.read_text(encoding="utf-8"))
+    return [item for items in data["dates"].values() for item in items]
+
+
 class RunJournalTests(unittest.TestCase):
     def _state_paths(self, directory):
         seen = Path(directory) / "seen.json"
@@ -92,7 +97,7 @@ class RunJournalTests(unittest.TestCase):
 
             self.assertEqual(json.loads(pending.read_text(encoding="utf-8")), [])
             self.assertEqual(
-                json.loads(seen.read_text(encoding="utf-8"))["items"],
+                stored_seen_items(seen),
                 ["article:1"],
             )
 
@@ -122,7 +127,7 @@ class RunJournalTests(unittest.TestCase):
             stored = json.loads(pending.read_text(encoding="utf-8"))
             self.assertEqual(stored[0]["notification_key"], "article:1")
             self.assertEqual(
-                json.loads(seen.read_text(encoding="utf-8"))["items"],
+                stored_seen_items(seen),
                 [],
             )
 
@@ -151,7 +156,7 @@ class RunJournalTests(unittest.TestCase):
                 bot.run()
 
             self.assertEqual(
-                json.loads(seen.read_text(encoding="utf-8"))["items"],
+                stored_seen_items(seen),
                 ["article:1"],
             )
             self.assertEqual(json.loads(pending.read_text(encoding="utf-8")), [])
@@ -184,9 +189,62 @@ class RunJournalTests(unittest.TestCase):
 
             self.assertEqual(telegram.sent, ["article:1"])
             self.assertEqual(
-                json.loads(seen.read_text(encoding="utf-8"))["items"],
+                stored_seen_items(seen),
                 ["article:1"],
             )
+
+    def test_late_article_from_yesterday_is_delivered_after_midnight(self):
+        with tempfile.TemporaryDirectory() as directory:
+            seen, pending = self._state_paths(directory)
+            today = datetime.now(bot.ROME).date()
+            yesterday = today - timedelta(days=1)
+            seen.write_text(
+                json.dumps(
+                    {
+                        "coverage_start": yesterday.isoformat(),
+                        "dates": {
+                            yesterday.isoformat(): [],
+                            today.isoformat(): [],
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            late_article = bot.Article(
+                source="Tuttosport",
+                title="Notizia Juventus delle 23:59",
+                url="https://example.com/late-news",
+                published=datetime.combine(
+                    yesterday,
+                    time(23, 59),
+                    tzinfo=bot.ROME,
+                ),
+                state_key="late:1",
+            )
+            telegram = FakeTelegramClient("token", "chat")
+
+            def late_collection(session, requested_dates, on_article=None):
+                self.assertEqual(requested_dates, {yesterday, today})
+                on_article(late_article)
+                return [late_article], []
+
+            with (
+                patch.object(bot, "STATE_FILE", seen),
+                patch.object(bot, "PENDING_FILE", pending),
+                patch.object(bot, "collect_articles", late_collection),
+                patch.object(bot, "TelegramClient", return_value=telegram),
+                patch.object(bot, "PreviewImageResolver", FakePreviewResolver),
+                patch.object(bot.time, "sleep", lambda _: None),
+                patch.dict(
+                    os.environ,
+                    {"TELEGRAM_TOKEN": "token", "CHAT_ID": "chat"},
+                    clear=False,
+                ),
+            ):
+                bot.run()
+
+            self.assertEqual(telegram.sent, ["late:1"])
+            self.assertEqual(stored_seen_items(seen), ["late:1"])
 
 
 if __name__ == "__main__":
