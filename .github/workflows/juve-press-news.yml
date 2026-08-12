@@ -130,7 +130,7 @@ jobs:
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
-          KEEP: "3"
+          KEEP: "0"
         shell: bash
         run: |
           set -euo pipefail
