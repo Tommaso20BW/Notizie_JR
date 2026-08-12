@@ -203,8 +203,10 @@ class WorkerTests(unittest.TestCase):
 
         log = output.getvalue()
         self.assertIn("[WORKER] attivo", log)
-        self.assertIn("[CICLO 1] fine | nuove=2 | ok", log)
+        self.assertIn("[CICLO 1] nuove=2 | ok", log)
         self.assertIn("pausa=15s", log)
+        self.assertNotIn("inizio", log)
+        self.assertNotIn("fine | nuove", log)
         self.assertNotIn("notizie di oggi trovate", log)
 
 
