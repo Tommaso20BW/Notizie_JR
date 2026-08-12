@@ -1,8 +1,10 @@
+import io
 import os
 import subprocess
 import tempfile
 import threading
 import unittest
+from contextlib import redirect_stdout
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -34,6 +36,9 @@ class FakeClock:
 
 
 class WorkerTests(unittest.TestCase):
+    def test_default_pause_is_fifteen_seconds_after_each_cycle(self):
+        self.assertEqual(bot.DEFAULT_POLL_INTERVAL_SECONDS, 15)
+
     def test_heartbeat_file_is_refreshed(self):
         with tempfile.TemporaryDirectory() as directory:
             heartbeat = Path(directory) / "heartbeat"
@@ -128,6 +133,27 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual([article.notification_key for article in articles], ["fast:1"])
         self.assertEqual(errors, [])
 
+    def test_successful_sources_do_not_flood_the_log(self):
+        def scraper(session, requested_dates):
+            return [sample_article()]
+
+        output = io.StringIO()
+        with (
+            bot.requests.Session() as session,
+            patch.object(
+                bot,
+                "_article_scrapers",
+                return_value=(("Fonte veloce", scraper),),
+            ),
+            redirect_stdout(output),
+        ):
+            bot.collect_articles(
+                session,
+                {datetime(2026, 8, 12).date()},
+            )
+
+        self.assertEqual(output.getvalue(), "")
+
     def test_worker_runs_multiple_cycles_and_stops_at_deadline(self):
         clock = FakeClock()
 
@@ -141,6 +167,45 @@ class WorkerTests(unittest.TestCase):
 
         self.assertEqual(run_cycle.call_count, 3)
         self.assertEqual(clock.sleeps, [10, 10, 5])
+
+    def test_pause_starts_after_the_cycle_has_finished(self):
+        clock = FakeClock()
+
+        def four_second_cycle(**kwargs):
+            clock.now += 4
+            return 0
+
+        with patch.object(bot, "run", side_effect=four_second_cycle) as run_cycle:
+            bot.run_worker(
+                duration_seconds=23,
+                poll_interval_seconds=15,
+                clock=clock,
+                sleep=clock.sleep,
+            )
+
+        self.assertEqual(run_cycle.call_count, 2)
+        self.assertEqual(clock.sleeps, [15])
+
+    def test_worker_log_is_grouped_by_cycle(self):
+        clock = FakeClock()
+        output = io.StringIO()
+
+        with (
+            patch.object(bot, "run", side_effect=(2, 0, 0)),
+            redirect_stdout(output),
+        ):
+            bot.run_worker(
+                duration_seconds=31,
+                poll_interval_seconds=15,
+                clock=clock,
+                sleep=clock.sleep,
+            )
+
+        log = output.getvalue()
+        self.assertIn("[WORKER] attivo", log)
+        self.assertIn("[CICLO 1] fine | nuove=2 | ok", log)
+        self.assertIn("pausa=15s", log)
+        self.assertNotIn("notizie di oggi trovate", log)
 
 
 if __name__ == "__main__":

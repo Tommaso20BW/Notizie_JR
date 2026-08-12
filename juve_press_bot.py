@@ -40,6 +40,7 @@ from bs4 import BeautifulSoup
 from article_journal import ArticleJournal
 from preview_image import PreviewImageResolver, normalize_image_url
 from telegram_notifier import (
+    DeliveryReceipt,
     TELEGRAM_MAX_CAPTION_LENGTH,
     TELEGRAM_MAX_MESSAGE_LENGTH,
     TelegramClient,
@@ -69,7 +70,7 @@ PENDING_FILE = SCRIPT_DIR / ".pending_juve_press_news.json"
 MAX_SEEN = 2000
 SOURCE_MAX_WORKERS = 6
 DEFAULT_WORKER_DURATION_SECONDS = 55 * 60
-DEFAULT_POLL_INTERVAL_SECONDS = 30
+DEFAULT_POLL_INTERVAL_SECONDS = 15
 STATE_CHECKPOINT_ENV = "CHECKPOINT_STATE_TO_GIT"
 HEARTBEAT_FILE_ENV = "WORKER_HEARTBEAT_FILE"
 
@@ -81,6 +82,15 @@ HEADERS = {
     ),
     "Accept-Language": "it-IT,it;q=0.9,en;q=0.8",
 }
+
+
+def compact_log_text(value: object, limit: int = 90) -> str:
+    """Rende leggibili i log senza stampare titoli o errori interminabili."""
+    text = " ".join(str(value).split())
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
+
 
 TUTTOSPORT_URL = "https://www.tuttosport.com/squadra/calcio/juventus/t128"
 CORRIERE_URL = (
@@ -2045,7 +2055,6 @@ def checkpoint_state_to_git() -> bool:
     git("commit", "-m", "chore: checkpoint stato notizie")
     git("pull", "--rebase", "origin", target_ref)
     git("push", "origin", f"HEAD:{target_ref}")
-    print("[STATO] checkpoint pubblicato su GitHub.")
     return True
 
 
@@ -2132,10 +2141,12 @@ def collect_articles(
                 ET.ParseError,
             ) as error:
                 errors.append(f"{source}: {error}")
-                print(f"[{source}] errore durante il recupero: {error}")
+                print(
+                    f"[FONTE] {source}: errore "
+                    f"({compact_log_text(error, 70)})"
+                )
                 continue
 
-            print(f"[{source}] notizie di oggi trovate: {len(source_articles)}")
             for article in sorted(
                 source_articles,
                 key=lambda item: (item.published, item.source, item.title),
@@ -2157,7 +2168,7 @@ def deliver_article(
     session: requests.Session,
     telegram: TelegramClient,
     preview_resolver: PreviewImageResolver,
-) -> None:
+) -> DeliveryReceipt:
     """Invia una singola notizia; il chiamante aggiorna poi la deduplica."""
     touch_worker_heartbeat()
     image_urls = preview_resolver.resolve_all(article.url, article.all_image_urls)
@@ -2180,8 +2191,8 @@ def deliver_article(
                 else []
             )
             print(
-                f"[NEWS] video non preparabile ({error}): "
-                "uso il fallback statico."
+                "[MEDIA] video non pronto; uso fallback "
+                f"({compact_log_text(error, 55)})"
             )
             receipt = telegram.send_article(
                 article,
@@ -2193,21 +2204,11 @@ def deliver_article(
             photo_urls=image_urls,
         )
     touch_worker_heartbeat()
-    print(
-        f"[NEWS] notificato da {article.source}: {article.title} "
-        f"(modalità={receipt.mode}, "
-        f"message_id={receipt.message_id or 'non disponibile'})"
-    )
     if receipt.photo_fallback:
-        print(
-            "[NEWS] foto/album non accettati da Telegram: "
-            f"inviato in modalità {receipt.mode}."
-        )
+        print(f"[MEDIA] foto/album in fallback: {receipt.mode}")
     if receipt.video_fallback:
-        print(
-            "[NEWS] video non accettato da Telegram: "
-            f"inviato in modalità {receipt.mode}."
-        )
+        print(f"[MEDIA] video in fallback: {receipt.mode}")
+    return receipt
 
 
 def run(
@@ -2289,11 +2290,7 @@ def _run_cycle(
     seen_list = load_seen(today)
     seen = set(seen_list)
     journal = ArticleJournal(PENDING_FILE)
-    cleaned = journal.discard_all(seen)
-    if cleaned:
-        print(f"[STATO] rimosse {cleaned} notizie già inviate dal journal.")
-    print(f"[STATO] articoli già notificati: {len(seen)}")
-    print(f"[STATO] articoli in attesa: {len(journal.entries)}")
+    journal.discard_all(seen)
 
     baseline_if_missing = os.environ.get(
         "BASELINE_IF_NO_STATE",
@@ -2316,10 +2313,7 @@ def _run_cycle(
         save_seen(seen_list, today)
         journal.clear()
         checkpoint_state_to_git()
-        print(
-            "[STATO] cache iniziale assente: "
-            f"registrate {len(seen_list)} notizie correnti senza reinviarle."
-        )
+        print(f"[STATO] inizializzato senza reinvii: {len(seen_list)} notizie")
         return 0
 
     telegram = TelegramClient(token, chat_id)
@@ -2334,7 +2328,12 @@ def _run_cycle(
             return
         attempted.add(key)
         try:
-            deliver_article(article, session, telegram, preview_resolver)
+            receipt = deliver_article(
+                article,
+                session,
+                telegram,
+                preview_resolver,
+            )
         except (
             TelegramDeliveryError,
             requests.RequestException,
@@ -2342,8 +2341,9 @@ def _run_cycle(
             ValueError,
         ) as error:
             print(
-                f"[NEWS] invio rimandato al prossimo ciclo: "
-                f"{article.source} | {article.title} ({error})"
+                f"[INVIO] rimandato | {article.source} | "
+                f"{compact_log_text(article.title, 55)} | "
+                f"{compact_log_text(error, 55)}"
             )
             return
 
@@ -2353,6 +2353,11 @@ def _run_cycle(
         journal.remove(key)
         checkpoint_state_to_git()
         sent_count += 1
+        print(
+            f"[PUB] {article.source} | "
+            f"{compact_log_text(article.title, 65)} | "
+            f"{receipt.mode} #{receipt.message_id or '?'} | stato salvato"
+        )
         time.sleep(0.8)
 
     # Prima recupera eventuali consegne interrotte nel run precedente.
@@ -2364,11 +2369,7 @@ def _run_cycle(
     def publish_discovered(article: Article) -> None:
         if article.notification_key in seen:
             return
-        if journal.add(article):
-            print(
-                f"[STATO] salvata subito nel journal: "
-                f"{article.source} | {article.title}"
-            )
+        journal.add(article)
         try_delivery(article)
 
     collect_articles(
@@ -2380,10 +2381,6 @@ def _run_cycle(
     # non hanno prodotto una notifica Telegram riuscita.
     checkpoint_state_to_git()
 
-    if sent_count:
-        print(f"[NEWS] notifiche inviate nel ciclo: {sent_count}")
-    else:
-        print("[NEWS] nessuna nuova notizia di oggi.")
     return sent_count
 
 
@@ -2409,16 +2406,19 @@ def run_worker(
     cycle = 0
     touch_worker_heartbeat()
     print(
-        f"[WORKER] avvio per circa {duration_seconds:.0f} secondi; "
-        f"intervallo tra i cicli: {poll_interval_seconds:.0f} secondi."
+        f"[WORKER] attivo {duration_seconds / 60:.0f} min | "
+        f"pausa {poll_interval_seconds:.0f}s dopo ogni ciclo"
     )
 
     while monotonic() < deadline:
         cycle += 1
         touch_worker_heartbeat()
-        print(f"[WORKER] ciclo {cycle} avviato.")
+        cycle_started = monotonic()
+        sent_count = 0
+        outcome = "ok"
+        print(f"\n[CICLO {cycle}] inizio")
         try:
-            run(
+            sent_count = run(
                 dry_run=dry_run,
                 include_yesterday=include_yesterday,
                 preview_messages=preview_messages,
@@ -2426,19 +2426,27 @@ def run_worker(
         except CollectionError as error:
             # Un giro completamente fallito non deve spegnere il worker:
             # le fonti vengono ritentate dopo il normale intervallo.
-            print(f"[WORKER] ciclo {cycle} non riuscito: {error}")
+            outcome = f"errore: {compact_log_text(error, 70)}"
             checkpoint_state_to_git()
 
         touch_worker_heartbeat()
+        elapsed = monotonic() - cycle_started
         remaining = deadline - monotonic()
         if remaining <= 0:
+            print(
+                f"[CICLO {cycle}] fine | nuove={sent_count} | "
+                f"{outcome} | {elapsed:.1f}s"
+            )
             break
         wait_seconds = min(poll_interval_seconds, remaining)
-        print(f"[WORKER] prossimo ciclo tra {wait_seconds:.0f} secondi.")
+        print(
+            f"[CICLO {cycle}] fine | nuove={sent_count} | {outcome} | "
+            f"{elapsed:.1f}s | pausa={wait_seconds:.0f}s"
+        )
         sleeper(wait_seconds)
         touch_worker_heartbeat()
 
-    print(f"[WORKER] durata completata dopo {cycle} cicli; arresto pulito.")
+    print(f"\n[WORKER] fine | cicli={cycle} | arresto pulito")
 
 
 def main() -> None:
@@ -2478,7 +2486,7 @@ def main() -> None:
         "--interval-seconds",
         type=float,
         default=DEFAULT_POLL_INTERVAL_SECONDS,
-        help="Pausa tra due cicli (predefinita: 30 secondi).",
+        help="Pausa dopo ogni ciclo (predefinita: 15 secondi).",
     )
     args = parser.parse_args()
     if args.preview_messages and not args.dry_run:
