@@ -39,6 +39,72 @@ class FakeSession:
 
 
 class XTests(unittest.TestCase):
+    def test_first_valid_mirror_stops_fallback_requests(self):
+        accounts = (
+            {
+                "handle": "Reporter",
+                "filter_juventus": True,
+                "include_reposts": False,
+            },
+        )
+        mirrors = (
+            "https://first.example/{handle}/rss",
+            "https://second.example/{handle}/rss",
+        )
+
+        with (
+            patch.object(bot, "X_ACCOUNTS", accounts),
+            patch.object(bot, "X_RSS_MIRROR_TEMPLATES", mirrors),
+            patch.object(
+                bot.requests,
+                "get",
+                return_value=FeedResponse(),
+            ) as request,
+        ):
+            articles = bot.scrape_x_profiles(
+                FakeSession(),
+                {date(2026, 7, 31)},
+            )
+
+        self.assertEqual(len(articles), 1)
+        request.assert_called_once()
+        self.assertEqual(
+            request.call_args.args[0],
+            "https://first.example/Reporter/rss",
+        )
+
+    def test_invalid_mirror_uses_the_next_fallback(self):
+        invalid_response = FeedResponse()
+        invalid_response.content = b"<html>not an RSS feed"
+        accounts = (
+            {
+                "handle": "Reporter",
+                "filter_juventus": True,
+                "include_reposts": False,
+            },
+        )
+        mirrors = (
+            "https://invalid.example/{handle}/rss",
+            "https://valid.example/{handle}/rss",
+        )
+
+        with (
+            patch.object(bot, "X_ACCOUNTS", accounts),
+            patch.object(bot, "X_RSS_MIRROR_TEMPLATES", mirrors),
+            patch.object(
+                bot.requests,
+                "get",
+                side_effect=[invalid_response, FeedResponse()],
+            ) as request,
+        ):
+            articles = bot.scrape_x_profiles(
+                FakeSession(),
+                {date(2026, 7, 31)},
+            )
+
+        self.assertEqual(len(articles), 1)
+        self.assertEqual(request.call_count, 2)
+
     def test_clean_x_text_removes_only_hash_and_at_symbols(self):
         self.assertEqual(
             bot.clean_x_text("#Juventus con @Reporter: 2-1!"),
@@ -91,6 +157,41 @@ class XTests(unittest.TestCase):
         )
         self.assertNotIn("#", articles[0].title)
         self.assertNotIn("@", articles[0].title)
+
+    def test_scraper_excludes_repost_format_used_by_fallback_mirrors(self):
+        repost_feed = b"""<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+<rss version=\"2.0\"><channel><item>
+  <title>RT @AlfredoPedulla: Juventus sul mercato</title>
+  <pubDate>Fri, 31 Jul 2026 10:00:00 GMT</pubDate>
+  <guid>2083000000000000099</guid>
+  <link>https://nitter.example/Reporter/status/2083000000000000099</link>
+</item></channel></rss>
+"""
+        response = FeedResponse()
+        response.content = repost_feed
+        accounts = (
+            {
+                "handle": "Reporter",
+                "filter_juventus": True,
+                "include_reposts": False,
+            },
+        )
+
+        with (
+            patch.object(bot, "X_ACCOUNTS", accounts),
+            patch.object(
+                bot,
+                "X_RSS_MIRROR_TEMPLATES",
+                ("https://nitter.example/{handle}/rss",),
+            ),
+            patch.object(bot.requests, "get", return_value=response),
+        ):
+            articles = bot.scrape_x_profiles(
+                FakeSession(),
+                {date(2026, 7, 31)},
+            )
+
+        self.assertEqual(articles, [])
 
     def test_native_x_video_is_resolved_to_telegram_sized_mp4(self):
         video_feed = b"""<?xml version=\"1.0\" encoding=\"UTF-8\"?>

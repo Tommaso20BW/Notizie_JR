@@ -42,6 +42,7 @@ from telegram_notifier import (
     TELEGRAM_MAX_CAPTION_LENGTH,
     TELEGRAM_MAX_MESSAGE_LENGTH,
     TelegramClient,
+    TelegramDeliveryError,
     format_article_message,
 )
 from video_media import VideoPreparationError, prepare_telegram_video
@@ -65,6 +66,9 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 STATE_FILE = SCRIPT_DIR / ".seen_juve_press_news.json"
 PENDING_FILE = SCRIPT_DIR / ".pending_juve_press_news.json"
 MAX_SEEN = 2000
+SOURCE_MAX_WORKERS = 6
+DEFAULT_WORKER_DURATION_SECONDS = 55 * 60
+DEFAULT_POLL_INTERVAL_SECONDS = 30
 
 HEADERS = {
     "User-Agent": (
@@ -164,6 +168,7 @@ X_MEDIA_API_TIMEOUT_SECONDS = 12
 TELEGRAM_REMOTE_VIDEO_TARGET_BYTES = 18_000_000
 X_STATUS_PATH_RE = re.compile(r"^/([A-Za-z0-9_]+)/status/(\d+)$")
 X_HASHTAG_RE = re.compile(r"#(\w+)", re.UNICODE)
+X_REPOST_RE = re.compile(r"^RT(?:\s+by)?\s+@", re.IGNORECASE)
 X_MARKER_TRANSLATION = str.maketrans("", "", "#@")
 
 SKY_MONTH_NAMES = {
@@ -253,6 +258,10 @@ class Article:
         if self.image_url:
             return (self.image_url,)
         return ()
+
+
+class CollectionError(RuntimeError):
+    """Errore transitorio quando nessuna fonte risponde durante un ciclo."""
 
 
 def normalize_url(url: str) -> str:
@@ -1599,6 +1608,27 @@ def _download_x_feed(
     return response.content
 
 
+def _download_first_x_feed(
+    handle: str,
+    headers: dict[str, str],
+) -> ET.Element | None:
+    """Usa i mirror come fallback e si ferma al primo feed RSS valido."""
+    for mirror_template in X_RSS_MIRROR_TEMPLATES:
+        content = _download_x_feed(
+            mirror_template.format(handle=handle),
+            headers,
+        )
+        if content is None:
+            continue
+        try:
+            root = ET.fromstring(content)
+        except ET.ParseError:
+            continue
+        if root.find("channel") is not None:
+            return root
+    return None
+
+
 def _rss_item_images(item: ET.Element, page_url: str = "") -> list[str]:
     """Estrae tutte le foto da media:content/media:thumbnail, enclosure ed
     eventuale HTML del feed RSS, mantenendo l'ordine e senza duplicati."""
@@ -1781,35 +1811,28 @@ def scrape_x_profiles(
     session: requests.Session,
     requested_dates: set[date],
 ) -> list[Article]:
-    """Recupera i post X odierni da più mirror RSS indipendenti."""
+    """Recupera i post X usando, per account, il primo mirror RSS valido."""
+    if not X_ACCOUNTS:
+        return []
     articles: list[Article] = []
     keys_done: set[str] = set()
-    feed_sources = [
-        (
-            account,
-            mirror_template.format(handle=account["handle"]),
-        )
-        for account in X_ACCOUNTS
-        for mirror_template in X_RSS_MIRROR_TEMPLATES
-    ]
     headers = dict(session.headers)
 
     with ThreadPoolExecutor(
-        max_workers=min(6, len(feed_sources)),
+        max_workers=min(SOURCE_MAX_WORKERS, len(X_ACCOUNTS)),
     ) as executor:
         future_sources = {
-            executor.submit(_download_x_feed, feed_url, headers): account
-            for account, feed_url in feed_sources
+            executor.submit(
+                _download_first_x_feed,
+                account["handle"],
+                headers,
+            ): account
+            for account in X_ACCOUNTS
         }
         for future in as_completed(future_sources):
             account = future_sources[future]
-            content = future.result()
-            if content is None:
-                continue
-
-            try:
-                root = ET.fromstring(content)
-            except ET.ParseError:
+            root = future.result()
+            if root is None:
                 continue
             channel = root.find("channel")
             if channel is None:
@@ -1827,7 +1850,7 @@ def scrape_x_profiles(
                 # Per gli account indicati dall'utente si mantengono anche i repost.
                 if (
                     not account["include_reposts"]
-                    and title.startswith("RT by @")
+                    and X_REPOST_RE.match(title)
                 ):
                     continue
                 if (
@@ -1974,12 +1997,8 @@ def article_from_journal(entry: dict) -> Article:
         ) from error
 
 
-def collect_articles(
-    session: requests.Session,
-    requested_dates: set[date],
-    on_article: Callable[[Article], None] | None = None,
-) -> tuple[list[Article], list[str]]:
-    scrapers = (
+def _article_scrapers() -> tuple[tuple[str, Callable], ...]:
+    return (
         ("Tuttosport", scrape_tuttosport),
         ("Corriere dello Sport", scrape_corriere),
         ("La Gazzetta dello Sport", scrape_gazzetta),
@@ -1992,88 +2011,160 @@ def collect_articles(
         ("YouTube", scrape_youtube_channels),
         ("X", scrape_x_profiles),
     )
+
+
+def _run_source_scraper(
+    scraper: Callable,
+    headers: dict[str, str],
+    requested_dates: set[date],
+) -> list[Article]:
+    # requests.Session non garantisce sicurezza tra thread: ogni fonte usa
+    # una sessione propria, conservando gli header comuni del bot.
+    with requests.Session() as source_session:
+        source_session.headers.update(headers)
+        return scraper(source_session, requested_dates)
+
+
+def collect_articles(
+    session: requests.Session,
+    requested_dates: set[date],
+    on_article: Callable[[Article], None] | None = None,
+) -> tuple[list[Article], list[str]]:
+    """Controlla le fonti in parallelo e consegna subito quelle completate."""
+    scrapers = _article_scrapers()
     articles_by_key: dict[str, Article] = {}
     errors: list[str] = []
+    headers = dict(session.headers)
 
-    for source, scraper in scrapers:
-        try:
-            source_articles = scraper(session, requested_dates)
-        except (
-            requests.RequestException,
-            ValueError,
-            KeyError,
-            ET.ParseError,
-        ) as error:
-            errors.append(f"{source}: {error}")
-            print(f"[{source}] errore durante il recupero: {error}")
-            continue
-
-        print(f"[{source}] notizie di oggi trovate: {len(source_articles)}")
-        for article in source_articles:
-            if article.notification_key in articles_by_key:
+    with ThreadPoolExecutor(
+        max_workers=min(SOURCE_MAX_WORKERS, len(scrapers)),
+    ) as executor:
+        future_sources = {
+            executor.submit(
+                _run_source_scraper,
+                scraper,
+                headers,
+                requested_dates,
+            ): source
+            for source, scraper in scrapers
+        }
+        for future in as_completed(future_sources):
+            source = future_sources[future]
+            try:
+                source_articles = future.result()
+            except (
+                requests.RequestException,
+                ValueError,
+                KeyError,
+                ET.ParseError,
+            ) as error:
+                errors.append(f"{source}: {error}")
+                print(f"[{source}] errore durante il recupero: {error}")
                 continue
-            articles_by_key[article.notification_key] = article
-            if on_article is not None:
-                on_article(article)
+
+            print(f"[{source}] notizie di oggi trovate: {len(source_articles)}")
+            for article in sorted(
+                source_articles,
+                key=lambda item: (item.published, item.source, item.title),
+            ):
+                if article.notification_key in articles_by_key:
+                    continue
+                articles_by_key[article.notification_key] = article
+                if on_article is not None:
+                    on_article(article)
 
     if len(errors) == len(scrapers):
-        raise RuntimeError("Nessuna fonte è stata recuperata correttamente.")
+        raise CollectionError("Nessuna fonte è stata recuperata correttamente.")
 
     return list(articles_by_key.values()), errors
+
+
+def deliver_article(
+    article: Article,
+    session: requests.Session,
+    telegram: TelegramClient,
+    preview_resolver: PreviewImageResolver,
+) -> None:
+    """Invia una singola notizia; il chiamante aggiorna poi la deduplica."""
+    image_urls = preview_resolver.resolve_all(article.url, article.all_image_urls)
+    if article.video_url:
+        try:
+            with prepare_telegram_video(
+                session,
+                article.video_url,
+            ) as video_file:
+                receipt = telegram.send_article(
+                    article,
+                    video_file_path=str(video_file),
+                    video_thumbnail_url=article.video_thumbnail_url,
+                    photo_urls=image_urls,
+                )
+        except VideoPreparationError as error:
+            fallback_images = image_urls or (
+                [article.video_thumbnail_url]
+                if article.video_thumbnail_url
+                else []
+            )
+            print(
+                f"[NEWS] video non preparabile ({error}): "
+                "uso il fallback statico."
+            )
+            receipt = telegram.send_article(
+                article,
+                photo_urls=fallback_images,
+            )
+    else:
+        receipt = telegram.send_article(
+            article,
+            photo_urls=image_urls,
+        )
+    print(
+        f"[NEWS] notificato da {article.source}: {article.title} "
+        f"(modalità={receipt.mode}, "
+        f"message_id={receipt.message_id or 'non disponibile'})"
+    )
+    if receipt.photo_fallback:
+        print(
+            "[NEWS] foto/album non accettati da Telegram: "
+            f"inviato in modalità {receipt.mode}."
+        )
+    if receipt.video_fallback:
+        print(
+            "[NEWS] video non accettato da Telegram: "
+            f"inviato in modalità {receipt.mode}."
+        )
 
 
 def run(
     dry_run: bool = False,
     include_yesterday: bool = False,
     preview_messages: bool = False,
-) -> None:
+) -> int:
+    with requests.Session() as session:
+        session.headers.update(HEADERS)
+        return _run_cycle(
+            session,
+            dry_run=dry_run,
+            include_yesterday=include_yesterday,
+            preview_messages=preview_messages,
+        )
+
+
+def _run_cycle(
+    session: requests.Session,
+    *,
+    dry_run: bool = False,
+    include_yesterday: bool = False,
+    preview_messages: bool = False,
+) -> int:
     today = datetime.now(ROME).date()
     requested_dates = {today}
     if include_yesterday:
         requested_dates.add(today - timedelta(days=1))
-    session = requests.Session()
-    session.headers.update(HEADERS)
 
     if dry_run:
         articles, _ = collect_articles(session, requested_dates)
-    else:
-        token = os.environ.get("TELEGRAM_TOKEN")
-        chat_id = os.environ.get("CHAT_ID")
-        if not token or not chat_id:
-            raise RuntimeError(
-                "Secret mancanti: configura TELEGRAM_TOKEN e CHAT_ID."
-            )
-
-        seen_list = load_seen(today)
-        seen = set(seen_list)
-        journal = ArticleJournal(PENDING_FILE)
-        cleaned = journal.discard_all(seen)
-        if cleaned:
-            print(f"[STATO] rimosse {cleaned} notizie già inviate dal journal.")
-        print(f"[STATO] articoli già notificati: {len(seen)}")
-        print(f"[STATO] articoli in attesa: {len(journal.entries)}")
-
-        def save_discovered(article: Article) -> None:
-            if article.notification_key in seen:
-                return
-            if journal.add(article):
-                print(
-                    f"[STATO] salvata subito nel journal: "
-                    f"{article.source} | {article.title}"
-                )
-
-        articles, _ = collect_articles(
-            session,
-            requested_dates,
-            on_article=save_discovered,
-        )
-
-
-    # I siti mostrano prima le notizie più recenti. Telegram le riceve invece
-    # dalla più vecchia alla più nuova, per mantenere l'ordine cronologico.
-    articles.sort(key=lambda item: (item.published, item.source, item.title))
-
-    if dry_run:
+        articles.sort(key=lambda item: (item.published, item.source, item.title))
         preview_resolver = PreviewImageResolver(session)
         selected_days = ", ".join(
             requested_date.isoformat()
@@ -2110,13 +2201,39 @@ def run(
                     )
                 )
                 print("--- FINE ANTEPRIMA ---\n")
-        return
+        return 0
+
+    token = os.environ.get("TELEGRAM_TOKEN")
+    chat_id = os.environ.get("CHAT_ID")
+    if not token or not chat_id:
+        raise RuntimeError(
+            "Secret mancanti: configura TELEGRAM_TOKEN e CHAT_ID."
+        )
+
+    state_was_missing = not STATE_FILE.exists()
+    seen_list = load_seen(today)
+    seen = set(seen_list)
+    journal = ArticleJournal(PENDING_FILE)
+    cleaned = journal.discard_all(seen)
+    if cleaned:
+        print(f"[STATO] rimosse {cleaned} notizie già inviate dal journal.")
+    print(f"[STATO] articoli già notificati: {len(seen)}")
+    print(f"[STATO] articoli in attesa: {len(journal.entries)}")
 
     baseline_if_missing = os.environ.get(
         "BASELINE_IF_NO_STATE",
         "",
     ).lower() in {"1", "true", "yes"}
-    if baseline_if_missing and not STATE_FILE.exists():
+    if baseline_if_missing and state_was_missing:
+        def save_baseline_article(article: Article) -> None:
+            if article.notification_key not in seen:
+                journal.add(article)
+
+        collect_articles(
+            session,
+            requested_dates,
+            on_article=save_baseline_article,
+        )
         seen_list = [
             str(entry["notification_key"])
             for entry in journal.entries
@@ -2127,73 +2244,116 @@ def run(
             "[STATO] cache iniziale assente: "
             f"registrate {len(seen_list)} notizie correnti senza reinviarle."
         )
-        return
-
-    pending = [article_from_journal(entry) for entry in journal.entries]
-    pending.sort(key=lambda item: (item.published, item.source, item.title))
-    if not pending:
-        print("[NEWS] nessuna nuova notizia di oggi.")
-        return
+        return 0
 
     telegram = TelegramClient(token, chat_id)
     preview_resolver = PreviewImageResolver(session)
+    attempted: set[str] = set()
     sent_count = 0
-    for article in pending:
-        image_urls = preview_resolver.resolve_all(article.url, article.all_image_urls)
-        if article.video_url:
-            try:
-                with prepare_telegram_video(
-                    session,
-                    article.video_url,
-                ) as video_file:
-                    receipt = telegram.send_article(
-                        article,
-                        video_file_path=str(video_file),
-                        video_thumbnail_url=article.video_thumbnail_url,
-                        photo_urls=image_urls,
-                    )
-            except VideoPreparationError as error:
-                fallback_images = image_urls or (
-                    [article.video_thumbnail_url]
-                    if article.video_thumbnail_url
-                    else []
-                )
-                print(
-                    f"[NEWS] video non preparabile ({error}): "
-                    "uso il fallback statico."
-                )
-                receipt = telegram.send_article(
-                    article,
-                    photo_urls=fallback_images,
-                )
-        else:
-            receipt = telegram.send_article(
-                article,
-                photo_urls=image_urls,
-            )
-        print(
-            f"[NEWS] notificato da {article.source}: {article.title} "
-            f"(modalità={receipt.mode}, "
-            f"message_id={receipt.message_id or 'non disponibile'})"
-        )
-        if receipt.photo_fallback:
+
+    def try_delivery(article: Article) -> None:
+        nonlocal sent_count
+        key = article.notification_key
+        if key in seen or key in attempted:
+            return
+        attempted.add(key)
+        try:
+            deliver_article(article, session, telegram, preview_resolver)
+        except (
+            TelegramDeliveryError,
+            requests.RequestException,
+            OSError,
+            ValueError,
+        ) as error:
             print(
-                "[NEWS] foto/album non accettati da Telegram: "
-                f"inviato in modalità {receipt.mode}."
+                f"[NEWS] invio rimandato al prossimo ciclo: "
+                f"{article.source} | {article.title} ({error})"
             )
-        if receipt.video_fallback:
-            print(
-                "[NEWS] video non accettato da Telegram: "
-                f"inviato in modalità {receipt.mode}."
-            )
-        seen.add(article.notification_key)
-        seen_list.append(article.notification_key)
+            return
+
+        seen.add(key)
+        seen_list.append(key)
         save_seen(seen_list, today)
-        journal.remove(article.notification_key)
+        journal.remove(key)
         sent_count += 1
         time.sleep(0.8)
 
-    print(f"[NEWS] notifiche inviate: {sent_count}")
+    # Prima recupera eventuali consegne interrotte nel run precedente.
+    pending = [article_from_journal(entry) for entry in journal.entries]
+    pending.sort(key=lambda item: (item.published, item.source, item.title))
+    for article in pending:
+        try_delivery(article)
+
+    def publish_discovered(article: Article) -> None:
+        if article.notification_key in seen:
+            return
+        if journal.add(article):
+            print(
+                f"[STATO] salvata subito nel journal: "
+                f"{article.source} | {article.title}"
+            )
+        try_delivery(article)
+
+    collect_articles(
+        session,
+        requested_dates,
+        on_article=publish_discovered,
+    )
+
+    if sent_count:
+        print(f"[NEWS] notifiche inviate nel ciclo: {sent_count}")
+    else:
+        print("[NEWS] nessuna nuova notizia di oggi.")
+    return sent_count
+
+
+def run_worker(
+    duration_seconds: float = DEFAULT_WORKER_DURATION_SECONDS,
+    poll_interval_seconds: float = DEFAULT_POLL_INTERVAL_SECONDS,
+    *,
+    dry_run: bool = False,
+    include_yesterday: bool = False,
+    preview_messages: bool = False,
+    clock: Callable[[], float] | None = None,
+    sleep: Callable[[float], None] | None = None,
+) -> None:
+    """Ripete i controlli fino alla scadenza, poi termina senza forzature."""
+    if duration_seconds <= 0:
+        raise ValueError("La durata del worker deve essere maggiore di zero.")
+    if poll_interval_seconds <= 0:
+        raise ValueError("L'intervallo del worker deve essere maggiore di zero.")
+
+    monotonic = clock or time.monotonic
+    sleeper = sleep or time.sleep
+    deadline = monotonic() + duration_seconds
+    cycle = 0
+    print(
+        f"[WORKER] avvio per circa {duration_seconds:.0f} secondi; "
+        f"intervallo tra i cicli: {poll_interval_seconds:.0f} secondi."
+    )
+
+    while monotonic() < deadline:
+        cycle += 1
+        print(f"[WORKER] ciclo {cycle} avviato.")
+        try:
+            run(
+                dry_run=dry_run,
+                include_yesterday=include_yesterday,
+                preview_messages=preview_messages,
+            )
+        except CollectionError as error:
+            # Un giro completamente fallito non deve spegnere il worker:
+            # le fonti vengono ritentate dopo il normale intervallo.
+            print(f"[WORKER] ciclo {cycle} non riuscito: {error}")
+
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            break
+        wait_seconds = min(poll_interval_seconds, remaining)
+        print(f"[WORKER] prossimo ciclo tra {wait_seconds:.0f} secondi.")
+        sleeper(wait_seconds)
+
+    print(f"[WORKER] durata completata dopo {cycle} cicli; arresto pulito.")
 
 
 def main() -> None:
@@ -2218,14 +2378,40 @@ def main() -> None:
             "a Telegram."
         ),
     )
+    parser.add_argument(
+        "--worker",
+        action="store_true",
+        help="Ripete i controlli fino alla durata configurata.",
+    )
+    parser.add_argument(
+        "--duration-seconds",
+        type=float,
+        default=DEFAULT_WORKER_DURATION_SECONDS,
+        help="Durata totale del worker (predefinita: 3300 secondi).",
+    )
+    parser.add_argument(
+        "--interval-seconds",
+        type=float,
+        default=DEFAULT_POLL_INTERVAL_SECONDS,
+        help="Pausa tra due cicli (predefinita: 30 secondi).",
+    )
     args = parser.parse_args()
     if args.preview_messages and not args.dry_run:
         parser.error("--preview-messages richiede --dry-run")
-    run(
-        dry_run=args.dry_run,
-        include_yesterday=args.include_yesterday,
-        preview_messages=args.preview_messages,
-    )
+    if args.worker:
+        run_worker(
+            duration_seconds=args.duration_seconds,
+            poll_interval_seconds=args.interval_seconds,
+            dry_run=args.dry_run,
+            include_yesterday=args.include_yesterday,
+            preview_messages=args.preview_messages,
+        )
+    else:
+        run(
+            dry_run=args.dry_run,
+            include_yesterday=args.include_yesterday,
+            preview_messages=args.preview_messages,
+        )
 
 
 if __name__ == "__main__":
