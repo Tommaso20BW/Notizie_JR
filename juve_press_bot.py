@@ -2416,7 +2416,6 @@ def run_worker(
         cycle_started = monotonic()
         sent_count = 0
         outcome = "ok"
-        print(f"\n[CICLO {cycle}] inizio")
         try:
             sent_count = run(
                 dry_run=dry_run,
@@ -2434,13 +2433,13 @@ def run_worker(
         remaining = deadline - monotonic()
         if remaining <= 0:
             print(
-                f"[CICLO {cycle}] fine | nuove={sent_count} | "
+                f"[CICLO {cycle}] nuove={sent_count} | "
                 f"{outcome} | {elapsed:.1f}s"
             )
             break
         wait_seconds = min(poll_interval_seconds, remaining)
         print(
-            f"[CICLO {cycle}] fine | nuove={sent_count} | {outcome} | "
+            f"[CICLO {cycle}] nuove={sent_count} | {outcome} | "
             f"{elapsed:.1f}s | pausa={wait_seconds:.0f}s"
         )
         sleeper(wait_seconds)
