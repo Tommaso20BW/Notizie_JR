@@ -2,6 +2,9 @@ name: Notizie Web
 
 on:
   workflow_dispatch:
+  # Rete di sicurezza: mantiene sempre un run di riserva in coda su main.
+  schedule:
+    - cron: "*/5 * * * *"
 
 # Un solo worker per branch. Un avvio manuale o automatico resta in coda e
 # non interrompe mai quello che sta salvando lo stato corrente.
@@ -23,6 +26,7 @@ jobs:
       - name: Scarica il repository
         uses: actions/checkout@v6
         with:
+          ref: ${{ github.ref_name }}
           fetch-depth: 0
 
       - name: Configura Python
@@ -35,17 +39,61 @@ jobs:
       - name: Installa le dipendenze dalla cache pip
         run: python -m pip install --disable-pip-version-check -r requirements-juve-press.txt
 
+      - name: Configura i checkpoint dello stato
+        run: |
+          git config user.name "notizie-jr-bot[bot]"
+          git config user.email "notizie-jr-bot[bot]@users.noreply.github.com"
+
       - name: Controlla e pubblica le notizie per circa un'ora
         id: news_worker
-        run: >-
-          python -u juve_press_bot.py
-          --worker
-          --duration-seconds 3300
-          --interval-seconds 30
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          touch "$WORKER_HEARTBEAT_FILE"
+          setsid python -u juve_press_bot.py \
+            --worker \
+            --duration-seconds 3300 \
+            --interval-seconds 30 &
+          BOT_PID=$!
+
+          # Se per cinque minuti il bot non completa nessun progresso, termina
+          # l'intero gruppo di processi. I passi successivi salvano lo stato e
+          # accodano immediatamente un worker sostitutivo.
+          (
+            while kill -0 "$BOT_PID" 2>/dev/null; do
+              sleep 30
+              if ! kill -0 "$BOT_PID" 2>/dev/null; then
+                exit 0
+              fi
+
+              NOW="$(date +%s)"
+              LAST_HEARTBEAT="$(stat -c %Y "$WORKER_HEARTBEAT_FILE")"
+              if (( NOW - LAST_HEARTBEAT > 300 )); then
+                echo "Worker bloccato: nessun progresso da oltre 5 minuti."
+                kill -TERM -- "-$BOT_PID" 2>/dev/null || true
+                sleep 10
+                kill -KILL -- "-$BOT_PID" 2>/dev/null || true
+                exit 0
+              fi
+            done
+          ) &
+          WATCHDOG_PID=$!
+
+          set +e
+          wait "$BOT_PID"
+          BOT_STATUS=$?
+          kill "$WATCHDOG_PID" 2>/dev/null || true
+          wait "$WATCHDOG_PID" 2>/dev/null || true
+          set -e
+
+          exit "$BOT_STATUS"
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
           BASELINE_IF_NO_STATE: "true"
+          CHECKPOINT_STATE_TO_GIT: "true"
+          WORKER_HEARTBEAT_FILE: ${{ runner.temp }}/juve-press-worker-heartbeat
 
       - name: Salva lo stato per il worker successivo
         id: persist_state
@@ -56,24 +104,21 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [[ -z "$(git status --porcelain -- .seen_juve_press_news.json .pending_juve_press_news.json)" ]]; then
-            echo "Stato invariato: nessun commit necessario."
-            exit 0
+          if [[ -n "$(git status --porcelain -- .seen_juve_press_news.json .pending_juve_press_news.json)" ]]; then
+            git add .seen_juve_press_news.json .pending_juve_press_news.json
+            git commit -m "chore: aggiorna stato notizie"
+          else
+            echo "Nessuna modifica locale da aggiungere al checkpoint."
           fi
 
-          git config user.name "notizie-jr-bot[bot]"
-          git config user.email "notizie-jr-bot[bot]@users.noreply.github.com"
-          git add .seen_juve_press_news.json .pending_juve_press_news.json
-          git commit -m "chore: aggiorna stato notizie"
-
-          # Se nel frattempo il branch è avanzato, integra prima le modifiche.
+          # Pubblica anche eventuali checkpoint già committati dal bot ma non
+          # ancora arrivati al remote per un errore di rete transitorio.
           git pull --rebase origin "$TARGET_REF"
           git push origin "HEAD:$TARGET_REF"
 
       - name: Avvia il worker successivo
         if: >-
           always() &&
-          steps.news_worker.outcome == 'success' &&
           steps.persist_state.outcome == 'success'
         env:
           GH_TOKEN: ${{ github.token }}

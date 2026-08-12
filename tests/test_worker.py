@@ -1,6 +1,10 @@
+import os
+import subprocess
+import tempfile
 import threading
 import unittest
 from datetime import datetime, timezone
+from pathlib import Path
 from unittest.mock import patch
 
 import juve_press_bot as bot
@@ -30,6 +34,66 @@ class FakeClock:
 
 
 class WorkerTests(unittest.TestCase):
+    def test_heartbeat_file_is_refreshed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            heartbeat = Path(directory) / "heartbeat"
+            with patch.dict(
+                os.environ,
+                {bot.HEARTBEAT_FILE_ENV: str(heartbeat)},
+                clear=False,
+            ):
+                bot.touch_worker_heartbeat()
+
+            self.assertTrue(heartbeat.exists())
+
+    def test_git_checkpoint_commits_and_pushes_changed_state(self):
+        completed = [
+            subprocess.CompletedProcess([], 0, "", ""),
+            subprocess.CompletedProcess([], 1, "", ""),
+            subprocess.CompletedProcess([], 0, "", ""),
+            subprocess.CompletedProcess([], 0, "", ""),
+            subprocess.CompletedProcess([], 0, "", ""),
+        ]
+
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    bot.STATE_CHECKPOINT_ENV: "true",
+                    "GITHUB_REF_NAME": "main",
+                },
+                clear=True,
+            ),
+            patch.object(bot.subprocess, "run", side_effect=completed) as run,
+        ):
+            changed = bot.checkpoint_state_to_git()
+
+        self.assertTrue(changed)
+        commands = [call.args[0] for call in run.call_args_list]
+        self.assertEqual(commands[0][:3], ("git", "add", "--"))
+        self.assertIn(("git", "pull", "--rebase", "origin", "main"), commands)
+        self.assertEqual(commands[-1], ("git", "push", "origin", "HEAD:main"))
+
+    def test_checkpoint_is_disabled_outside_github_actions(self):
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch.object(bot.subprocess, "run") as run,
+        ):
+            changed = bot.checkpoint_state_to_git()
+
+        self.assertFalse(changed)
+        run.assert_not_called()
+
+    def test_workflow_has_watchdog_backup_and_failure_handoff(self):
+        workflow = (
+            bot.SCRIPT_DIR / ".github" / "workflows" / "juve-press-news.yml"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('cron: "*/5 * * * *"', workflow)
+        self.assertIn("NOW - LAST_HEARTBEAT > 300", workflow)
+        self.assertIn("steps.persist_state.outcome == 'success'", workflow)
+        self.assertNotIn("steps.news_worker.outcome == 'success'", workflow)
+
     def test_completed_source_is_published_while_slow_source_is_running(self):
         delivered = threading.Event()
 

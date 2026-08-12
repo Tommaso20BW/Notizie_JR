@@ -21,6 +21,7 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 from collections.abc import Callable, Iterable
@@ -69,6 +70,8 @@ MAX_SEEN = 2000
 SOURCE_MAX_WORKERS = 6
 DEFAULT_WORKER_DURATION_SECONDS = 55 * 60
 DEFAULT_POLL_INTERVAL_SECONDS = 30
+STATE_CHECKPOINT_ENV = "CHECKPOINT_STATE_TO_GIT"
+HEARTBEAT_FILE_ENV = "WORKER_HEARTBEAT_FILE"
 
 HEADERS = {
     "User-Agent": (
@@ -262,6 +265,21 @@ class Article:
 
 class CollectionError(RuntimeError):
     """Errore transitorio quando nessuna fonte risponde durante un ciclo."""
+
+
+class StateCheckpointError(RuntimeError):
+    """Errore durante il salvataggio immediato dello stato su GitHub."""
+
+
+def touch_worker_heartbeat() -> None:
+    """Aggiorna il battito usato dal watchdog del workflow GitHub Actions."""
+    raw_path = os.environ.get(HEARTBEAT_FILE_ENV, "").strip()
+    if not raw_path:
+        return
+    try:
+        Path(raw_path).touch()
+    except OSError as error:
+        print(f"[WORKER] heartbeat non aggiornabile: {error}")
 
 
 def normalize_url(url: str) -> str:
@@ -1977,6 +1995,60 @@ def save_seen(seen: Iterable[str], state_date: date) -> None:
     os.replace(temporary, STATE_FILE)
 
 
+def checkpoint_state_to_git() -> bool:
+    """Pubblica subito lo stato quando il bot gira dentro GitHub Actions."""
+    enabled = os.environ.get(STATE_CHECKPOINT_ENV, "").lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    if not enabled:
+        return False
+
+    target_ref = os.environ.get("GITHUB_REF_NAME", "").strip()
+    if not target_ref:
+        raise StateCheckpointError(
+            "GITHUB_REF_NAME mancante: impossibile salvare lo stato."
+        )
+
+    state_paths = (STATE_FILE.name, PENDING_FILE.name)
+
+    def git(*arguments: str, allowed_codes: tuple[int, ...] = (0,)):
+        touch_worker_heartbeat()
+        result = subprocess.run(
+            ("git", *arguments),
+            cwd=SCRIPT_DIR,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        touch_worker_heartbeat()
+        if result.returncode not in allowed_codes:
+            detail = (result.stderr or result.stdout or "errore sconosciuto").strip()
+            raise StateCheckpointError(
+                f"git {' '.join(arguments)} fallito: {detail}"
+            )
+        return result
+
+    git("add", "--", *state_paths)
+    diff = git(
+        "diff",
+        "--cached",
+        "--quiet",
+        "--",
+        *state_paths,
+        allowed_codes=(0, 1),
+    )
+    if diff.returncode == 0:
+        return False
+
+    git("commit", "-m", "chore: checkpoint stato notizie")
+    git("pull", "--rebase", "origin", target_ref)
+    git("push", "origin", f"HEAD:{target_ref}")
+    print("[STATO] checkpoint pubblicato su GitHub.")
+    return True
+
+
 def article_from_journal(entry: dict) -> Article:
     try:
         return Article(
@@ -2049,6 +2121,7 @@ def collect_articles(
             for source, scraper in scrapers
         }
         for future in as_completed(future_sources):
+            touch_worker_heartbeat()
             source = future_sources[future]
             try:
                 source_articles = future.result()
@@ -2086,6 +2159,7 @@ def deliver_article(
     preview_resolver: PreviewImageResolver,
 ) -> None:
     """Invia una singola notizia; il chiamante aggiorna poi la deduplica."""
+    touch_worker_heartbeat()
     image_urls = preview_resolver.resolve_all(article.url, article.all_image_urls)
     if article.video_url:
         try:
@@ -2118,6 +2192,7 @@ def deliver_article(
             article,
             photo_urls=image_urls,
         )
+    touch_worker_heartbeat()
     print(
         f"[NEWS] notificato da {article.source}: {article.title} "
         f"(modalità={receipt.mode}, "
@@ -2240,6 +2315,7 @@ def _run_cycle(
         ]
         save_seen(seen_list, today)
         journal.clear()
+        checkpoint_state_to_git()
         print(
             "[STATO] cache iniziale assente: "
             f"registrate {len(seen_list)} notizie correnti senza reinviarle."
@@ -2275,6 +2351,7 @@ def _run_cycle(
         seen_list.append(key)
         save_seen(seen_list, today)
         journal.remove(key)
+        checkpoint_state_to_git()
         sent_count += 1
         time.sleep(0.8)
 
@@ -2299,6 +2376,9 @@ def _run_cycle(
         requested_dates,
         on_article=publish_discovered,
     )
+    # Salva anche pending falliti, reset giornalieri o altre variazioni che
+    # non hanno prodotto una notifica Telegram riuscita.
+    checkpoint_state_to_git()
 
     if sent_count:
         print(f"[NEWS] notifiche inviate nel ciclo: {sent_count}")
@@ -2327,6 +2407,7 @@ def run_worker(
     sleeper = sleep or time.sleep
     deadline = monotonic() + duration_seconds
     cycle = 0
+    touch_worker_heartbeat()
     print(
         f"[WORKER] avvio per circa {duration_seconds:.0f} secondi; "
         f"intervallo tra i cicli: {poll_interval_seconds:.0f} secondi."
@@ -2334,6 +2415,7 @@ def run_worker(
 
     while monotonic() < deadline:
         cycle += 1
+        touch_worker_heartbeat()
         print(f"[WORKER] ciclo {cycle} avviato.")
         try:
             run(
@@ -2345,13 +2427,16 @@ def run_worker(
             # Un giro completamente fallito non deve spegnere il worker:
             # le fonti vengono ritentate dopo il normale intervallo.
             print(f"[WORKER] ciclo {cycle} non riuscito: {error}")
+            checkpoint_state_to_git()
 
+        touch_worker_heartbeat()
         remaining = deadline - monotonic()
         if remaining <= 0:
             break
         wait_seconds = min(poll_interval_seconds, remaining)
         print(f"[WORKER] prossimo ciclo tra {wait_seconds:.0f} secondi.")
         sleeper(wait_seconds)
+        touch_worker_heartbeat()
 
     print(f"[WORKER] durata completata dopo {cycle} cicli; arresto pulito.")
 
