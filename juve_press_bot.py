@@ -129,7 +129,7 @@ YOUTUBE_CHANNELS = (
         "channel_url": "https://www.youtube.com/@Juventus",
     },
     {
-        "source": "YouTube - Fabrizio Romano in Italiano",
+        "source": "YouTube - Fabrizio Romano",
         "channel_id": "UC7pT9g1-oKwVgbpipZODvBA",
         "channel_url": "https://www.youtube.com/@FabrizioRomanoItaliano",
     },
