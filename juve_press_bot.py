@@ -139,12 +139,17 @@ YOUTUBE_CHANNELS = (
         "channel_url": "https://www.youtube.com/@RomeoAgresti",
     },
 )
-YOUTUBE_FEED_TEMPLATE = (
-    "https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
-)
+YOUTUBE_API_URL = "https://www.googleapis.com/youtube/v3"
+YOUTUBE_API_KEY_ENV = "YOUTUBE_API_KEY"
+YOUTUBE_CHANNELS_PER_CYCLE_ENV = "YOUTUBE_CHANNELS_PER_CYCLE"
 YOUTUBE_SHORTS_URL_TEMPLATE = "https://www.youtube.com/shorts/{video_id}"
-ATOM_NS = "{http://www.w3.org/2005/Atom}"
-YOUTUBE_NS = "{http://www.youtube.com/xml/schemas/2015}"
+
+# Cache in memoria per tutta la durata del worker.
+# La playlist uploads di ogni canale non cambia durante il processo, quindi
+# basta recuperarla una sola volta tramite channels.list.
+YOUTUBE_UPLOAD_PLAYLISTS: dict[str, str] = {}
+YOUTUBE_SHORT_CACHE: dict[str, bool] = {}
+YOUTUBE_CHANNEL_CURSOR = 0
 X_ACCOUNTS = (
     {"handle": "juventusfc", "filter_juventus": False, "include_reposts": False},
     {"handle": "Glongari", "filter_juventus": True, "include_reposts": False},
@@ -1572,33 +1577,219 @@ def is_youtube_short(session: requests.Session, video_id: str) -> bool:
     return False
 
 
+def _youtube_api_get(
+    session: requests.Session,
+    endpoint: str,
+    params: dict[str, object],
+) -> dict:
+    """Chiama YouTube Data API v3 usando la chiave configurata nei Secrets."""
+    api_key = os.environ.get(YOUTUBE_API_KEY_ENV, "").strip()
+    if not api_key:
+        raise ValueError(
+            f"Secret {YOUTUBE_API_KEY_ENV} mancante: "
+            "YouTube Data API non configurata."
+        )
+
+    request_params = dict(params)
+    request_params["key"] = api_key
+    response = session.get(
+        f"{YOUTUBE_API_URL}/{endpoint}",
+        params=request_params,
+        timeout=30,
+    )
+
+    try:
+        response.raise_for_status()
+    except requests.HTTPError as error:
+        detail = ""
+        try:
+            payload = response.json()
+            api_error = payload.get("error") if isinstance(payload, dict) else None
+            if isinstance(api_error, dict):
+                message = str(api_error.get("message") or "").strip()
+                reasons = api_error.get("errors") or []
+                reason = ""
+                if reasons and isinstance(reasons[0], dict):
+                    reason = str(reasons[0].get("reason") or "").strip()
+                detail = " | ".join(
+                    part for part in (reason, message) if part
+                )
+        except ValueError:
+            pass
+
+        if detail:
+            raise requests.HTTPError(
+                f"YouTube Data API HTTP {response.status_code}: {detail}",
+                response=response,
+            ) from error
+        raise
+
+    payload = response.json()
+    if not isinstance(payload, dict):
+        raise ValueError("Risposta YouTube Data API non valida.")
+    return payload
+
+
+def _youtube_upload_playlists(
+    session: requests.Session,
+) -> dict[str, str]:
+    """Recupera e memorizza la playlist uploads dei canali configurati."""
+    if YOUTUBE_UPLOAD_PLAYLISTS:
+        return YOUTUBE_UPLOAD_PLAYLISTS
+
+    channel_ids = ",".join(
+        str(channel["channel_id"])
+        for channel in YOUTUBE_CHANNELS
+    )
+    payload = _youtube_api_get(
+        session,
+        "channels",
+        {
+            "part": "contentDetails",
+            "id": channel_ids,
+            "maxResults": len(YOUTUBE_CHANNELS),
+        },
+    )
+
+    for item in payload.get("items", []):
+        if not isinstance(item, dict):
+            continue
+        channel_id = str(item.get("id") or "").strip()
+        content_details = item.get("contentDetails") or {}
+        related = (
+            content_details.get("relatedPlaylists") or {}
+            if isinstance(content_details, dict)
+            else {}
+        )
+        uploads_id = (
+            str(related.get("uploads") or "").strip()
+            if isinstance(related, dict)
+            else ""
+        )
+        if channel_id and uploads_id:
+            YOUTUBE_UPLOAD_PLAYLISTS[channel_id] = uploads_id
+
+    missing = [
+        str(channel["source"])
+        for channel in YOUTUBE_CHANNELS
+        if str(channel["channel_id"]) not in YOUTUBE_UPLOAD_PLAYLISTS
+    ]
+    if missing:
+        print(
+            "[YOUTUBE API] playlist uploads non trovata per: "
+            + ", ".join(missing)
+        )
+
+    return YOUTUBE_UPLOAD_PLAYLISTS
+
+
+def _youtube_channels_for_cycle() -> tuple[dict, ...]:
+    """Ruota i canali per limitare il consumo della quota API giornaliera."""
+    global YOUTUBE_CHANNEL_CURSOR
+
+    channels = tuple(YOUTUBE_CHANNELS)
+    if not channels:
+        return ()
+
+    raw_count = os.environ.get(
+        YOUTUBE_CHANNELS_PER_CYCLE_ENV,
+        str(len(channels)),
+    ).strip()
+    try:
+        per_cycle = int(raw_count)
+    except ValueError:
+        per_cycle = len(channels)
+    per_cycle = max(1, min(per_cycle, len(channels)))
+
+    if per_cycle >= len(channels):
+        return channels
+
+    selected = tuple(
+        channels[(YOUTUBE_CHANNEL_CURSOR + offset) % len(channels)]
+        for offset in range(per_cycle)
+    )
+    YOUTUBE_CHANNEL_CURSOR = (
+        YOUTUBE_CHANNEL_CURSOR + per_cycle
+    ) % len(channels)
+    return selected
+
+
+def _is_youtube_short_cached(
+    session: requests.Session,
+    video_id: str,
+) -> bool:
+    """Evita di verificare continuamente lo stesso video sulla pagina Shorts."""
+    if video_id not in YOUTUBE_SHORT_CACHE:
+        YOUTUBE_SHORT_CACHE[video_id] = is_youtube_short(session, video_id)
+    return YOUTUBE_SHORT_CACHE[video_id]
+
+
 def scrape_youtube_channels(
     session: requests.Session,
     requested_dates: set[date],
 ) -> list[Article]:
-    """Recupera tutti i video pubblicati oggi dai canali configurati."""
+    """Recupera i nuovi video tramite YouTube Data API v3, senza feed RSS."""
+    upload_playlists = _youtube_upload_playlists(session)
     articles: list[Article] = []
     keys_done: set[str] = set()
+    channel_errors: list[Exception] = []
+    selected_channels = _youtube_channels_for_cycle()
 
-    for channel in YOUTUBE_CHANNELS:
-        feed_url = YOUTUBE_FEED_TEMPLATE.format(
-            channel_id=channel["channel_id"],
-        )
-        response = session.get(feed_url, timeout=30)
-        response.raise_for_status()
-        root = ET.fromstring(response.content)
+    for channel in selected_channels:
+        channel_id = str(channel["channel_id"])
+        playlist_id = upload_playlists.get(channel_id)
+        if not playlist_id:
+            continue
 
-        for entry in root.findall(f"{ATOM_NS}entry"):
-            title = entry.findtext(f"{ATOM_NS}title", default="").strip()
-            raw_published = entry.findtext(
-                f"{ATOM_NS}published",
-                default="",
+        try:
+            payload = _youtube_api_get(
+                session,
+                "playlistItems",
+                {
+                    "part": "snippet,contentDetails",
+                    "playlistId": playlist_id,
+                    "maxResults": 10,
+                },
             )
-            video_id = entry.findtext(
-                f"{YOUTUBE_NS}videoId",
-                default="",
+        except requests.RequestException as error:
+            channel_errors.append(error)
+            print(
+                f"[YOUTUBE API] {channel['source']}: "
+                f"{compact_log_text(error, 70)}"
             )
-            if not title or not raw_published or not video_id:
+            continue
+
+        for item in payload.get("items", []):
+            if not isinstance(item, dict):
+                continue
+            snippet = item.get("snippet") or {}
+            content_details = item.get("contentDetails") or {}
+            if not isinstance(snippet, dict) or not isinstance(
+                content_details,
+                dict,
+            ):
+                continue
+
+            resource_id = snippet.get("resourceId") or {}
+            video_id = str(
+                content_details.get("videoId")
+                or (
+                    resource_id.get("videoId")
+                    if isinstance(resource_id, dict)
+                    else ""
+                )
+                or ""
+            ).strip()
+            title = str(snippet.get("title") or "").strip()
+            raw_published = str(
+                content_details.get("videoPublishedAt")
+                or snippet.get("publishedAt")
+                or ""
+            ).strip()
+
+            if not video_id or not title or not raw_published:
+                continue
+            if title.casefold() in {"private video", "deleted video"}:
                 continue
 
             try:
@@ -1607,17 +1798,17 @@ def scrape_youtube_channels(
                 continue
             if not is_requested_date(published, requested_dates):
                 continue
-            if is_youtube_short(session, video_id):
+            if _is_youtube_short_cached(session, video_id):
                 continue
 
-            state_key = f"youtube:{channel['channel_id']}:{video_id}"
+            state_key = f"youtube:{channel_id}:{video_id}"
             if state_key in keys_done:
                 continue
 
             keys_done.add(state_key)
             articles.append(
                 Article(
-                    source=channel["source"],
+                    source=str(channel["source"]),
                     title=title,
                     url=f"https://www.youtube.com/watch?v={video_id}",
                     published=published,
@@ -1627,6 +1818,13 @@ def scrape_youtube_channels(
                     ),
                 )
             )
+
+    # Se l'unico canale controllato nel ciclo è fallito, segnaliamo l'errore
+    # alla gestione standard delle fonti; gli altri scraper continuano.
+    if channel_errors and not articles and len(channel_errors) == len(
+        selected_channels
+    ):
+        raise channel_errors[0]
 
     return articles
 
