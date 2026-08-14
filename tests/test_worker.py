@@ -56,6 +56,80 @@ class WorkerTests(unittest.TestCase):
             {today, datetime(2026, 8, 12).date()},
         )
 
+    def test_yesterday_at_2349_is_rejected(self):
+        requested_dates = bot.collection_dates(datetime(2026, 8, 13).date())
+
+        self.assertFalse(
+            bot.is_collection_candidate(
+                datetime(2026, 8, 12, 23, 49, tzinfo=bot.ROME),
+                requested_dates,
+            )
+        )
+
+    def test_yesterday_at_2350_is_accepted(self):
+        requested_dates = bot.collection_dates(datetime(2026, 8, 13).date())
+
+        self.assertTrue(
+            bot.is_collection_candidate(
+                datetime(2026, 8, 12, 23, 50, tzinfo=bot.ROME),
+                requested_dates,
+            )
+        )
+
+    def test_yesterday_at_2359_is_accepted(self):
+        requested_dates = bot.collection_dates(datetime(2026, 8, 13).date())
+
+        self.assertTrue(
+            bot.is_collection_candidate(
+                datetime(2026, 8, 12, 23, 59, tzinfo=bot.ROME),
+                requested_dates,
+            )
+        )
+
+    def test_collection_applies_the_late_yesterday_window(self):
+        requested_dates = bot.collection_dates(datetime(2026, 8, 13).date())
+
+        def article_at(hour, minute, key, *, day=12):
+            return bot.Article(
+                source="Fonte",
+                title=key,
+                url=f"https://example.com/{key}",
+                published=datetime(
+                    2026,
+                    8,
+                    day,
+                    hour,
+                    minute,
+                    tzinfo=bot.ROME,
+                ),
+                state_key=key,
+            )
+
+        def scraper(session, dates):
+            self.assertEqual(dates, requested_dates)
+            return [
+                article_at(23, 49, "yesterday:2349"),
+                article_at(23, 50, "yesterday:2350"),
+                article_at(23, 59, "yesterday:2359"),
+                article_at(0, 1, "today:0001", day=13),
+            ]
+
+        with (
+            bot.requests.Session() as session,
+            patch.object(
+                bot,
+                "_article_scrapers",
+                return_value=(("Fonte", scraper),),
+            ),
+        ):
+            articles, errors = bot.collect_articles(session, requested_dates)
+
+        self.assertEqual(
+            [article.notification_key for article in articles],
+            ["yesterday:2350", "yesterday:2359", "today:0001"],
+        )
+        self.assertEqual(errors, [])
+
     def test_heartbeat_file_is_refreshed(self):
         with tempfile.TemporaryDirectory() as directory:
             heartbeat = Path(directory) / "heartbeat"

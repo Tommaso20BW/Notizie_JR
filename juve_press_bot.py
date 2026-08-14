@@ -68,6 +68,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 STATE_FILE = SCRIPT_DIR / ".seen_juve_press_news.json"
 PENDING_FILE = SCRIPT_DIR / ".pending_juve_press_news.json"
 MAX_SEEN = 2000
+YESTERDAY_COLLECTION_START_MINUTE = 23 * 60 + 50
 SOURCE_MAX_WORKERS = 6
 DEFAULT_WORKER_DURATION_SECONDS = 55 * 60
 DEFAULT_POLL_INTERVAL_SECONDS = 15
@@ -359,6 +360,28 @@ def collection_dates(
     if coverage_start is None or coverage_start <= yesterday:
         requested_dates.add(yesterday)
     return requested_dates
+
+
+def is_collection_candidate(
+    published: datetime,
+    requested_dates: set[date],
+) -> bool:
+    """Accetta oggi e, per ieri, soltanto la fascia dalle 23:50 in poi."""
+    if not requested_dates:
+        return False
+
+    local_published = published.astimezone(ROME)
+    published_date = local_published.date()
+    collection_day = max(requested_dates)
+    if published_date not in requested_dates:
+        return False
+    if published_date == collection_day:
+        return True
+    if published_date != collection_day - timedelta(days=1):
+        return False
+
+    published_minute = local_published.hour * 60 + local_published.minute
+    return published_minute >= YESTERDAY_COLLECTION_START_MINUTE
 
 
 def is_juventus_title(title: str) -> bool:
@@ -2493,6 +2516,8 @@ def collect_articles(
                 print(f'[FONTE] {source}: errore ({compact_log_text(error, 70)})')
                 continue
             for article in sorted(source_articles, key=lambda item: (item.published, item.source, item.title)):
+                if not is_collection_candidate(article.published, requested_dates):
+                    continue
                 if article.notification_key in articles_by_key:
                     continue
                 articles_by_key[article.notification_key] = article
@@ -2640,6 +2665,9 @@ def _run_cycle(
     pending = [article_from_journal(entry) for entry in journal.entries]
     pending.sort(key=lambda item: (item.published, item.source, item.title))
     for article in pending:
+        if not is_collection_candidate(article.published, requested_dates):
+            journal.remove(article.notification_key)
+            continue
         try_delivery(article)
 
     def publish_discovered(article: Article) -> None:
