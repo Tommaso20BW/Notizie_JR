@@ -246,6 +246,105 @@ class RunJournalTests(unittest.TestCase):
             self.assertEqual(telegram.sent, ["late:1"])
             self.assertEqual(stored_seen_items(seen), ["late:1"])
 
+    def test_seen_late_article_from_yesterday_is_not_sent_again(self):
+        with tempfile.TemporaryDirectory() as directory:
+            seen, pending = self._state_paths(directory)
+            today = datetime.now(bot.ROME).date()
+            yesterday = today - timedelta(days=1)
+            seen.write_text(
+                json.dumps(
+                    {
+                        "coverage_start": yesterday.isoformat(),
+                        "dates": {
+                            yesterday.isoformat(): ["late:seen"],
+                            today.isoformat(): [],
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            late_article = bot.Article(
+                source="Tuttosport",
+                title="Notizia Juventus gi\u00e0 vista",
+                url="https://example.com/late-seen",
+                published=datetime.combine(
+                    yesterday,
+                    time(23, 55),
+                    tzinfo=bot.ROME,
+                ),
+                state_key="late:seen",
+            )
+            telegram = FakeTelegramClient("token", "chat")
+
+            def same_collection(session, requested_dates, on_article=None):
+                on_article(late_article)
+                return [late_article], []
+
+            with (
+                patch.object(bot, "STATE_FILE", seen),
+                patch.object(bot, "PENDING_FILE", pending),
+                patch.object(bot, "collect_articles", same_collection),
+                patch.object(bot, "TelegramClient", return_value=telegram),
+                patch.object(bot, "PreviewImageResolver", FakePreviewResolver),
+                patch.dict(
+                    os.environ,
+                    {"TELEGRAM_TOKEN": "token", "CHAT_ID": "chat"},
+                    clear=False,
+                ),
+            ):
+                bot.run()
+
+            self.assertEqual(telegram.sent, [])
+            self.assertEqual(stored_seen_items(seen), ["late:seen"])
+
+    def test_old_pending_from_yesterday_is_discarded_after_midnight(self):
+        with tempfile.TemporaryDirectory() as directory:
+            seen, pending = self._state_paths(directory)
+            today = datetime.now(bot.ROME).date()
+            yesterday = today - timedelta(days=1)
+            seen.write_text(
+                json.dumps(
+                    {
+                        "coverage_start": yesterday.isoformat(),
+                        "dates": {
+                            yesterday.isoformat(): [],
+                            today.isoformat(): [],
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            old_pending = bot.Article(
+                source="Tuttosport",
+                title="Pending vecchio delle 20:00",
+                url="https://example.com/old-pending",
+                published=datetime.combine(
+                    yesterday,
+                    time(20, 0),
+                    tzinfo=bot.ROME,
+                ),
+                state_key="pending:old",
+            )
+            bot.ArticleJournal(pending).add(old_pending)
+            telegram = FakeTelegramClient("token", "chat")
+
+            with (
+                patch.object(bot, "STATE_FILE", seen),
+                patch.object(bot, "PENDING_FILE", pending),
+                patch.object(bot, "collect_articles", return_value=([], [])),
+                patch.object(bot, "TelegramClient", return_value=telegram),
+                patch.object(bot, "PreviewImageResolver", FakePreviewResolver),
+                patch.dict(
+                    os.environ,
+                    {"TELEGRAM_TOKEN": "token", "CHAT_ID": "chat"},
+                    clear=False,
+                ),
+            ):
+                bot.run()
+
+            self.assertEqual(telegram.sent, [])
+            self.assertEqual(json.loads(pending.read_text(encoding="utf-8")), [])
+
 
 if __name__ == "__main__":
     unittest.main()
