@@ -166,6 +166,13 @@ X_ACCOUNTS = (
     {"handle": "ilbianconerocom", "filter_juventus": False, "include_reposts": False},
     {"handle": "BaridonMarco", "filter_juventus": False, "include_reposts": False},
     {"handle": "GiovaAlbanese", "filter_juventus": False, "include_reposts": False},
+    {"handle": "@David_Ornstein", "filter_juventus": True, "include_reposts": False},
+    {"handle": "@Plettigoal", "filter_juventus": True, "include_reposts": False},
+    {"handle": "@SkySportsNews", "filter_juventus": True, "include_reposts": False},
+    {"handle": "@SkySportDE", "filter_juventus": True, "include_reposts": False},
+    {"handle": "@Tanziloic", "filter_juventus": True, "include_reposts": False},
+    {"handle": "@JacobsBen", "filter_juventus": True, "include_reposts": False},
+    {"handle": "@sachatavolieri", "filter_juventus": True, "include_reposts": False},
 )
 X_RSS_MIRROR_TEMPLATES = (
     # Istanze Nitter dirette
