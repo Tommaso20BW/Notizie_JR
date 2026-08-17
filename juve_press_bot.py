@@ -109,9 +109,12 @@ SKY_URL_TEMPLATE = (
     "https://sport.sky.it/calciomercato/{year}/{month:02d}/{day:02d}/"
     "calciomercato-news-trattative-oggi-{day}-{month_name}"
 )
-SKY_JUVENTUS_NEWS_URL = (
-    "https://sport.sky.it/calcio/squadre/juventus/news"
+SKY_JUVENTUS_NEWS_URLS = (
+    "https://sport.sky.it/argomenti/juve",
+    "https://sport.sky.it/calcio/squadre/juventus/news",
 )
+SKY_JUVENTUS_DETAIL_MAX_WORKERS = 6
+SKY_JUVENTUS_SEEN_KEYS: set[str] | None = None
 JUVENTUS_NEWS_URL = "https://www.juventus.com/it/news/"
 JUVENTUS_FEED_TEMPLATE = (
     "https://www.juventus.com/it/news/_libraries/"
@@ -1067,7 +1070,6 @@ def _parse_italian_calendar_date(text: str) -> datetime | None:
 
 
 
-
 def _scrape_article_detail_candidates(
     session: requests.Session,
     *,
@@ -1119,25 +1121,20 @@ def _scrape_article_detail_candidates(
     return articles
 
 
-
-
-
-
-def scrape_sky_juventus_news(
+def _sky_juventus_listing_urls(
     session: requests.Session,
+    page_url: str,
     requested_dates: set[date],
-) -> list[Article]:
-    """Monitora gli articoli pubblicati nella pagina Sky Sport Juventus."""
-    response = session.get(SKY_JUVENTUS_NEWS_URL, timeout=30)
+) -> list[str]:
+    """Estrae gli URL Sky del periodo richiesto da una pagina elenco."""
+    response = session.get(page_url, timeout=10)
     response.raise_for_status()
     soup = BeautifulSoup(response.text, "html.parser")
 
-    candidate_urls: list[str] = []
+    urls: list[str] = []
     urls_done: set[str] = set()
     for link in soup.select("a[href]"):
-        url = normalize_url(
-            urljoin(SKY_JUVENTUS_NEWS_URL, str(link.get("href") or ""))
-        )
+        url = normalize_url(urljoin(page_url, str(link.get("href") or "")))
         if urlsplit(url).netloc.lower() != "sport.sky.it":
             continue
 
@@ -1150,129 +1147,196 @@ def scrape_sky_juventus_news(
             continue
 
         urls_done.add(url)
-        candidate_urls.append(url)
+        urls.append(url)
 
-    articles: list[Article] = []
-    for url in candidate_urls:
+    return urls
+
+
+def _sky_juventus_article_from_url(
+    session: requests.Session,
+    url: str,
+    requested_dates: set[date],
+) -> Article | None:
+    """Apre un singolo articolo Sky e verifica che riguardi davvero la Juve."""
+    try:
+        article_response = session.get(url, timeout=15)
+        article_response.raise_for_status()
+    except requests.RequestException:
+        return None
+
+    article_soup = BeautifulSoup(article_response.text, "html.parser")
+    article_data = _sky_structured_article(article_soup)
+
+    title = str(article_data.get("headline") or "").strip()
+    if not title:
+        title = _first_meta_content(
+            article_soup,
+            ('meta[property="og:title"]', 'meta[name="twitter:title"]'),
+        )
+    if not title:
+        heading = article_soup.find("h1")
+        title = heading.get_text(" ", strip=True) if heading else ""
+    if not title:
+        return None
+
+    # La diretta mercato è già monitorata blocco per blocco dallo scraper
+    # dedicato: qui evitiamo di inviare anche l'articolo contenitore.
+    if (
+        SKY_RECAP_TITLE_RE.search(title)
+        or "calciomercato-news-trattative-oggi" in url
+        or "calciomercato-news-" in url
+    ):
+        return None
+
+    published = None
+    raw_dates = (
+        article_data.get("datePublished"),
+        _first_meta_content(
+            article_soup,
+            (
+                'meta[property="article:published_time"]',
+                'meta[name="date"]',
+                'meta[name="pub_date"]',
+            ),
+        ),
+    )
+    for raw_date in raw_dates:
+        if not raw_date:
+            continue
         try:
-            article_response = session.get(url, timeout=30)
-            article_response.raise_for_status()
-        except requests.RequestException:
-            # Un singolo articolo non deve bloccare tutta la fonte Sky.
+            published = parse_iso_datetime(str(raw_date))
+        except ValueError:
             continue
+        break
 
-        article_soup = BeautifulSoup(article_response.text, "html.parser")
-        article_data = _sky_structured_article(article_soup)
+    if published is None:
+        time_tag = article_soup.select_one("time[datetime]")
+        if time_tag:
+            try:
+                published = parse_iso_datetime(
+                    str(time_tag.get("datetime") or "")
+                )
+            except ValueError:
+                published = None
+    if published is None:
+        published = date_from_article_url(url)
+    if (
+        published is None
+        or not is_requested_date(published, requested_dates)
+    ):
+        return None
 
-        title = str(article_data.get("headline") or "").strip()
-        if not title:
-            title = _first_meta_content(
-                article_soup,
-                ('meta[property="og:title"]', 'meta[name="twitter:title"]'),
-            )
-        if not title:
-            heading = article_soup.find("h1")
-            title = heading.get_text(" ", strip=True) if heading else ""
-        if not title:
-            continue
-
-        # La diretta mercato è già monitorata blocco per blocco dallo scraper
-        # dedicato: qui evitiamo di inviare anche l'articolo contenitore.
-        if (
-            SKY_RECAP_TITLE_RE.search(title)
-            or "calciomercato-news-trattative-oggi" in url
-            or "calciomercato-news-" in url
-        ):
-            continue
-
-        published = None
-        raw_dates = (
-            article_data.get("datePublished"),
-            _first_meta_content(
-                article_soup,
-                (
-                    'meta[property="article:published_time"]',
-                    'meta[name="date"]',
-                    'meta[name="pub_date"]',
-                ),
+    summary = str(
+        article_data.get("description")
+        or article_data.get("abstract")
+        or ""
+    ).strip()
+    if not summary:
+        summary = _first_meta_content(
+            article_soup,
+            (
+                'meta[name="description"]',
+                'meta[property="og:description"]',
             ),
         )
-        for raw_date in raw_dates:
-            if not raw_date:
-                continue
+    summary = BeautifulSoup(summary, "html.parser").get_text(" ", strip=True)
+
+    tags = " ".join(
+        str(tag.get("content") or "").strip()
+        for tag in article_soup.select('meta[property="article:tag"]')
+        if str(tag.get("content") or "").strip()
+    )
+    searchable_text = " ".join(
+        part
+        for part in (
+            title,
+            summary,
+            str(article_data.get("keywords") or ""),
+            str(article_data.get("about") or ""),
+            tags,
+        )
+        if part
+    )
+    if (
+        not JUVE_KEYWORD_RE.search(searchable_text)
+        or SKY_EXCLUDED_TITLE_RE.search(searchable_text)
+    ):
+        return None
+
+    image_url = _schema_image_url(article_data.get("image"), url)
+    return Article(
+        source="Sky Sport - Juventus",
+        title=title,
+        url=url,
+        published=published,
+        summary=summary,
+        image_url=image_url,
+    )
+
+
+def scrape_sky_juventus_news(
+    session: requests.Session,
+    requested_dates: set[date],
+) -> list[Article]:
+    """Monitora sia il tag Juve sia la pagina squadra, aprendo solo URL nuovi."""
+    candidate_urls: list[str] = []
+    urls_done: set[str] = set()
+    listing_errors: list[requests.RequestException] = []
+
+    # Le due pagine vengono lette in parallelo: la pagina /argomenti/juve
+    # intercetta spesso prima la pubblicazione, la pagina squadra resta fallback.
+    with ThreadPoolExecutor(max_workers=len(SKY_JUVENTUS_NEWS_URLS)) as executor:
+        future_pages = {
+            executor.submit(
+                _sky_juventus_listing_urls,
+                session,
+                page_url,
+                requested_dates,
+            ): page_url
+            for page_url in SKY_JUVENTUS_NEWS_URLS
+        }
+        for future in as_completed(future_pages):
             try:
-                published = parse_iso_datetime(str(raw_date))
-            except ValueError:
+                page_urls = future.result()
+            except requests.RequestException as error:
+                listing_errors.append(error)
                 continue
-            break
+            for url in page_urls:
+                if url not in urls_done:
+                    urls_done.add(url)
+                    candidate_urls.append(url)
 
-        if published is None:
-            time_tag = article_soup.select_one("time[datetime]")
-            if time_tag:
-                try:
-                    published = parse_iso_datetime(
-                        str(time_tag.get("datetime") or "")
-                    )
-                except ValueError:
-                    published = None
-        if published is None:
-            published = date_from_article_url(url)
-        if (
-            published is None
-            or not is_requested_date(published, requested_dates)
-        ):
-            continue
+    if not candidate_urls and len(listing_errors) == len(SKY_JUVENTUS_NEWS_URLS):
+        raise listing_errors[0]
 
-        summary = str(
-            article_data.get("description")
-            or article_data.get("abstract")
-            or ""
-        ).strip()
-        if not summary:
-            summary = _first_meta_content(
-                article_soup,
-                (
-                    'meta[name="description"]',
-                    'meta[property="og:description"]',
-                ),
+    # Nel worker reale lo stato persistente contiene gli URL già inviati.
+    # Questi articoli non vengono più riaperti a ogni ciclo. In --dry-run il
+    # valore è None e vengono invece analizzati tutti i candidati, come prima.
+    if SKY_JUVENTUS_SEEN_KEYS is not None:
+        candidate_urls = [
+            url for url in candidate_urls if url not in SKY_JUVENTUS_SEEN_KEYS
+        ]
+
+    if not candidate_urls:
+        return []
+
+    articles: list[Article] = []
+    with ThreadPoolExecutor(
+        max_workers=min(SKY_JUVENTUS_DETAIL_MAX_WORKERS, len(candidate_urls)),
+    ) as executor:
+        futures = [
+            executor.submit(
+                _sky_juventus_article_from_url,
+                session,
+                url,
+                requested_dates,
             )
-        summary = BeautifulSoup(summary, "html.parser").get_text(
-            " ", strip=True
-        )
-
-        tags = " ".join(
-            str(tag.get("content") or "").strip()
-            for tag in article_soup.select('meta[property="article:tag"]')
-            if str(tag.get("content") or "").strip()
-        )
-        searchable_text = " ".join(
-            part
-            for part in (
-                title,
-                summary,
-                str(article_data.get("keywords") or ""),
-                str(article_data.get("about") or ""),
-                tags,
-            )
-            if part
-        )
-        if (
-            not JUVE_KEYWORD_RE.search(searchable_text)
-            or SKY_EXCLUDED_TITLE_RE.search(searchable_text)
-        ):
-            continue
-
-        image_url = _schema_image_url(article_data.get("image"), url)
-        articles.append(
-            Article(
-                source="Sky Sport - Juventus",
-                title=title,
-                url=url,
-                published=published,
-                summary=summary,
-                image_url=image_url,
-            )
-        )
+            for url in candidate_urls
+        ]
+        for future in as_completed(futures):
+            article = future.result()
+            if article is not None:
+                articles.append(article)
 
     return articles
 
@@ -2585,8 +2649,11 @@ def _run_cycle(
     include_yesterday: bool = False,
     preview_messages: bool = False,
 ) -> int:
+    global SKY_JUVENTUS_SEEN_KEYS
+
     today = datetime.now(ROME).date()
     if dry_run:
+        SKY_JUVENTUS_SEEN_KEYS = None
         requested_dates = collection_dates(today)
         articles, _ = collect_articles(session, requested_dates)
         articles.sort(key=lambda item: (item.published, item.source, item.title))
@@ -2622,6 +2689,7 @@ def _run_cycle(
     seen_list, coverage_start = load_seen_state(today)
     requested_dates = collection_dates(today, None if include_yesterday else coverage_start)
     seen = set(seen_list)
+    SKY_JUVENTUS_SEEN_KEYS = seen
     journal = ArticleJournal(PENDING_FILE)
     journal.discard_all(seen)
 
