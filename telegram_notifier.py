@@ -269,6 +269,20 @@ class TelegramClient:
         message_id = (result or {}).get("message_id")
         return int(message_id) if message_id is not None else None
 
+    def send_document(self, document_url: str, caption: str) -> int | None:
+        """Invia un PDF/documento pubblico direttamente come documento Telegram."""
+        result = self._deliver_result(
+            "sendDocument",
+            {
+                "chat_id": self.chat_id,
+                "document": document_url,
+                "caption": caption,
+                "parse_mode": "HTML",
+            },
+        )
+        message_id = (result or {}).get("message_id")
+        return int(message_id) if message_id is not None else None
+
     def send_video_file(self, video_file_path: str, caption: str) -> int | None:
         result = self._deliver_file_result(
             "sendVideo",
@@ -377,12 +391,21 @@ class TelegramClient:
         self,
         article: ArticleLike,
         *,
+        document_url: str = "",
         video_url: str = "",
         video_file_path: str = "",
         video_thumbnail_url: str = "",
         photo_url: str = "",
         photo_urls: Sequence[str] = (),
     ) -> DeliveryReceipt:
+        if document_url:
+            caption = format_article_message(
+                article,
+                max_length=TELEGRAM_MAX_CAPTION_LENGTH,
+            )
+            message_id = self.send_document(document_url, caption)
+            return DeliveryReceipt(message_id, "documento")
+
         # Telegram consente al massimo 10 elementi per album.
         urls = list(photo_urls)[:10] if photo_urls else (
             [photo_url] if photo_url else []
