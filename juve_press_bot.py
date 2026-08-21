@@ -8,6 +8,7 @@ Controlla le notizie Juventus pubblicate OGGI su:
 - Sky Sport Calciomercato ("Juve"/"Juventus", esclusi i titoli "video")
 - Sky Sport: pagina notizie Juventus
 - Juventus.com
+- Comunicati stampa PDF Juventus.com
 - Gianluca Di Marzio (titolo o testo con "Juventus") e Alfredo Pedullà
 - Borsa Italiana (notizie sull'azione Juventus)
 - YouTube: Juventus, Fabrizio Romano e Romeo Agresti
@@ -18,6 +19,7 @@ Ogni notizia viene inviata su Telegram una sola volta. Lo stato è salvato nel f
 """
 
 import argparse
+import io
 import json
 import os
 import re
@@ -36,6 +38,8 @@ from zoneinfo import ZoneInfo
 
 import requests
 from bs4 import BeautifulSoup
+from pypdf import PdfReader
+from pypdf.errors import PdfReadError
 
 from article_journal import ArticleJournal
 from preview_image import PreviewImageResolver, normalize_image_url
@@ -119,6 +123,19 @@ JUVENTUS_NEWS_URL = "https://www.juventus.com/it/news/"
 JUVENTUS_FEED_TEMPLATE = (
     "https://www.juventus.com/it/news/_libraries/"
     "{date_value}/{date_value}/{page}/_news-list"
+)
+JUVENTUS_PRESS_RELEASE_LIBRARY_TEMPLATE = (
+    "https://www.juventus.com/it/club/investitori/_libraries/"
+    "season-{season}/{page}/_price-sensitive-press-releases"
+)
+JUVENTUS_PRESS_RELEASE_MAX_PAGES = 4
+JUVENTUS_PRESS_RELEASE_DATE_CACHE: dict[str, datetime | None] = {}
+JUVENTUS_PDF_SIZE_RE = re.compile(
+    r"\s+\d+(?:[.,]\d+)?\s*(?:KB|MB|GB)\s*$",
+    re.IGNORECASE,
+)
+JUVENTUS_PDF_NUMERIC_DATE_RE = re.compile(
+    r"\b(\d{1,2})[./-](\d{1,2})[./-](\d{4})\b"
 )
 GIANLUCA_DI_MARZIO_URL = "https://www.gianlucadimarzio.com/"
 ALFREDO_PEDULLA_JUVENTUS_URLS = (
@@ -1438,6 +1455,166 @@ def scrape_juventus_official(
     return list(articles_by_key.values())
 
 
+
+
+def juventus_press_release_season(today: date) -> str:
+    """Slug della stagione usato dalla libreria Investitori (es. 2026-27)."""
+    start_year = today.year if today.month >= 7 else today.year - 1
+    return f"{start_year}-{str(start_year + 1)[-2:]}"
+
+
+def juventus_press_release_library_url(today: date, page: int = 1) -> str:
+    return JUVENTUS_PRESS_RELEASE_LIBRARY_TEMPLATE.format(
+        season=juventus_press_release_season(today),
+        page=page,
+    )
+
+
+def _juventus_press_release_title(link) -> str:
+    title = " ".join(link.get_text(" ", strip=True).split())
+    title = JUVENTUS_PDF_SIZE_RE.sub("", title).strip(" -–|:")
+    return title or "Comunicato ufficiale Juventus"
+
+
+def _juventus_press_release_date_from_text(text: str) -> datetime | None:
+    """Riconosce sia '21 agosto 2026' sia '21/08/2026'."""
+    published = _parse_italian_calendar_date(text)
+    if published is not None:
+        return published
+
+    match = JUVENTUS_PDF_NUMERIC_DATE_RE.search(text)
+    if not match:
+        return None
+    try:
+        return datetime(
+            int(match.group(3)),
+            int(match.group(2)),
+            int(match.group(1)),
+            tzinfo=ROME,
+        )
+    except ValueError:
+        return None
+
+
+def _juventus_press_release_date_from_pdf(
+    session: requests.Session,
+    pdf_url: str,
+) -> datetime | None:
+    """Legge la data del comunicato dal PDF e la memorizza per il worker."""
+    if pdf_url in JUVENTUS_PRESS_RELEASE_DATE_CACHE:
+        return JUVENTUS_PRESS_RELEASE_DATE_CACHE[pdf_url]
+
+    response = session.get(pdf_url, timeout=30)
+    response.raise_for_status()
+    content_type = str(response.headers.get("Content-Type") or "").casefold()
+    if not response.content.startswith(b"%PDF") and "pdf" not in content_type:
+        raise ValueError("Il collegamento Juventus non restituisce un PDF.")
+
+    try:
+        reader = PdfReader(io.BytesIO(response.content))
+    except PdfReadError:
+        raise
+
+    text_parts: list[str] = []
+    for page in reader.pages[:2]:
+        try:
+            text_parts.append(page.extract_text() or "")
+        except Exception:
+            continue
+
+    published = _juventus_press_release_date_from_text("\n".join(text_parts))
+    JUVENTUS_PRESS_RELEASE_DATE_CACHE[pdf_url] = published
+    return published
+
+
+def scrape_juventus_press_releases(
+    session: requests.Session,
+    requested_dates: set[date],
+) -> list[Article]:
+    """Recupera esclusivamente i comunicati PDF datati oggi in Europe/Rome."""
+    if not requested_dates:
+        return []
+
+    today = max(requested_dates)
+    articles: list[Article] = []
+    urls_done: set[str] = set()
+
+    for page_number in range(1, JUVENTUS_PRESS_RELEASE_MAX_PAGES + 1):
+        page_url = juventus_press_release_library_url(today, page_number)
+        response = session.get(page_url, timeout=30)
+        if response.status_code == 404:
+            break
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, "html.parser")
+
+        page_candidates: list[tuple[object, str]] = []
+        for link in soup.select("a[href]"):
+            raw_href = str(link.get("href") or "").strip()
+            if not raw_href:
+                continue
+
+            pdf_url = normalize_url(urljoin(page_url, raw_href))
+            parts = urlsplit(pdf_url)
+            if parts.netloc.lower() not in {"www.juventus.com", "juventus.com"}:
+                continue
+            path_lower = parts.path.casefold()
+            if not (
+                path_lower.endswith(".pdf")
+                or "/images/image/private/fl_attachment/" in path_lower
+                or "/images/image/upload/fl_attachment/" in path_lower
+            ):
+                continue
+            if pdf_url in urls_done:
+                continue
+
+            urls_done.add(pdf_url)
+            page_candidates.append((link, pdf_url))
+
+        if not page_candidates:
+            break
+
+        page_dates: list[date] = []
+        for link, pdf_url in page_candidates:
+            try:
+                published = _juventus_press_release_date_from_pdf(
+                    session,
+                    pdf_url,
+                )
+            except (requests.RequestException, PdfReadError, ValueError) as error:
+                print(
+                    f"[PDF JUVE] non leggibile | "
+                    f"{compact_log_text(pdf_url, 55)} | "
+                    f"{compact_log_text(error, 55)}"
+                )
+                continue
+
+            if published is None:
+                continue
+
+            local_date = published.astimezone(ROME).date()
+            page_dates.append(local_date)
+
+            # Vincolo specifico richiesto: mai inviare PDF di ieri o più vecchi.
+            if local_date != today:
+                continue
+
+            articles.append(
+                Article(
+                    source="Juventus.com - Comunicati PDF",
+                    title=_juventus_press_release_title(link),
+                    url=pdf_url,
+                    published=published,
+                    state_key=f"juventus-pdf:{pdf_url}",
+                )
+            )
+
+        # La libreria è ordinata dal più recente al più vecchio.
+        if page_dates and max(page_dates) < today:
+            break
+
+    return articles
+
+
 def scrape_gianluca_di_marzio(
     session: requests.Session,
     requested_dates: set[date],
@@ -2550,6 +2727,7 @@ def _article_scrapers() -> tuple[tuple[str, Callable], ...]:
         ('Sky Sport - Calciomercato', scrape_sky_calciomercato),
         ('Sky Sport - Juventus', scrape_sky_juventus_news),
         ('Juventus.com', scrape_juventus_official),
+        ('Juventus.com - Comunicati PDF', scrape_juventus_press_releases),
         ('Gianluca Di Marzio', scrape_gianluca_di_marzio),
         ('Alfredo Pedullà', scrape_alfredo_pedulla),
         ('Borsa Italiana', scrape_borsa_italiana),
@@ -2607,6 +2785,12 @@ def deliver_article(
     preview_resolver: PreviewImageResolver,
 ) -> DeliveryReceipt:
     touch_worker_heartbeat()
+
+    if article.source == "Juventus.com - Comunicati PDF":
+        receipt = telegram.send_article(article, document_url=article.url)
+        touch_worker_heartbeat()
+        return receipt
+
     image_urls = preview_resolver.resolve_all(article.url, article.all_image_urls)
     if article.video_url:
         try:
@@ -2665,6 +2849,8 @@ def _run_cycle(
             if preview_messages:
                 image_urls = preview_resolver.resolve_all(article.url, article.all_image_urls)
                 print('\n--- ANTEPRIMA TELEGRAM ---')
+                if article.source == "Juventus.com - Comunicati PDF":
+                    print(f'[PDF] {article.url}')
                 if article.video_url:
                     print(f'[VIDEO] {article.video_url}')
                 if article.video_thumbnail_url:
@@ -2675,7 +2861,15 @@ def _run_cycle(
                     print('[FOTO] nessuna')
                 print(format_article_message(
                     article,
-                    max_length=(TELEGRAM_MAX_CAPTION_LENGTH if image_urls or article.video_url else TELEGRAM_MAX_MESSAGE_LENGTH),
+                    max_length=(
+                        TELEGRAM_MAX_CAPTION_LENGTH
+                        if (
+                            article.source == "Juventus.com - Comunicati PDF"
+                            or image_urls
+                            or article.video_url
+                        )
+                        else TELEGRAM_MAX_MESSAGE_LENGTH
+                    ),
                 ))
                 print('--- FINE ANTEPRIMA ---\n')
         return 0
