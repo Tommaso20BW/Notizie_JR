@@ -38,6 +38,13 @@ class FakeSession:
     headers = {}
 
 
+class BrowserSession:
+    headers = {
+        "User-Agent": "Mozilla/5.0 Chrome/126.0",
+        "Accept-Language": "it-IT,it;q=0.9",
+    }
+
+
 class XTests(unittest.TestCase):
     def test_first_valid_mirror_stops_fallback_requests(self):
         accounts = (
@@ -73,6 +80,39 @@ class XTests(unittest.TestCase):
             "https://first.example/Reporter/rss",
         )
 
+    def test_scraper_uses_rss_headers_instead_of_browser_headers(self):
+        accounts = (
+            {
+                "handle": "Reporter",
+                "filter_juventus": True,
+                "include_reposts": False,
+            },
+        )
+
+        with (
+            patch.object(bot, "X_ACCOUNTS", accounts),
+            patch.object(
+                bot,
+                "X_RSS_MIRROR_TEMPLATES",
+                ("https://rss.example/{handle}",),
+            ),
+            patch.object(
+                bot.requests,
+                "get",
+                return_value=FeedResponse(),
+            ) as request,
+        ):
+            articles = bot.scrape_x_profiles(
+                BrowserSession(),
+                {date(2026, 7, 31)},
+            )
+
+        self.assertEqual(len(articles), 1)
+        headers = request.call_args.kwargs["headers"]
+        self.assertEqual(headers["User-Agent"], bot.X_RSS_HEADERS["User-Agent"])
+        self.assertEqual(headers["Accept"], bot.X_RSS_HEADERS["Accept"])
+        self.assertEqual(headers["Accept-Language"], "it-IT,it;q=0.9")
+
     def test_invalid_mirror_uses_the_next_fallback(self):
         invalid_response = FeedResponse()
         invalid_response.content = b"<html>not an RSS feed"
@@ -104,6 +144,87 @@ class XTests(unittest.TestCase):
 
         self.assertEqual(len(articles), 1)
         self.assertEqual(request.call_count, 2)
+
+    def test_xcancel_whitelist_notice_uses_the_next_fallback(self):
+        notice_response = FeedResponse()
+        notice_response.content = b"""<?xml version="1.0"?>
+<rss version="2.0"><channel><item>
+  <title>RSS reader not yet whitelisted!</title>
+  <pubDate>Mon, 01 Jan 1971 00:00:00 GMT</pubDate>
+  <guid>https://rss.xcancel.com/Reporter/rss</guid>
+  <link>https://rss.xcancel.com/Reporter/rss</link>
+</item></channel></rss>
+"""
+        accounts = (
+            {
+                "handle": "Reporter",
+                "filter_juventus": True,
+                "include_reposts": False,
+            },
+        )
+        mirrors = (
+            "https://rss.xcancel.com/{handle}/rss",
+            "https://valid.example/{handle}/rss",
+        )
+
+        with (
+            patch.object(bot, "X_ACCOUNTS", accounts),
+            patch.object(bot, "X_RSS_MIRROR_TEMPLATES", mirrors),
+            patch.object(
+                bot.requests,
+                "get",
+                side_effect=[notice_response, FeedResponse()],
+            ) as request,
+        ):
+            articles = bot.scrape_x_profiles(
+                FakeSession(),
+                {date(2026, 7, 31)},
+            )
+
+        self.assertEqual(len(articles), 1)
+        self.assertEqual(request.call_count, 2)
+
+    def test_fxtwitter_permalink_guid_keeps_numeric_tweet_id(self):
+        response = FeedResponse()
+        response.content = b"""<?xml version="1.0"?>
+<rss version="2.0"><channel><item>
+  <title>Juventus dal feed FxTwitter</title>
+  <pubDate>Fri, 31 Jul 2026 10:00:00 GMT</pubDate>
+  <guid>https://x.com/Reporter/status/2083000000000000123</guid>
+  <link>https://x.com/Reporter/status/2083000000000000123</link>
+</item></channel></rss>
+"""
+        accounts = (
+            {
+                "handle": "Reporter",
+                "filter_juventus": True,
+                "include_reposts": False,
+            },
+        )
+
+        with (
+            patch.object(bot, "X_ACCOUNTS", accounts),
+            patch.object(
+                bot,
+                "X_RSS_MIRROR_TEMPLATES",
+                ("https://fxtwitter.com/{handle}/feed.xml",),
+            ),
+            patch.object(bot.requests, "get", return_value=response),
+        ):
+            articles = bot.scrape_x_profiles(
+                FakeSession(),
+                {date(2026, 7, 31)},
+            )
+
+        self.assertEqual(len(articles), 1)
+        self.assertEqual(
+            articles[0].state_key,
+            "x:Reporter:2083000000000000123",
+        )
+        self.assertEqual(
+            articles[0].url,
+            "https://x.com/Reporter/status/2083000000000000123",
+        )
 
     def test_clean_x_text_removes_only_hash_and_at_symbols(self):
         self.assertEqual(
@@ -422,6 +543,7 @@ class XTests(unittest.TestCase):
         )
 
         self.assertEqual(bot._rss_item_images(item), [])
+        self.assertTrue(bot._rss_item_has_native_video(item))
 
     def test_vxtwitter_gif_is_not_classified_as_video(self):
         media = bot._x_media_from_payload(

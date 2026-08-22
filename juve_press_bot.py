@@ -195,17 +195,13 @@ X_ACCOUNTS = (
     {"handle": "sachatavolieri", "filter_juventus": True, "include_reposts": False},
 )
 X_RSS_MIRROR_TEMPLATES = (
-    # Istanze Nitter dirette
-    "https://nitter.net/{handle}/rss",
-    "https://xcancel.com/{handle}/rss",
-    "https://nitter.poast.org/{handle}/rss",
-    "https://nitter.privacydev.net/{handle}/rss",
-    "https://nitter.kylrth.com/{handle}/rss",
-    "https://nitter.fdn.fr/{handle}/rss",
-    # Aggregatori/load balancer (scelgono automaticamente un'istanza attiva)
-    "https://twiiit.com/{handle}/rss",
-    "https://farside.link/nitter/{handle}/rss",
+    "https://fxtwitter.com/{handle}/feed.xml",
+    "https://fixupx.com/{handle}/feed.xml",
 )
+X_RSS_HEADERS = {
+    "User-Agent": "Notizie_JR/1.0 (RSS reader; GitHub Actions)",
+    "Accept": "application/rss+xml, application/xml;q=0.9, text/xml;q=0.8",
+}
 X_RSS_TIMEOUT_SECONDS = 12
 X_MEDIA_API_TEMPLATES = (
     "https://api.fxtwitter.com/status/{tweet_id}",
@@ -2139,6 +2135,32 @@ def scrape_youtube_channels(
     return articles
 
 
+def _x_tweet_id(*candidates: str) -> str:
+    """Estrae l'ID numerico sia dai GUID Nitter sia dai permalink RSS."""
+    for candidate in candidates:
+        candidate = candidate.strip()
+        if candidate.isdigit():
+            return candidate
+        link_match = X_STATUS_PATH_RE.match(urlsplit(candidate).path)
+        if link_match:
+            return link_match.group(2)
+    return ""
+
+
+def _x_rss_has_status_item(root: ET.Element) -> bool:
+    """Scarta HTML, feed vuoti e avvisi RSS mascherati da normali feed."""
+    channel = root.find("channel")
+    if channel is None:
+        return False
+    return any(
+        _x_tweet_id(
+            item.findtext("guid", default=""),
+            item.findtext("link", default=""),
+        )
+        for item in channel.findall("item")
+    )
+
+
 def _download_x_feed(
     feed_url: str,
     headers: dict[str, str],
@@ -2172,7 +2194,7 @@ def _download_first_x_feed(
             root = ET.fromstring(content)
         except ET.ParseError:
             continue
-        if root.find("channel") is not None:
+        if _x_rss_has_status_item(root):
             return root
     return None
 
@@ -2221,7 +2243,13 @@ def _rss_item_video_thumbnail(item: ET.Element, page_url: str = "") -> str:
 
 
 def _rss_item_has_native_video(item: ET.Element) -> bool:
-    """Riconosce il marcatore usato da Nitter per i video nativi di X."""
+    """Riconosce i video nativi nei feed FxTwitter e Nitter."""
+    if any(
+        child.tag.rsplit("}", 1)[-1].lower() == "enclosure"
+        and child.attrib.get("type", "").lower().startswith("video/")
+        for child in item.iter()
+    ):
+        return True
     description = item.findtext("description", default="")
     return bool(
         re.search(
@@ -2364,7 +2392,7 @@ def scrape_x_profiles(
         return []
     articles: list[Article] = []
     keys_done: set[str] = set()
-    headers = dict(session.headers)
+    headers = {**session.headers, **X_RSS_HEADERS}
 
     with ThreadPoolExecutor(
         max_workers=min(SOURCE_MAX_WORKERS, len(X_ACCOUNTS)),
@@ -2390,8 +2418,9 @@ def scrape_x_profiles(
             for item in channel.findall("item"):
                 title = item.findtext("title", default="").strip()
                 raw_published = item.findtext("pubDate", default="")
-                tweet_id = item.findtext("guid", default="").strip()
+                raw_guid = item.findtext("guid", default="").strip()
                 raw_link = item.findtext("link", default="").strip()
+                tweet_id = _x_tweet_id(raw_guid, raw_link)
                 if not title or not raw_published or not tweet_id:
                     continue
 
