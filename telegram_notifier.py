@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from collections.abc import Callable, Sequence
 from contextlib import ExitStack
@@ -16,6 +17,14 @@ import requests
 TELEGRAM_MAX_MESSAGE_LENGTH = 4096
 TELEGRAM_MAX_CAPTION_LENGTH = 1024
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+
+X_TEXT_API_TEMPLATES = (
+    "https://api.fxtwitter.com/status/{tweet_id}",
+    "https://api.vxtwitter.com/status/{tweet_id}",
+)
+X_STATUS_ID_RE = re.compile(r"/status/(\d+)(?:/|$)")
+X_HASHTAG_RE = re.compile(r"#(\w+)", re.UNICODE)
+X_MARKER_TRANSLATION = str.maketrans("", "", "#@")
 
 SOURCE_EMOJIS = (
     ("Sky Sport", "6033058586945392520", "📰"),
@@ -49,6 +58,50 @@ class DeliveryReceipt:
     photo_fallback: bool = False
     video_fallback: bool = False
 
+
+
+@dataclass(frozen=True)
+class _MessageArticle:
+    source: str
+    title: str
+    url: str
+    summary: str
+
+
+def _split_x_hashtag(hashtag: str) -> str:
+    """Separa gli hashtag CamelCase come fa lo scraper X principale."""
+    words: list[str] = []
+    for segment in hashtag.split("_"):
+        current_word: list[str] = []
+        for index, character in enumerate(segment):
+            previous = segment[index - 1] if index else ""
+            following = segment[index + 1] if index + 1 < len(segment) else ""
+            starts_word = (
+                bool(current_word)
+                and character.isupper()
+                and (
+                    previous.islower()
+                    or previous.isdigit()
+                    or (previous.isupper() and following.islower())
+                )
+            )
+            if starts_word:
+                words.append("".join(current_word))
+                current_word = []
+            current_word.append(character)
+        if current_word:
+            words.append("".join(current_word))
+    return " ".join(words)
+
+
+def _clean_x_text(text: str) -> str:
+    """Mantiene gli a capo del post e applica la stessa pulizia #/@ del bot."""
+    text = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    text = X_HASHTAG_RE.sub(
+        lambda match: _split_x_hashtag(match.group(1)),
+        text,
+    )
+    return text.translate(X_MARKER_TRANSLATION).strip()
 
 def source_emoji(source: str) -> str:
     for source_prefix, emoji_id, fallback_emoji in SOURCE_EMOJIS:
@@ -117,6 +170,68 @@ class TelegramClient:
         self.session = session or requests.Session()
         self.max_attempts = max(max_attempts, 1)
         self.sleep = sleep
+
+    @staticmethod
+    def _x_tweet_id(url: str) -> str:
+        match = X_STATUS_ID_RE.search((url or "").strip())
+        return match.group(1) if match else ""
+
+    def _original_x_text(self, article: ArticleLike) -> str:
+        """Recupera il testo reale del post X, inclusi gli a capo originali."""
+        if not str(article.source or "").startswith("X - "):
+            return ""
+
+        tweet_id = self._x_tweet_id(article.url)
+        if not tweet_id:
+            return ""
+
+        get = getattr(self.session, "get", None)
+        if not callable(get):
+            return ""
+
+        for template in X_TEXT_API_TEMPLATES:
+            try:
+                response = get(
+                    template.format(tweet_id=tweet_id),
+                    timeout=12,
+                )
+                response.raise_for_status()
+                payload = response.json()
+            except (requests.RequestException, ValueError, AttributeError):
+                continue
+
+            if not isinstance(payload, dict):
+                continue
+
+            # FxTwitter/VxTwitter hanno usato entrambe le forme nel tempo.
+            tweet = payload.get("tweet")
+            if not isinstance(tweet, dict):
+                tweet = payload.get("status")
+            if not isinstance(tweet, dict):
+                continue
+
+            text = tweet.get("text")
+            if not isinstance(text, str) or not text.strip():
+                raw_text = tweet.get("raw_text")
+                if isinstance(raw_text, dict):
+                    text = raw_text.get("text")
+
+            if isinstance(text, str) and text.strip():
+                return _clean_x_text(text)
+
+        return ""
+
+    def _message_article(self, article: ArticleLike) -> ArticleLike:
+        """Per X usa il testo originale; per le altre fonti non cambia nulla."""
+        original_x_text = self._original_x_text(article)
+        if not original_x_text:
+            return article
+        return _MessageArticle(
+            source=article.source,
+            title=original_x_text,
+            url=article.url,
+            summary=article.summary,
+        )
 
     @staticmethod
     def _response_data(response: requests.Response) -> dict:
@@ -403,6 +518,8 @@ class TelegramClient:
         photo_url: str = "",
         photo_urls: Sequence[str] = (),
     ) -> DeliveryReceipt:
+        article = self._message_article(article)
+
         if document_url:
             caption = format_article_message(
                 article,
