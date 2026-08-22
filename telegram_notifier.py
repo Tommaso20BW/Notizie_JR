@@ -60,7 +60,12 @@ def source_emoji(source: str) -> str:
 
 
 def _clip(value: str, limit: int) -> str:
-    value = " ".join((value or "").split())
+    value = (value or "").replace("\r\n", "\n").replace("\r", "\n")
+    value = "\n".join(
+        " ".join(line.split())
+        for line in value.split("\n")
+    ).strip()
+
     if len(value) <= limit:
         return value
     return value[: limit - 1].rstrip() + "…"
