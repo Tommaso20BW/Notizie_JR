@@ -72,7 +72,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 STATE_FILE = SCRIPT_DIR / ".seen_juve_press_news.json"
 PENDING_FILE = SCRIPT_DIR / ".pending_juve_press_news.json"
 MAX_SEEN = 2000
-YESTERDAY_COLLECTION_START_MINUTE = 23 * 60 + 50
+YESTERDAY_COLLECTION_START_MINUTE = 23 * 60 + 30
 SOURCE_MAX_WORKERS = 6
 DEFAULT_WORKER_DURATION_SECONDS = 55 * 60
 DEFAULT_POLL_INTERVAL_SECONDS = 15
@@ -138,6 +138,12 @@ JUVENTUS_PDF_NUMERIC_DATE_RE = re.compile(
     r"\b(\d{1,2})[./-](\d{1,2})[./-](\d{4})\b"
 )
 GIANLUCA_DI_MARZIO_URL = "https://www.gianlucadimarzio.com/"
+GIANLUCA_DI_MARZIO_LISTING_URLS = (
+    GIANLUCA_DI_MARZIO_URL,
+    "https://www.gianlucadimarzio.com/calciomercato/",
+)
+GIANLUCA_DI_MARZIO_ARTICLE_PATH_RE = re.compile(r"-\d{5,}$")
+GIANLUCA_DI_MARZIO_CHECKED_URLS: set[str] = set()
 ALFREDO_PEDULLA_JUVENTUS_URLS = (
     "https://www.alfredopedulla.com/search/juve/",
 )
@@ -390,7 +396,7 @@ def is_collection_candidate(
     published: datetime,
     requested_dates: set[date],
 ) -> bool:
-    """Accetta oggi e, per ieri, soltanto la fascia dalle 23:50 in poi."""
+    """Accetta oggi e, per ieri, soltanto la fascia dalle 23:30 in poi."""
     if not requested_dates:
         return False
 
@@ -1611,109 +1617,110 @@ def scrape_juventus_press_releases(
     return articles
 
 
+def _gianluca_di_marzio_listing_candidates(
+    session: requests.Session,
+    page_url: str,
+) -> dict[str, tuple[str, str]]:
+    """Estrae gli articoli reali da una pagina elenco di Di Marzio."""
+    response = session.get(page_url, timeout=30)
+    response.raise_for_status()
+    soup = BeautifulSoup(response.text, "html.parser")
+
+    candidates: dict[str, tuple[str, str]] = {}
+    for link in soup.select("a[href]"):
+        raw_url = str(link.get("href") or "").strip()
+        if not raw_url:
+            continue
+
+        url = normalize_url(urljoin(page_url, raw_url))
+        parts = urlsplit(url)
+        if parts.netloc.lower() != "www.gianlucadimarzio.com":
+            continue
+        if not GIANLUCA_DI_MARZIO_ARTICLE_PATH_RE.search(parts.path):
+            continue
+
+        preview_text = link.get_text(" ", strip=True)
+        title_tag = link.select_one(".title")
+        title = (
+            title_tag.get_text(" ", strip=True)
+            if title_tag
+            else preview_text
+        )
+        candidates.setdefault(url, (title, preview_text))
+
+    return candidates
+
+
 def scrape_gianluca_di_marzio(
     session: requests.Session,
     requested_dates: set[date],
 ) -> list[Article]:
-    """Recupera le notizie che citano "Juventus" nel titolo o nel testo."""
-    response = session.get(GIANLUCA_DI_MARZIO_URL, timeout=30)
-    response.raise_for_status()
-    soup = BeautifulSoup(response.text, "html.parser")
+    """Recupera da home e Calciomercato le notizie che citano "Juventus"."""
+    candidates: dict[str, tuple[str, str]] = {}
+    listing_errors: list[requests.RequestException] = []
+
+    # La home non contiene sempre ogni articolo appena pubblicato.
+    # Leggiamo anche la sezione Calciomercato e deduplichiamo gli URL.
+    for page_url in GIANLUCA_DI_MARZIO_LISTING_URLS:
+        try:
+            page_candidates = _gianluca_di_marzio_listing_candidates(
+                session,
+                page_url,
+            )
+        except requests.RequestException as error:
+            listing_errors.append(error)
+            continue
+        for url, card_data in page_candidates.items():
+            candidates.setdefault(url, card_data)
+
+    if (
+        not candidates
+        and len(listing_errors) == len(GIANLUCA_DI_MARZIO_LISTING_URLS)
+    ):
+        raise listing_errors[0]
 
     articles: list[Article] = []
-    urls_done: set[str] = set()
-    for link in soup.select("#tcc-index a[href]"):
-        title_tag = link.select_one(".title")
-        if not title_tag:
+    for url, (listing_title, preview_text) in candidates.items():
+        # Durante il worker lo stesso articolo non va riaperto ogni 15 secondi.
+        if url in GIANLUCA_DI_MARZIO_CHECKED_URLS:
             continue
-        title = title_tag.get_text(" ", strip=True)
-        if not title:
-            continue
-
-        # La card della home contiene spesso anche l'anteprima dell'articolo.
-        # Serve per intercettare notizie il cui titolo non nomina la Juventus.
-        preview_text = link.get_text(" ", strip=True)
-
-        raw_url = str(link.get("href") or "").strip()
-        if not raw_url:
-            continue
-        url = normalize_url(urljoin(GIANLUCA_DI_MARZIO_URL, raw_url))
-        if urlsplit(url).netloc.lower() != "www.gianlucadimarzio.com":
-            continue
-        if url in urls_done:
-            continue
-        urls_done.add(url)
 
         try:
             article_response = session.get(url, timeout=30)
             article_response.raise_for_status()
         except requests.RequestException:
+            # Un errore transitorio non entra nella cache: sarà ritentato.
             continue
 
         article_soup = BeautifulSoup(article_response.text, "html.parser")
-        article_data = None
-        for script in article_soup.find_all(
-            "script",
-            attrs={"type": "application/ld+json"},
-        ):
-            try:
-                structured_data = json.loads(script.string or "")
-            except json.JSONDecodeError:
-                continue
+        article_title, published, summary, image_url = _generic_article_metadata(
+            article_soup,
+            url,
+        )
 
-            graph = (
-                structured_data.get("@graph", [])
-                if isinstance(structured_data, dict)
-                else []
-            )
-            for item in graph:
-                item_types = (
-                    item.get("@type", [])
-                    if isinstance(item, dict)
-                    else []
-                )
-                if isinstance(item_types, str):
-                    item_types = [item_types]
-                if "NewsArticle" in item_types:
-                    article_data = item
-                    break
-            if article_data:
-                break
+        # Se i metadati non sono ancora completi, ritentiamo nei cicli successivi.
+        if published is None or not article_title:
+            continue
 
-        if not article_data:
-            continue
-        try:
-            published = parse_iso_datetime(str(article_data["datePublished"]))
-        except (KeyError, ValueError):
-            continue
+        GIANLUCA_DI_MARZIO_CHECKED_URLS.add(url)
         if not is_requested_date(published, requested_dates):
             continue
 
-        article_title = str(article_data.get("headline") or title).strip()
-        summary = BeautifulSoup(
-            str(article_data.get("abstract") or ""),
-            "html.parser",
-        ).get_text(" ", strip=True)
-        article_body = BeautifulSoup(
-            str(article_data.get("articleBody") or ""),
-            "html.parser",
-        ).get_text(" ", strip=True)
-
-        description_tag = article_soup.select_one(
-            'meta[name="description"], meta[property="og:description"]'
+        article_data = _sky_structured_article(article_soup)
+        article_body = _clean_feed_text(
+            str(article_data.get("articleBody") or "")
         )
-        meta_description = (
-            str(description_tag.get("content") or "").strip()
-            if description_tag
-            else ""
+        meta_description = _first_meta_content(
+            article_soup,
+            ('meta[name="description"]', 'meta[property="og:description"]'),
         )
 
-        # Il controllo viene eseguito soltanto sul contenuto della singola
-        # notizia, evitando menu, articoli correlati e sezioni globali del sito.
+        # Controlliamo solo dati della card e della singola pagina articolo,
+        # non menu o articoli correlati dell'intero sito.
         searchable_text = " ".join(
             part
             for part in (
-                title,
+                listing_title,
                 preview_text,
                 article_title,
                 summary,
@@ -1732,6 +1739,7 @@ def scrape_gianluca_di_marzio(
                 url=url,
                 published=published,
                 summary=summary,
+                image_url=image_url,
             )
         )
 
