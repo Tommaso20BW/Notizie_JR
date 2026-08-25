@@ -254,7 +254,13 @@ class TelegramClient:
                 pass
         return min(2 ** (attempt - 1), 10)
 
-    def _deliver_result(self, method: str, payload: dict):
+    def _deliver_result(
+        self,
+        method: str,
+        payload: dict,
+        *,
+        retry_media_download: bool = False,
+    ):
         last_error = "errore sconosciuto"
 
         for attempt in range(1, self.max_attempts + 1):
@@ -277,10 +283,13 @@ class TelegramClient:
 
             description = data.get("description") or response.text
             last_error = f"HTTP {response.status_code} - {description}"
-            if (
-                response.status_code not in RETRYABLE_STATUS_CODES
-                or attempt == self.max_attempts
-            ):
+            retryable = response.status_code in RETRYABLE_STATUS_CODES
+            # Telegram risponde spesso con 400 quando non riesce a scaricare
+            # temporaneamente una foto remota. Per i media di X il chiamante
+            # richiede quindi più tentativi prima del fallback al solo testo.
+            if retry_media_download and response.status_code == 400:
+                retryable = True
+            if not retryable or attempt == self.max_attempts:
                 break
             self.sleep(self._retry_delay(attempt, data))
 
@@ -294,6 +303,8 @@ class TelegramClient:
         method: str,
         payload: dict,
         file_specs: Sequence[tuple[str, str, str, str]],
+        *,
+        retry_media_download: bool = False,
     ):
         """Invia uno o più file multipart riaprendoli a ogni tentativo."""
         last_error = "errore sconosciuto"
@@ -324,10 +335,10 @@ class TelegramClient:
 
             description = data.get("description") or response.text
             last_error = f"HTTP {response.status_code} - {description}"
-            if (
-                response.status_code not in RETRYABLE_STATUS_CODES
-                or attempt == self.max_attempts
-            ):
+            retryable = response.status_code in RETRYABLE_STATUS_CODES
+            if retry_media_download and response.status_code == 400:
+                retryable = True
+            if not retryable or attempt == self.max_attempts:
                 break
             self.sleep(self._retry_delay(attempt, data))
 
@@ -341,12 +352,15 @@ class TelegramClient:
         method: str,
         payload: dict,
         video_file_path: str,
+        *,
+        retry_media_download: bool = False,
     ):
         """Compatibilità: invia un singolo MP4 multipart."""
         return self._deliver_files_result(
             method,
             payload,
             (("video", video_file_path, "video.mp4", "video/mp4"),),
+            retry_media_download=retry_media_download,
         )
 
     def send_message(self, text: str) -> int | None:
@@ -362,7 +376,13 @@ class TelegramClient:
         message_id = (result or {}).get("message_id")
         return int(message_id) if message_id is not None else None
 
-    def send_photo(self, photo_url: str, caption: str) -> int | None:
+    def send_photo(
+        self,
+        photo_url: str,
+        caption: str,
+        *,
+        retry_media_download: bool = False,
+    ) -> int | None:
         result = self._deliver_result(
             "sendPhoto",
             {
@@ -371,6 +391,7 @@ class TelegramClient:
                 "caption": caption,
                 "parse_mode": "HTML",
             },
+            retry_media_download=retry_media_download,
         )
         message_id = (result or {}).get("message_id")
         return int(message_id) if message_id is not None else None
@@ -421,6 +442,8 @@ class TelegramClient:
         self,
         photo_urls: Sequence[str],
         caption: str,
+        *,
+        retry_media_download: bool = False,
     ) -> list[int]:
         """Invia più foto come un unico album Telegram (max 10 elementi).
         La didascalia va solo sul primo elemento, altrimenti Telegram la
@@ -436,6 +459,7 @@ class TelegramClient:
         result = self._deliver_result(
             "sendMediaGroup",
             {"chat_id": self.chat_id, "media": media},
+            retry_media_download=retry_media_download,
         )
         message_ids = []
         for entry in result or []:
@@ -449,6 +473,8 @@ class TelegramClient:
         video_url: str,
         photo_urls: Sequence[str],
         caption: str,
+        *,
+        retry_media_download: bool = False,
     ) -> list[int]:
         """Invia un video e le eventuali foto dello stesso post in un album."""
         media = [
@@ -467,6 +493,7 @@ class TelegramClient:
         result = self._deliver_result(
             "sendMediaGroup",
             {"chat_id": self.chat_id, "media": media},
+            retry_media_download=retry_media_download,
         )
         return [
             int(entry["message_id"])
@@ -479,6 +506,8 @@ class TelegramClient:
         video_file_path: str,
         photo_urls: Sequence[str],
         caption: str,
+        *,
+        retry_media_download: bool = False,
     ) -> list[int]:
         media = [
             {
@@ -500,6 +529,7 @@ class TelegramClient:
                 "media": json.dumps(media, ensure_ascii=False),
             },
             video_file_path,
+            retry_media_download=retry_media_download,
         )
         return [
             int(entry["message_id"])
@@ -519,6 +549,7 @@ class TelegramClient:
         photo_urls: Sequence[str] = (),
     ) -> DeliveryReceipt:
         article = self._message_article(article)
+        retry_x_images = str(article.source or "").startswith("X - ")
 
         if document_url:
             caption = format_article_message(
@@ -545,12 +576,14 @@ class TelegramClient:
                         video_file_path,
                         urls,
                         caption,
+                        retry_media_download=retry_x_images,
                     )
                 else:
                     message_ids = self.send_mixed_media_group(
                         video_url,
                         urls,
                         caption,
+                        retry_media_download=retry_x_images,
                     )
                 first_id = message_ids[0] if message_ids else None
                 return DeliveryReceipt(first_id, "album")
@@ -590,6 +623,7 @@ class TelegramClient:
                         article,
                         max_length=TELEGRAM_MAX_CAPTION_LENGTH,
                     ),
+                    retry_media_download=retry_x_images,
                 )
                 first_id = message_ids[0] if message_ids else None
                 return DeliveryReceipt(
@@ -614,6 +648,7 @@ class TelegramClient:
                         article,
                         max_length=TELEGRAM_MAX_CAPTION_LENGTH,
                     ),
+                    retry_media_download=retry_x_images,
                 )
                 return DeliveryReceipt(
                     message_id,

@@ -191,6 +191,102 @@ class TelegramNotifierTests(unittest.TestCase):
         self.assertEqual(receipt.mode, "testo")
         self.assertTrue(receipt.photo_fallback)
 
+    def test_x_photo_download_is_retried_before_text_fallback(self):
+        session = FakeSession(
+            [
+                FakeResponse(
+                    400,
+                    {
+                        "ok": False,
+                        "description": "failed to get HTTP URL content",
+                    },
+                ),
+                FakeResponse(
+                    400,
+                    {
+                        "ok": False,
+                        "description": "failed to get HTTP URL content",
+                    },
+                ),
+                FakeResponse(
+                    200,
+                    {"ok": True, "result": {"message_id": 791}},
+                ),
+            ]
+        )
+        sleeps = []
+        client = TelegramClient(
+            "token",
+            "chat",
+            session=session,
+            sleep=sleeps.append,
+        )
+
+        receipt = client.send_article(
+            SampleArticle(
+                source="X - Reporter",
+                url="https://x.com/Reporter/status/1234567890",
+            ),
+            photo_url="https://pbs.twimg.com/media/photo.jpg",
+        )
+
+        self.assertEqual(len(session.calls), 3)
+        self.assertTrue(
+            all(call[0].endswith("/sendPhoto") for call in session.calls)
+        )
+        self.assertEqual(sleeps, [1, 2])
+        self.assertEqual(receipt.message_id, 791)
+        self.assertEqual(receipt.mode, "foto")
+        self.assertFalse(receipt.photo_fallback)
+
+    def test_x_photo_falls_back_to_text_after_three_failed_attempts(self):
+        failed_download = FakeResponse(
+            400,
+            {
+                "ok": False,
+                "description": "failed to get HTTP URL content",
+            },
+        )
+        session = FakeSession(
+            [
+                failed_download,
+                failed_download,
+                failed_download,
+                FakeResponse(
+                    200,
+                    {"ok": True, "result": {"message_id": 792}},
+                ),
+            ]
+        )
+        sleeps = []
+        client = TelegramClient(
+            "token",
+            "chat",
+            session=session,
+            sleep=sleeps.append,
+        )
+
+        receipt = client.send_article(
+            SampleArticle(
+                source="X - Reporter",
+                url="https://x.com/Reporter/status/1234567890",
+            ),
+            photo_url="https://pbs.twimg.com/media/broken.jpg",
+        )
+
+        self.assertEqual(len(session.calls), 4)
+        self.assertTrue(
+            all(
+                call[0].endswith("/sendPhoto")
+                for call in session.calls[:3]
+            )
+        )
+        self.assertTrue(session.calls[3][0].endswith("/sendMessage"))
+        self.assertEqual(sleeps, [1, 2])
+        self.assertEqual(receipt.message_id, 792)
+        self.assertEqual(receipt.mode, "testo")
+        self.assertTrue(receipt.photo_fallback)
+
     def test_article_with_video_is_sent_as_streaming_video(self):
         session = FakeSession(
             [
