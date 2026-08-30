@@ -17,6 +17,7 @@ import requests
 TELEGRAM_MAX_MESSAGE_LENGTH = 4096
 TELEGRAM_MAX_CAPTION_LENGTH = 1024
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+LINK_EMOJI_ID = "5271604874419647061"
 
 X_TEXT_API_TEMPLATES = (
     "https://api.fxtwitter.com/status/{tweet_id}",
@@ -142,7 +143,8 @@ def format_article_message(
     ]
     if summary:
         parts.append(escape(summary))
-    parts.append(f'🔗 <a href="{url}">Apri contenuto</a>')
+    link_emoji = f'<tg-emoji emoji-id="{LINK_EMOJI_ID}">🔗</tg-emoji>'
+    parts.append(f'{link_emoji} <a href="{url}">Apri contenuto</a>')
 
     message = "\n\n".join(parts)
     if len(message) > max_length and summary:

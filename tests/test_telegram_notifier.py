@@ -62,7 +62,10 @@ class TelegramNotifierTests(unittest.TestCase):
         self.assertIn("Juve &amp; mercato &lt;estate&gt;", message)
         self.assertIn("Contatto tra &lt;club&gt; &amp; giocatore.", message)
         self.assertIn("https://example.com/news?a=1&amp;b=2", message)
-        self.assertIn("🔗", message)
+        self.assertIn(
+            '<tg-emoji emoji-id="5271604874419647061">🔗</tg-emoji>',
+            message,
+        )
 
     def test_rate_limit_uses_retry_after_and_returns_message_id(self):
         session = FakeSession(
