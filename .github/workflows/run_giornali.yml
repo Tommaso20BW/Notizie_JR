@@ -34,7 +34,7 @@ jobs:
           DROPBOX_APP_SECRET: ${{ secrets.DROPBOX_APP_SECRET }}
           DROPBOX_REFRESH_TOKEN: ${{ secrets.DROPBOX_REFRESH_TOKEN }}
           USA_DOPPIA_VERIFICA: "false"
-        run: python -u bot_giornali_rich.py
+        run: python -u bot_giornali.py
 
       - name: Pulisci la cronologia dei run
         if: always()
