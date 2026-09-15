@@ -162,25 +162,35 @@ def format_article_rich_html(
     *,
     media_block: str = "",
 ) -> str:
-    """Formato Rich Message equivalente, con media e pulsante nello stesso post."""
+    """Formato Rich Message: fonte in heading, testo arioso e CTA centrata."""
     source = escape(_clip(article.source, 160))
     title = escape(_clip(article.title, 900)).replace("\n", "<br>")
     summary = escape(_clip(article.summary, 2400)).replace("\n", "<br>")
     url = escape(article.url.strip(), quote=True)
 
+    # h2 = stessa grandezza usata dai titoli Rich di LeakKit_JR.
     parts = [
-        f"<p>{source_emoji(article.source)} <b>{source}</b></p>",
-        f"<p><b>{title}</b></p>",
+        f"<h2>{source_emoji(article.source)} {source}</h2>",
     ]
-    if summary:
+
+    # Titolo/sottotitolo e corpo restano nello stesso blocco ma con una riga
+    # vuota reale tra i due, così soprattutto le notizie dei quotidiani non
+    # sembrano un unico paragrafo.
+    if title and summary:
+        parts.append(f"<p><b>{title}</b><br><br>{summary}</p>")
+    elif title:
+        parts.append(f"<p><b>{title}</b></p>")
+    elif summary:
         parts.append(f"<p>{summary}</p>")
+
     if media_block:
         parts.append(media_block)
 
+    link_emoji = f'<tg-emoji emoji-id="{LINK_EMOJI_ID}">🔗</tg-emoji>'
     parts.append(
-        "<tg-button-row align=\"left\">"
+        "<tg-button-row align=\"center\">"
         f"<tg-button type=\"url\" style=\"primary\" url=\"{url}\">"
-        "Apri contenuto"
+        f"{link_emoji} Apri contenuto"
         "</tg-button>"
         "</tg-button-row>"
     )
