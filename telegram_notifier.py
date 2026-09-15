@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 from collections.abc import Callable, Sequence
@@ -16,6 +17,7 @@ import requests
 
 TELEGRAM_MAX_MESSAGE_LENGTH = 4096
 TELEGRAM_MAX_CAPTION_LENGTH = 1024
+TELEGRAM_RICH_MAX_MEDIA = 50
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 LINK_EMOJI_ID = "5271604874419647061"
 
@@ -58,7 +60,6 @@ class DeliveryReceipt:
     mode: str
     photo_fallback: bool = False
     video_fallback: bool = False
-
 
 
 @dataclass(frozen=True)
@@ -104,6 +105,7 @@ def _clean_x_text(text: str) -> str:
     )
     return text.translate(X_MARKER_TRANSLATION).strip()
 
+
 def source_emoji(source: str) -> str:
     for source_prefix, emoji_id, fallback_emoji in SOURCE_EMOJIS:
         if source.startswith(source_prefix):
@@ -130,7 +132,7 @@ def format_article_message(
     *,
     max_length: int = TELEGRAM_MAX_MESSAGE_LENGTH,
 ) -> str:
-    """Crea l'unico formato Telegram usato dal bot."""
+    """Crea l'unico formato Telegram legacy usato dal bot."""
     source = escape(_clip(article.source, 160))
     is_caption = max_length <= TELEGRAM_MAX_CAPTION_LENGTH
     title = escape(_clip(article.title, 350 if is_caption else 900))
@@ -155,6 +157,36 @@ def format_article_message(
     return message
 
 
+def format_article_rich_html(
+    article: ArticleLike,
+    *,
+    media_block: str = "",
+) -> str:
+    """Formato Rich Message equivalente, con media e pulsante nello stesso post."""
+    source = escape(_clip(article.source, 160))
+    title = escape(_clip(article.title, 900)).replace("\n", "<br>")
+    summary = escape(_clip(article.summary, 2400)).replace("\n", "<br>")
+    url = escape(article.url.strip(), quote=True)
+
+    parts = [
+        f"<p>{source_emoji(article.source)} <b>{source}</b></p>",
+        f"<p><b>{title}</b></p>",
+    ]
+    if summary:
+        parts.append(f"<p>{summary}</p>")
+    if media_block:
+        parts.append(media_block)
+
+    parts.append(
+        "<tg-button-row align=\"left\">"
+        f"<tg-button type=\"url\" style=\"primary\" url=\"{url}\">"
+        "Apri contenuto"
+        "</tg-button>"
+        "</tg-button-row>"
+    )
+    return "".join(parts)
+
+
 class TelegramClient:
     def __init__(
         self,
@@ -164,6 +196,7 @@ class TelegramClient:
         session: requests.Session | None = None,
         max_attempts: int = 3,
         sleep: Callable[[float], None] = time.sleep,
+        rich_messages: bool | None = None,
     ) -> None:
         if not token or not chat_id:
             raise ValueError("Token e chat_id Telegram sono obbligatori.")
@@ -172,6 +205,18 @@ class TelegramClient:
         self.session = session or requests.Session()
         self.max_attempts = max(max_attempts, 1)
         self.sleep = sleep
+        self.rich_messages = (
+            self._env_flag("TELEGRAM_RICH_MESSAGES", default=False)
+            if rich_messages is None
+            else bool(rich_messages)
+        )
+
+    @staticmethod
+    def _env_flag(name: str, *, default: bool) -> bool:
+        raw = os.getenv(name)
+        if raw is None:
+            return default
+        return raw.strip().lower() not in {"", "0", "false", "no", "off"}
 
     @staticmethod
     def _x_tweet_id(url: str) -> str:
@@ -365,6 +410,143 @@ class TelegramClient:
             retry_media_download=retry_media_download,
         )
 
+    def send_rich_message(
+        self,
+        rich_message: dict,
+        *,
+        file_specs: Sequence[tuple[str, str, str, str]] = (),
+        retry_media_download: bool = False,
+    ) -> int | None:
+        """Invia un InputRichMessage, con eventuali upload multipart."""
+        if not self.rich_messages:
+            raise TelegramDeliveryError("Rich Messages disabilitati")
+
+        if file_specs:
+            result = self._deliver_files_result(
+                "sendRichMessage",
+                {
+                    "chat_id": self.chat_id,
+                    "rich_message": json.dumps(
+                        rich_message,
+                        ensure_ascii=False,
+                    ),
+                },
+                file_specs,
+                retry_media_download=retry_media_download,
+            )
+        else:
+            result = self._deliver_result(
+                "sendRichMessage",
+                {
+                    "chat_id": self.chat_id,
+                    "rich_message": rich_message,
+                },
+                retry_media_download=retry_media_download,
+            )
+
+        message_id = (result or {}).get("message_id")
+        return int(message_id) if message_id is not None else None
+
+    @staticmethod
+    def _remote_media_block(
+        *,
+        video_url: str = "",
+        photo_urls: Sequence[str] = (),
+    ) -> str:
+        tags: list[str] = []
+        if video_url:
+            tags.append(
+                f'<video src="{escape(video_url.strip(), quote=True)}"></video>'
+            )
+        tags.extend(
+            f'<img src="{escape(url.strip(), quote=True)}"/>'
+            for url in photo_urls
+            if url and url.strip()
+        )
+        if not tags:
+            return ""
+        if len(tags) == 1:
+            return tags[0]
+        return f"<tg-collage>{''.join(tags)}</tg-collage>"
+
+    def _send_rich_article(
+        self,
+        article: ArticleLike,
+        *,
+        document_url: str = "",
+        video_url: str = "",
+        video_file_path: str = "",
+        photo_url: str = "",
+        photo_urls: Sequence[str] = (),
+        retry_media_download: bool = False,
+    ) -> int | None:
+        """Crea un solo Rich Message per testo e media della notizia."""
+        rich_urls = list(photo_urls) if photo_urls else (
+            [photo_url] if photo_url else []
+        )
+
+        file_specs: tuple[tuple[str, str, str, str], ...] = ()
+        media_entries: list[dict] = []
+
+        if document_url:
+            media_block = (
+                f'<tg-document src="{escape(document_url.strip(), quote=True)}">'
+                "</tg-document>"
+            )
+        elif video_file_path:
+            # Un video + massimo 49 foto = limite totale di 50 media.
+            rich_urls = rich_urls[: TELEGRAM_RICH_MAX_MEDIA - 1]
+            media_entries.append(
+                {
+                    "id": "video_0",
+                    "media": {
+                        "type": "video",
+                        "media": "attach://rich_video",
+                        "supports_streaming": True,
+                    },
+                }
+            )
+            file_specs = (
+                ("rich_video", video_file_path, "video.mp4", "video/mp4"),
+            )
+            tags = ['<video src="tg://video?id=video_0"></video>']
+            tags.extend(
+                f'<img src="{escape(url.strip(), quote=True)}"/>'
+                for url in rich_urls
+                if url and url.strip()
+            )
+            media_block = (
+                tags[0]
+                if len(tags) == 1
+                else f"<tg-collage>{''.join(tags)}</tg-collage>"
+            )
+        else:
+            max_photos = (
+                TELEGRAM_RICH_MAX_MEDIA - 1
+                if video_url
+                else TELEGRAM_RICH_MAX_MEDIA
+            )
+            rich_urls = rich_urls[:max_photos]
+            media_block = self._remote_media_block(
+                video_url=video_url,
+                photo_urls=rich_urls,
+            )
+
+        rich_message: dict = {
+            "html": format_article_rich_html(
+                article,
+                media_block=media_block,
+            )
+        }
+        if media_entries:
+            rich_message["media"] = media_entries
+
+        return self.send_rich_message(
+            rich_message,
+            file_specs=file_specs,
+            retry_media_download=retry_media_download,
+        )
+
     def send_message(self, text: str) -> int | None:
         result = self._deliver_result(
             "sendMessage",
@@ -553,6 +735,23 @@ class TelegramClient:
         article = self._message_article(article)
         retry_x_images = str(article.source or "").startswith("X - ")
 
+        # Nuovo livello di presentazione. Se Telegram rifiuta il Rich Message,
+        # il flusso prosegue identico a prima con i metodi legacy sottostanti.
+        if self.rich_messages:
+            try:
+                message_id = self._send_rich_article(
+                    article,
+                    document_url=document_url,
+                    video_url=video_url,
+                    video_file_path=video_file_path,
+                    photo_url=photo_url,
+                    photo_urls=photo_urls,
+                    retry_media_download=retry_x_images,
+                )
+                return DeliveryReceipt(message_id, "rich")
+            except (TelegramDeliveryError, ValueError):
+                pass
+
         if document_url:
             caption = format_article_message(
                 article,
@@ -561,7 +760,7 @@ class TelegramClient:
             message_id = self.send_document(document_url, caption)
             return DeliveryReceipt(message_id, "documento")
 
-        # Telegram consente al massimo 10 elementi per album.
+        # Il fallback legacy conserva il limite originale di 10 elementi.
         urls = list(photo_urls)[:10] if photo_urls else (
             [photo_url] if photo_url else []
         )
