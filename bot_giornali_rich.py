@@ -171,11 +171,17 @@ def send_to_telegram(news_list):
                 f"{custom_emoji} <b>{source_name}</b>{continuation}"
                 f"\n\n{body}"
             )
-            # Stessa gerarchia visiva dei Leak: la fonte è un h2.
-            rich_html = (
-                f"<h2>{custom_emoji} {source_name}{continuation}</h2>"
-                f"<p>{body}</p>"
-            )
+            # Layout editoriale coerente con Notizie_JR: fonte grande,
+            # eventuale indicazione della parte in piccolo e corpo separato.
+            rich_parts = [
+                f"<h2>{custom_emoji} {source_name}</h2>",
+            ]
+            if len(parts) > 1:
+                rich_parts.append(
+                    f"<footer>Parte {number} di {len(parts)}</footer>"
+                )
+            rich_parts.append(f"<p>{body}</p>")
+            rich_html = "".join(rich_parts)
 
             message_id = _post_rich(rich_html, reply_to=reply_to)
             if message_id is None:
