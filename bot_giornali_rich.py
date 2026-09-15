@@ -171,8 +171,9 @@ def send_to_telegram(news_list):
                 f"{custom_emoji} <b>{source_name}</b>{continuation}"
                 f"\n\n{body}"
             )
+            # Stessa gerarchia visiva dei Leak: la fonte è un h2.
             rich_html = (
-                f"<p>{custom_emoji} <b>{source_name}</b>{continuation}</p>"
+                f"<h2>{custom_emoji} {source_name}{continuation}</h2>"
                 f"<p>{body}</p>"
             )
 
