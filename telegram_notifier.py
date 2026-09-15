@@ -189,12 +189,12 @@ def format_article_rich_html(
         if summary:
             parts.append(f"<p>{summary}</p>")
 
-    # CTA coerente e discreta: pulsante a sinistra con la custom emoji link.
-    link_emoji = f'<tg-emoji emoji-id="{LINK_EMOJI_ID}">🔗</tg-emoji>'
+    # CTA pulita: pulsante URL a sinistra. Telegram aggiunge la sua
+    # indicazione grafica per i link, quindi non inseriamo altre emoji.
     parts.append(
         '<tg-button-row align="left">'
         f'<tg-button type="url" style="primary" url="{url}">'
-        f'{link_emoji} Apri contenuto'
+        'Apri contenuto'
         '</tg-button>'
         '</tg-button-row>'
     )
