@@ -162,37 +162,41 @@ def format_article_rich_html(
     *,
     media_block: str = "",
 ) -> str:
-    """Formato Rich Message: fonte in heading, testo arioso e CTA centrata."""
+    """Formato Rich Message editoriale per le notizie."""
     source = escape(_clip(article.source, 160))
     title = escape(_clip(article.title, 900)).replace("\n", "<br>")
     summary = escape(_clip(article.summary, 2400)).replace("\n", "<br>")
     url = escape(article.url.strip(), quote=True)
+    is_x = str(article.source or "").startswith("X - ")
 
-    # h2 = stessa grandezza usata dai titoli Rich di LeakKit_JR.
+    # La fonte usa la stessa gerarchia visiva dei titoli LeakKit.
     parts = [
         f"<h2>{source_emoji(article.source)} {source}</h2>",
     ]
 
-    # Titolo/sottotitolo e corpo restano nello stesso blocco ma con una riga
-    # vuota reale tra i due, così soprattutto le notizie dei quotidiani non
-    # sembrano un unico paragrafo.
-    if title and summary:
-        parts.append(f"<p><b>{title}</b><br><br>{summary}</p>")
-    elif title:
-        parts.append(f"<p><b>{title}</b></p>")
-    elif summary:
-        parts.append(f"<p>{summary}</p>")
+    if is_x:
+        # Su X il testo originale è il contenuto principale, non un titolo.
+        if title:
+            parts.append(f"<p>{title}</p>")
+        if media_block:
+            parts.append(media_block)
+    else:
+        # Articoli editoriali: fonte -> sottotitolo -> media -> corpo.
+        if title:
+            parts.append(f"<h4>{title}</h4>")
+        if media_block:
+            parts.append(media_block)
+        if summary:
+            parts.append(f"<p>{summary}</p>")
 
-    if media_block:
-        parts.append(media_block)
-
+    # CTA coerente e discreta: pulsante a sinistra con la custom emoji link.
     link_emoji = f'<tg-emoji emoji-id="{LINK_EMOJI_ID}">🔗</tg-emoji>'
     parts.append(
-        "<tg-button-row align=\"center\">"
-        f"<tg-button type=\"url\" style=\"primary\" url=\"{url}\">"
-        f"{link_emoji} Apri contenuto"
-        "</tg-button>"
-        "</tg-button-row>"
+        '<tg-button-row align="left">'
+        f'<tg-button type="url" style="primary" url="{url}">'
+        f'{link_emoji} Apri contenuto'
+        '</tg-button>'
+        '</tg-button-row>'
     )
     return "".join(parts)
 
