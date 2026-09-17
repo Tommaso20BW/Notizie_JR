@@ -115,6 +115,33 @@ def source_emoji(source: str) -> str:
     return "📰"
 
 
+def source_link_label(source: str) -> str:
+    """Restituisce la CTA più adatta al tipo di fonte."""
+    source = str(source or "")
+
+    if source.startswith("X - "):
+        return "Apri X"
+    if source.startswith("YouTube - "):
+        return "Apri video"
+    if source.startswith("Juventus.com"):
+        return "Apri comunicato"
+    if source.startswith("Borsa Italiana"):
+        return "Apri documento"
+    if source.startswith(
+        (
+            "Sky Sport",
+            "La Gazzetta dello Sport",
+            "Corriere dello Sport",
+            "Tuttosport",
+            "Gianluca Di Marzio",
+            "Alfredo Pedullà",
+        )
+    ):
+        return "Apri notizia"
+
+    return "Apri contenuto"
+
+
 def _clip(value: str, limit: int) -> str:
     value = (value or "").replace("\r\n", "\n").replace("\r", "\n")
     value = "\n".join(
@@ -146,7 +173,9 @@ def format_article_message(
     if summary:
         parts.append(escape(summary))
     link_emoji = f'<tg-emoji emoji-id="{LINK_EMOJI_ID}">🔗</tg-emoji>'
-    parts.append(f'{link_emoji} <a href="{url}">Apri contenuto</a>')
+    parts.append(
+        f'{link_emoji} <a href="{url}">{source_link_label(article.source)}</a>'
+    )
 
     message = "\n\n".join(parts)
     if len(message) > max_length and summary:
@@ -194,7 +223,7 @@ def format_article_rich_html(
     parts.append(
         '<tg-button-row align="left">'
         f'<tg-button type="url" style="primary" url="{url}">'
-        'Apri contenuto'
+        f'{source_link_label(article.source)}'
         '</tg-button>'
         '</tg-button-row>'
     )
