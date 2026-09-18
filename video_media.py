@@ -5,6 +5,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import tempfile
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -14,6 +15,7 @@ import requests
 
 MAX_VIDEO_FILE_BYTES = 49_000_000
 DOWNLOAD_CHUNK_BYTES = 64 * 1024
+MEDIA_DOWNLOAD_MAX_ATTEMPTS = 5
 
 
 class VideoPreparationError(RuntimeError):
@@ -126,36 +128,66 @@ def _download_video(
     video_url: str,
     destination: Path,
 ) -> None:
-    try:
-        with session.get(video_url, stream=True, timeout=(15, 60)) as response:
-            response.raise_for_status()
-            try:
-                content_length = int(response.headers.get("Content-Length") or 0)
-            except (TypeError, ValueError):
-                content_length = 0
-            if content_length > MAX_VIDEO_FILE_BYTES:
-                raise VideoPreparationError(
-                    "Video oltre il limite di upload Telegram."
-                )
+    """Scarica il video con un massimo di 5 tentativi totali."""
+    last_error: Exception | None = None
 
-            downloaded = 0
-            with destination.open("wb") as output:
-                for chunk in response.iter_content(DOWNLOAD_CHUNK_BYTES):
-                    if not chunk:
-                        continue
-                    downloaded += len(chunk)
-                    if downloaded > MAX_VIDEO_FILE_BYTES:
-                        raise VideoPreparationError(
-                            "Video oltre il limite di upload Telegram."
-                        )
-                    output.write(chunk)
-    except (OSError, requests.RequestException) as error:
-        raise VideoPreparationError(
-            f"Download del video non riuscito: {error}"
-        ) from error
+    for attempt in range(1, MEDIA_DOWNLOAD_MAX_ATTEMPTS + 1):
+        try:
+            destination.unlink(missing_ok=True)
+            with session.get(
+                video_url,
+                stream=True,
+                timeout=(15, 60),
+            ) as response:
+                response.raise_for_status()
+                try:
+                    content_length = int(
+                        response.headers.get("Content-Length") or 0
+                    )
+                except (TypeError, ValueError):
+                    content_length = 0
 
-    if not destination.exists() or destination.stat().st_size == 0:
-        raise VideoPreparationError("Il video scaricato è vuoto.")
+                if content_length > MAX_VIDEO_FILE_BYTES:
+                    raise VideoPreparationError(
+                        "Video oltre il limite di upload Telegram."
+                    )
+
+                downloaded = 0
+                with destination.open("wb") as output:
+                    for chunk in response.iter_content(DOWNLOAD_CHUNK_BYTES):
+                        if not chunk:
+                            continue
+                        downloaded += len(chunk)
+                        if downloaded > MAX_VIDEO_FILE_BYTES:
+                            raise VideoPreparationError(
+                                "Video oltre il limite di upload Telegram."
+                            )
+                        output.write(chunk)
+
+            if destination.exists() and destination.stat().st_size > 0:
+                return
+
+            raise OSError("Il video scaricato è vuoto.")
+
+        except VideoPreparationError:
+            # Errori definitivi, come un file troppo grande, non migliorano
+            # ripetendo il download.
+            raise
+        except (OSError, requests.RequestException) as error:
+            last_error = error
+            destination.unlink(missing_ok=True)
+            print(
+                "[MEDIA] download video non riuscito "
+                f"(tentativo {attempt}/{MEDIA_DOWNLOAD_MAX_ATTEMPTS}): {error}"
+            )
+            if attempt < MEDIA_DOWNLOAD_MAX_ATTEMPTS:
+                delay = min(2 ** (attempt - 1), 8)
+                time.sleep(delay)
+
+    raise VideoPreparationError(
+        "Download del video non riuscito dopo "
+        f"{MEDIA_DOWNLOAD_MAX_ATTEMPTS} tentativi: {last_error}"
+    ) from last_error
 
 
 @contextmanager
