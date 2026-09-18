@@ -18,6 +18,7 @@ import requests
 TELEGRAM_MAX_MESSAGE_LENGTH = 4096
 TELEGRAM_MAX_CAPTION_LENGTH = 1024
 TELEGRAM_RICH_MAX_MEDIA = 50
+MEDIA_DOWNLOAD_MAX_ATTEMPTS = 5
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 LINK_EMOJI_ID = "5271604874419647061"
 
@@ -248,11 +249,10 @@ class TelegramClient:
         self.session = session or requests.Session()
         self.max_attempts = max(max_attempts, 1)
         self.sleep = sleep
-        self.rich_messages = (
-            self._env_flag("TELEGRAM_RICH_MESSAGES", default=False)
-            if rich_messages is None
-            else bool(rich_messages)
-        )
+        # Rich Messages è il formato obbligatorio per Notizie_JR.
+        # Il vecchio invio Telegram resta disponibile solo come API interna
+        # per compatibilità, ma non viene più usato come fallback.
+        self.rich_messages = True
 
     @staticmethod
     def _env_flag(name: str, *, default: bool) -> bool:
@@ -352,8 +352,13 @@ class TelegramClient:
         retry_media_download: bool = False,
     ):
         last_error = "errore sconosciuto"
+        max_attempts = (
+            MEDIA_DOWNLOAD_MAX_ATTEMPTS
+            if retry_media_download
+            else self.max_attempts
+        )
 
-        for attempt in range(1, self.max_attempts + 1):
+        for attempt in range(1, max_attempts + 1):
             try:
                 response = self.session.post(
                     f"{self.api_root}/{method}",
@@ -362,7 +367,7 @@ class TelegramClient:
                 )
             except requests.RequestException as error:
                 last_error = f"errore di rete: {error}"
-                if attempt == self.max_attempts:
+                if attempt == max_attempts:
                     break
                 self.sleep(self._retry_delay(attempt))
                 continue
@@ -379,12 +384,12 @@ class TelegramClient:
             # richiede quindi più tentativi prima del fallback al solo testo.
             if retry_media_download and response.status_code == 400:
                 retryable = True
-            if not retryable or attempt == self.max_attempts:
+            if not retryable or attempt == max_attempts:
                 break
             self.sleep(self._retry_delay(attempt, data))
 
         raise TelegramDeliveryError(
-            f"Telegram {method} fallito dopo {self.max_attempts} "
+            f"Telegram {method} fallito dopo {max_attempts} "
             f"tentativi: {last_error}"
         )
 
@@ -398,8 +403,13 @@ class TelegramClient:
     ):
         """Invia uno o più file multipart riaprendoli a ogni tentativo."""
         last_error = "errore sconosciuto"
+        max_attempts = (
+            MEDIA_DOWNLOAD_MAX_ATTEMPTS
+            if retry_media_download
+            else self.max_attempts
+        )
 
-        for attempt in range(1, self.max_attempts + 1):
+        for attempt in range(1, max_attempts + 1):
             try:
                 with ExitStack() as stack:
                     files = {}
@@ -414,7 +424,7 @@ class TelegramClient:
                     )
             except (OSError, requests.RequestException) as error:
                 last_error = f"errore di rete o file: {error}"
-                if attempt == self.max_attempts:
+                if attempt == max_attempts:
                     break
                 self.sleep(self._retry_delay(attempt))
                 continue
@@ -428,12 +438,12 @@ class TelegramClient:
             retryable = response.status_code in RETRYABLE_STATUS_CODES
             if retry_media_download and response.status_code == 400:
                 retryable = True
-            if not retryable or attempt == self.max_attempts:
+            if not retryable or attempt == max_attempts:
                 break
             self.sleep(self._retry_delay(attempt, data))
 
         raise TelegramDeliveryError(
-            f"Telegram {method} fallito dopo {self.max_attempts} "
+            f"Telegram {method} fallito dopo {max_attempts} "
             f"tentativi: {last_error}"
         )
 
@@ -775,142 +785,46 @@ class TelegramClient:
         photo_url: str = "",
         photo_urls: Sequence[str] = (),
     ) -> DeliveryReceipt:
+        """Invia sempre in Rich Message, senza fallback al formato legacy.
+
+        Se il Rich Message contiene media e Telegram non riesce a recuperarli
+        o ad accettarli, vengono effettuati al massimo 5 tentativi totali.
+        Esauriti i tentativi, la stessa notizia viene inviata di nuovo come
+        Rich Message testuale, senza foto, video o documenti.
+        """
+        del video_thumbnail_url  # Nessun fallback statico: dopo 5 tentativi solo testo.
+
         article = self._message_article(article)
-        retry_x_images = str(article.source or "").startswith("X - ")
+        has_photos = bool(photo_url or any(url for url in photo_urls if url))
+        has_video = bool(video_url or video_file_path)
+        has_document = bool(document_url)
+        has_media = has_photos or has_video or has_document
 
-        # Nuovo livello di presentazione. Se Telegram rifiuta il Rich Message,
-        # il flusso prosegue identico a prima con i metodi legacy sottostanti.
-        if self.rich_messages:
-            try:
-                message_id = self._send_rich_article(
-                    article,
-                    document_url=document_url,
-                    video_url=video_url,
-                    video_file_path=video_file_path,
-                    photo_url=photo_url,
-                    photo_urls=photo_urls,
-                    retry_media_download=retry_x_images,
-                )
-                return DeliveryReceipt(message_id, "rich")
-            except (TelegramDeliveryError, ValueError):
-                pass
-
-        if document_url:
-            caption = format_article_message(
+        try:
+            message_id = self._send_rich_article(
                 article,
-                max_length=TELEGRAM_MAX_CAPTION_LENGTH,
+                document_url=document_url,
+                video_url=video_url,
+                video_file_path=video_file_path,
+                photo_url=photo_url,
+                photo_urls=photo_urls,
+                retry_media_download=has_media,
             )
-            message_id = self.send_document(document_url, caption)
-            return DeliveryReceipt(message_id, "documento")
+            return DeliveryReceipt(message_id, "rich")
+        except (TelegramDeliveryError, ValueError) as error:
+            if not has_media:
+                raise
 
-        # Il fallback legacy conserva il limite originale di 10 elementi.
-        urls = list(photo_urls)[:10] if photo_urls else (
-            [photo_url] if photo_url else []
-        )
+            print(
+                "[TELEGRAM RICH] media non disponibile dopo "
+                f"{MEDIA_DOWNLOAD_MAX_ATTEMPTS} tentativi ({error}); "
+                "invio la notizia senza media, sempre in Rich Message."
+            )
 
-        mixed_album_failed = False
-        if (video_file_path or video_url) and urls:
-            try:
-                caption = format_article_message(
-                    article,
-                    max_length=TELEGRAM_MAX_CAPTION_LENGTH,
-                )
-                if video_file_path:
-                    message_ids = self.send_mixed_media_group_file(
-                        video_file_path,
-                        urls,
-                        caption,
-                        retry_media_download=retry_x_images,
-                    )
-                else:
-                    message_ids = self.send_mixed_media_group(
-                        video_url,
-                        urls,
-                        caption,
-                        retry_media_download=retry_x_images,
-                    )
-                first_id = message_ids[0] if message_ids else None
-                return DeliveryReceipt(first_id, "album")
-            except (TelegramDeliveryError, ValueError):
-                mixed_album_failed = True
-
-        video_fallback = False
-        if video_file_path or video_url:
-            try:
-                caption = format_article_message(
-                    article,
-                    max_length=TELEGRAM_MAX_CAPTION_LENGTH,
-                )
-                if video_file_path:
-                    message_id = self.send_video_file(
-                        video_file_path,
-                        caption,
-                    )
-                else:
-                    message_id = self.send_video(video_url, caption)
-                return DeliveryReceipt(
-                    message_id,
-                    "video",
-                    photo_fallback=mixed_album_failed,
-                )
-            except (TelegramDeliveryError, ValueError):
-                video_fallback = True
-
-        if video_fallback and not urls and video_thumbnail_url:
-            urls = [video_thumbnail_url]
-
-        if len(urls) > 1:
-            try:
-                message_ids = self.send_media_group(
-                    urls,
-                    format_article_message(
-                        article,
-                        max_length=TELEGRAM_MAX_CAPTION_LENGTH,
-                    ),
-                    retry_media_download=retry_x_images,
-                )
-                first_id = message_ids[0] if message_ids else None
-                return DeliveryReceipt(
-                    first_id,
-                    "album",
-                    video_fallback=video_fallback,
-                )
-            except (TelegramDeliveryError, ValueError):
-                message_id = self.send_message(format_article_message(article))
-                return DeliveryReceipt(
-                    message_id,
-                    "testo",
-                    photo_fallback=True,
-                    video_fallback=video_fallback,
-                )
-
-        if urls:
-            try:
-                message_id = self.send_photo(
-                    urls[0],
-                    format_article_message(
-                        article,
-                        max_length=TELEGRAM_MAX_CAPTION_LENGTH,
-                    ),
-                    retry_media_download=retry_x_images,
-                )
-                return DeliveryReceipt(
-                    message_id,
-                    "foto",
-                    video_fallback=video_fallback,
-                )
-            except (TelegramDeliveryError, ValueError):
-                message_id = self.send_message(format_article_message(article))
-                return DeliveryReceipt(
-                    message_id,
-                    "testo",
-                    photo_fallback=True,
-                    video_fallback=video_fallback,
-                )
-
-        message_id = self.send_message(format_article_message(article))
+        message_id = self._send_rich_article(article)
         return DeliveryReceipt(
             message_id,
-            "testo",
-            video_fallback=video_fallback,
+            "rich_text",
+            photo_fallback=has_photos,
+            video_fallback=has_video,
         )
