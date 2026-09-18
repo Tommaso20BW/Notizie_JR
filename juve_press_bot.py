@@ -247,7 +247,7 @@ SKY_RECAP_TITLE_RE = re.compile(
     re.IGNORECASE,
 )
 SKY_VIDEO_TITLE_RE = re.compile(r"\bvideo\b", re.IGNORECASE)
-SKY_EXCLUDED_TITLE_RE = re.compile(r"\bjuve\s+stabia\b", re.IGNORECASE)
+JUVE_STABIA_RE = re.compile(r"\bjuve\s+stabia\b", re.IGNORECASE)
 BORSA_DATE_RE = re.compile(
     r"\b(\d{1,2})\s+"
     r"(gen|feb|mar|apr|mag|giu|lug|ago|set|ott|nov|dic)\s+"    r"(\d{1,2}):(\d{2})\b",
@@ -415,11 +415,9 @@ def is_collection_candidate(
 
 
 def is_juventus_title(title: str) -> bool:
-    """Esclude omonimie, come la squadra Juve Stabia."""
-    return bool(
-        JUVE_KEYWORD_RE.search(title)
-        and not SKY_EXCLUDED_TITLE_RE.search(title)
-    )
+    """Ignora 'Juve Stabia' come nome composto e cerca la vera Juve/Juventus."""
+    text_without_juve_stabia = JUVE_STABIA_RE.sub(" ", title)
+    return bool(JUVE_KEYWORD_RE.search(text_without_juve_stabia))
 
 
 def is_juventus_x_post(text: str) -> bool:
@@ -1276,10 +1274,7 @@ def _sky_juventus_article_from_url(
         )
         if part
     )
-    if (
-        not JUVE_KEYWORD_RE.search(searchable_text)
-        or SKY_EXCLUDED_TITLE_RE.search(searchable_text)
-    ):
+    if not is_juventus_title(searchable_text):
         return None
 
     image_url = _schema_image_url(article_data.get("image"), url)
@@ -2083,7 +2078,6 @@ def scrape_youtube_channels(
                 dict,
             ):
                 continue
-
             resource_id = snippet.get("resourceId") or {}
             video_id = str(
                 content_details.get("videoId")
@@ -2261,7 +2255,7 @@ def _rss_item_has_native_video(item: ET.Element) -> bool:
     description = item.findtext("description", default="")
     return bool(
         re.search(
-            r"<br\s*/?>\s*Video\s*<br\s*/?>",
+            r"<brYs*/?>Ys*Video\s*<br\s*/?>",
             description,
             flags=re.IGNORECASE,
         )
@@ -2355,7 +2349,7 @@ def _x_media_from_payload(payload: dict) -> XMedia:
         if not isinstance(media, dict):
             continue
         # Le GIF di X sono MP4 senza audio, ma Telegram le mostra come
-        # animazioni in loop: vengono escluse esplicitamente.
+        # animazioni  in loop: vengono escluse esplicitamente.
         if str(media.get("type") or "").lower() != "video":
             continue
         video_url = _best_x_mp4(media)
