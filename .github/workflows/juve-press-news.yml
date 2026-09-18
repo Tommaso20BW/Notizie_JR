@@ -2,12 +2,24 @@ name: Notizie Web
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "juve_press_bot.py"
+      - "telegram_notifier.py"
+      - "preview_image.py"
+      - "video_media.py"
+      - "article_journal.py"
+      - "requirements-juve-press.txt"
+      - ".github/workflows/juve-press-news.yml"
 
-# Un solo worker per branch. Un avvio manuale o automatico resta in coda e
-# non interrompe mai quello che sta salvando lo stato corrente.
+# Un solo worker per branch. Un normale riavvio resta in coda, mentre un push
+# di codice nuovo interrompe il worker precedente per non farlo girare con
+# una versione ormai vecchia del bot.
 concurrency:
   group: notizie-web-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'push' }}
 
 permissions:
   actions: write
@@ -116,19 +128,6 @@ jobs:
           git pull --rebase origin "$TARGET_REF"
           git push origin "HEAD:$TARGET_REF"
 
-      - name: Avvia il worker successivo
-        if: >-
-          always() &&
-          steps.persist_state.outcome == 'success'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TARGET_REF: ${{ github.ref_name }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          gh workflow run juve-press-news.yml --ref "$TARGET_REF"
-          echo "Worker successivo accodato sul branch $TARGET_REF."
-
       - name: Pulisci la cronologia dei run
         if: always()
         env:
@@ -149,3 +148,16 @@ jobs:
           done
 
           echo "Pulizia completata."
+
+      - name: Avvia il worker successivo
+        if: >-
+          always() &&
+          steps.persist_state.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_REF: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh workflow run juve-press-news.yml --ref "$TARGET_REF"
+          echo "Worker successivo accodato sul branch $TARGET_REF."
