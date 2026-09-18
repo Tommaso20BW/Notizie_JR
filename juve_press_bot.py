@@ -247,7 +247,7 @@ SKY_RECAP_TITLE_RE = re.compile(
     re.IGNORECASE,
 )
 SKY_VIDEO_TITLE_RE = re.compile(r"\bvideo\b", re.IGNORECASE)
-JUVE_STABIA_RE = re.compile(r"\bjuve\s+stabia\b", re.IGNORECASE)
+JUVE_STABIA_RE = re.compile(r"\bjuve(?:\s+|[-_/]+)stabia\b", re.IGNORECASE)
 BORSA_DATE_RE = re.compile(
     r"\b(\d{1,2})\s+"
     r"(gen|feb|mar|apr|mag|giu|lug|ago|set|ott|nov|dic)\s+"    r"(\d{1,2}):(\d{2})\b",
@@ -425,6 +425,26 @@ def is_juventus_x_post(text: str) -> bool:
     return is_juventus_title(text) or bool(
         X_JUVENTUS_MENTION_RE.search(text)
     )
+
+
+def x_source_requires_juventus_filter(source: str) -> bool:
+    """Riconosce gli account X per i quali va applicato il filtro Juventus."""
+    prefix = "X - "
+    if not source.startswith(prefix):
+        return False
+    handle = source[len(prefix):].casefold()
+    return any(
+        str(account["handle"]).casefold() == handle
+        and bool(account["filter_juventus"])
+        for account in X_ACCOUNTS
+    )
+
+
+def is_article_allowed(article: Article) -> bool:
+    """Ultima barriera prima dell'invio, inclusi gli elementi già nel pending."""
+    if x_source_requires_juventus_filter(article.source):
+        return is_juventus_x_post(article.title)
+    return True
 
 
 def split_x_hashtag(hashtag: str) -> str:
@@ -2939,6 +2959,13 @@ def _run_cycle(
     def try_delivery(article: Article) -> None:
         nonlocal sent_count
         key = article.notification_key
+        if not is_article_allowed(article):
+            journal.remove(key)
+            print(
+                f'[FILTRO] scartato | {article.source} | '
+                f'{compact_log_text(article.title, 65)}'
+            )
+            return
         if key in seen or key in attempted:
             return
         attempted.add(key)
