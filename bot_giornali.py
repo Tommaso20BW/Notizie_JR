@@ -29,14 +29,7 @@ USA_DOPPIA_VERIFICA = os.getenv("USA_DOPPIA_VERIFICA", "false").lower() not in {
 MAX_CICLI_GEMINI = max(1, int(os.getenv("MAX_CICLI_GEMINI", "3")))
 ATTESA_503_GEMINI = max(1, int(os.getenv("ATTESA_503_GEMINI", "20")))
 
-# Rich Messages Telegram. Il workflow lo abilita esplicitamente con "1".
-TELEGRAM_RICH_MESSAGES = os.getenv("TELEGRAM_RICH_MESSAGES", "0").strip().lower() not in {
-    "",
-    "0",
-    "false",
-    "no",
-    "off",
-}
+# Le notifiche Telegram usano sempre Rich Messages.
 
 client = genai.Client(api_key=GEMINI_API_KEY)
 
@@ -737,7 +730,7 @@ def _telegram_retry_after(response):
 
 
 def _post_telegram(method, payload, *, label):
-    """Invio Telegram comune a Rich Message e fallback legacy."""
+    """Invio Telegram con retry, usato dal solo formato Rich Message."""
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/{method}"
 
     for attempt in range(5):
@@ -787,20 +780,6 @@ def _post_telegram(method, payload, *, label):
     return None
 
 
-def _post_telegram_legacy(text, reply_to=None):
-    payload = {
-        "chat_id": CHAT_ID,
-        "text": text,
-        "parse_mode": "HTML",
-    }
-    if reply_to is not None:
-        payload["reply_parameters"] = {
-            "message_id": reply_to,
-            "allow_sending_without_reply": True,
-        }
-    return _post_telegram("sendMessage", payload, label="legacy")
-
-
 def _post_telegram_rich(rich_html, reply_to=None):
     payload = {
         "chat_id": CHAT_ID,
@@ -815,11 +794,10 @@ def _post_telegram_rich(rich_html, reply_to=None):
 
 
 def send_to_telegram(news_list):
-    """
-    Invia ogni notizia con Rich Messages e fallback automatico al formato legacy.
+    """Invia ogni notizia esclusivamente con Rich Messages.
 
-    La logica di estrazione, suddivisione, reply e retry resta la stessa. La
-    fonte usa la custom emoji esistente e, nel formato Rich, un heading grande.
+    Non esiste più alcun fallback a sendMessage. Se sendRichMessage non riesce
+    dopo i retry già previsti, quella parte viene considerata non inviata.
     """
     tutto_inviato = True
 
@@ -845,55 +823,28 @@ def send_to_telegram(news_list):
 
         for numero, parte in enumerate(parti, start=1):
             corpo = render_testo(parte)
-            continuazione = (
-                f" ({numero}/{len(parti)})"
-                if len(parti) > 1
-                else ""
-            )
-
-            testo_legacy = (
-                f"{emoji_personalizzata} "
-                f"<b>{nome_fonte}</b>{continuazione}"
-                f"\n\n{corpo}"
-            )
-
-            message_id = None
-
-            if TELEGRAM_RICH_MESSAGES:
-                rich_parts = [
-                    f"<h2>{emoji_personalizzata} {nome_fonte}</h2>",
-                ]
-                if len(parti) > 1:
-                    rich_parts.append(
-                        f"<footer>Parte {numero} di {len(parti)}</footer>"
-                    )
-                rich_parts.append(f"<p>{corpo}</p>")
-                rich_html = "".join(rich_parts)
-
-                message_id = _post_telegram_rich(
-                    rich_html,
-                    reply_to=risposta_a,
+            rich_parts = [
+                f"<h2>{emoji_personalizzata} {nome_fonte}</h2>",
+            ]
+            if len(parti) > 1:
+                rich_parts.append(
+                    f"<footer>Parte {numero} di {len(parti)}</footer>"
                 )
+            rich_parts.append(f"<p>{corpo}</p>")
+            rich_html = "".join(rich_parts)
 
-                if message_id is None:
-                    print(
-                        "[TELEGRAM FALLBACK] sendRichMessage non riuscito; "
-                        "uso sendMessage per questa parte."
-                    )
-
-            if message_id is None:
-                message_id = _post_telegram_legacy(
-                    testo_legacy,
-                    reply_to=risposta_a,
-                )
+            message_id = _post_telegram_rich(
+                rich_html,
+                reply_to=risposta_a,
+            )
 
             esito = message_id is not None
             tutto_inviato = esito and tutto_inviato
 
             if not esito:
                 print(
-                    f"Invio interrotto per la fonte {nome_fonte}, "
-                    f"parte {numero}/{len(parti)}."
+                    f"Invio Rich Message interrotto per la fonte {nome_fonte}, "
+                    f"parte {numero}/{len(parti)}. Nessun fallback legacy."
                 )
                 break
 
