@@ -620,6 +620,23 @@ def scrape_corriere(
         )
 
 
+def _clean_gazzetta_text(value: object) -> str:
+    """Rimuove HTML Gazzetta preservando i tag inline dentro le parole."""
+    soup = BeautifulSoup(str(value or ""), "html.parser")
+
+    # Alcuni campi Gazzetta contengono tag inline nel mezzo di una parola,
+    # per esempio: "line<span>a</span>". Usare get_text(" ") produrrebbe
+    # erroneamente "line a". Gli elementi a blocco mantengono invece uno spazio.
+    for tag in soup.find_all(["br", "p", "div", "li"]):
+        if tag.name == "br":
+            tag.replace_with(" ")
+            continue
+        tag.insert_before(" ")
+        tag.insert_after(" ")
+
+    return " ".join(soup.get_text("", strip=False).split())
+
+
 def scrape_gazzetta(
     session: requests.Session,
     requested_dates: set[date],
@@ -673,10 +690,10 @@ def scrape_gazzetta(
         articles.append(
             Article(
                 source="La Gazzetta dello Sport",
-                title=str(title).strip(),
+                title=_clean_gazzetta_text(title),
                 url=url,
                 published=published,
-                summary=str(item.get("standFirst") or "").strip(),
+                summary=_clean_gazzetta_text(item.get("standFirst") or ""),
             )
         )
 
@@ -997,8 +1014,7 @@ def _feed_articles_from_xml(
             Article(
                 source=source,
                 title=title,
-                url=url,
-                published=published,
+                url=url,                published=published,
                 summary=summary,
                 image_url=image_url,
             )
@@ -1498,7 +1514,6 @@ def _juventus_press_release_date_from_text(text: str) -> datetime | None:
     published = _parse_italian_calendar_date(text)
     if published is not None:
         return published
-
     match = JUVENTUS_PDF_NUMERIC_DATE_RE.search(text)
     if not match:
         return None
@@ -1998,7 +2013,6 @@ def _youtube_upload_playlists(
         )
         if channel_id and uploads_id:
             YOUTUBE_UPLOAD_PLAYLISTS[channel_id] = uploads_id
-
     missing = [
         str(channel["source"])
         for channel in YOUTUBE_CHANNELS
@@ -2719,7 +2733,7 @@ def save_seen(seen: Iterable[str], state_date: date) -> None:
 
 
 def checkpoint_state_to_git() -> bool:
-    '''Pubblica subito lo stato quando il bot gira dentro GitHub Actions.'''
+    """Pubblica subito lo stato quando il bot gira dentro GitHub Actions."""
     enabled = os.environ.get(STATE_CHECKPOINT_ENV, '').lower() in {'1', 'true', 'yes'}
     if not enabled:
         return False
