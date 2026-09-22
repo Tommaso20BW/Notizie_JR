@@ -411,9 +411,33 @@ class TelegramClient:
 
     def _message_article(self, article: ArticleLike) -> ArticleLike:
         """Per X separa testo, permalink del post e link allegato."""
+        if not str(article.source or "").startswith("X - "):
+            return article
+
         original_x_text, content_url = self._original_x_content(article)
+
+        # Fallback importante: alcuni feed X consegnano come titolo soltanto
+        # il link esterno (es. un articolo Pedulla) e l'API FxTwitter/VxTwitter
+        # può non restituire il facet. In quel caso estraiamo il link
+        # direttamente dal titolo RSS invece di stamparlo nel messaggio.
+        if not original_x_text and not content_url:
+            fallback_text = str(article.title or "").strip()
+            for match in X_URL_RE.finditer(fallback_text):
+                raw_candidate = match.group(0)
+                candidate = raw_candidate.rstrip(".,;:!?)]}…")
+                if self._same_x_status_url(candidate, article.url):
+                    continue
+                content_url = candidate
+                fallback_text = fallback_text.replace(raw_candidate, "").strip()
+                original_x_text = _clean_x_text(fallback_text)
+                break
+
+        # Se il post è composto SOLO dal link esterno, il testo rimasto è
+        # correttamente vuoto: manteniamo comunque content_url per mostrare
+        # "Apri contenuto" accanto ad "Apri X".
         if not original_x_text and not content_url:
             return article
+
         return _MessageArticle(
             source=article.source,
             title=original_x_text,
