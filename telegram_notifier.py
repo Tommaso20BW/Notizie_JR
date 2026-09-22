@@ -383,7 +383,7 @@ class TelegramClient:
             if not content_url:
                 for match in X_URL_RE.finditer(text):
                     raw_candidate = match.group(0)
-                    candidate = raw_candidate.rstrip(".,;:!?)]}")
+                    candidate = raw_candidate.rstrip(".,;:!?)]}…")
                     if self._same_x_status_url(candidate, article.url):
                         continue
                     content_url = candidate
@@ -412,7 +412,7 @@ class TelegramClient:
     def _message_article(self, article: ArticleLike) -> ArticleLike:
         """Per X separa testo, permalink del post e link allegato."""
         original_x_text, content_url = self._original_x_content(article)
-        if not original_x_text:
+        if not original_x_text and not content_url:
             return article
         return _MessageArticle(
             source=article.source,
