@@ -27,6 +27,7 @@ X_TEXT_API_TEMPLATES = (
     "https://api.vxtwitter.com/status/{tweet_id}",
 )
 X_STATUS_ID_RE = re.compile(r"/status/(\d+)(?:/|$)")
+X_URL_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
 X_HASHTAG_RE = re.compile(r"#(\w+)", re.UNICODE)
 X_MARKER_TRANSLATION = str.maketrans("", "", "#@")
 
@@ -69,6 +70,7 @@ class _MessageArticle:
     title: str
     url: str
     summary: str
+    content_url: str = ""
 
 
 def _split_x_hashtag(hashtag: str) -> str:
@@ -198,6 +200,12 @@ def format_article_rich_html(
     summary = escape(_clip(article.summary, 2400)).replace("\n", "<br>")
     url = escape(article.url.strip(), quote=True)
     is_x = str(article.source or "").startswith("X - ")
+    content_url = ""
+    if is_x:
+        content_url = escape(
+            str(getattr(article, "content_url", "") or "").strip(),
+            quote=True,
+        )
 
     # La fonte usa la stessa gerarchia visiva dei titoli LeakKit.
     parts = [
@@ -219,13 +227,23 @@ def format_article_rich_html(
         if summary:
             parts.append(f"<p>{summary}</p>")
 
-    # CTA pulita: pulsante URL a sinistra. Telegram aggiunge la sua
-    # indicazione grafica per i link, quindi non inseriamo altre emoji.
-    parts.append(
-        '<tg-button-row align="left">'
+    # CTA pulita: per X il permalink del post resta sempre disponibile.
+    # Se il post contiene anche un link esterno, lo mostriamo come secondo
+    # pulsante invece di lasciarlo scritto nel corpo della notizia.
+    buttons = [
         f'<tg-button type="url" style="primary" url="{url}">'
         f'{source_link_label(article.source)}'
         '</tg-button>'
+    ]
+    if is_x and content_url:
+        buttons.append(
+            f'<tg-button type="url" style="primary" url="{content_url}">'
+            'Apri contenuto'
+            '</tg-button>'
+        )
+    parts.append(
+        '<tg-button-row align="left">'
+        f'{"".join(buttons)}'
         '</tg-button-row>'
     )
     return "".join(parts)
@@ -266,18 +284,29 @@ class TelegramClient:
         match = X_STATUS_ID_RE.search((url or "").strip())
         return match.group(1) if match else ""
 
-    def _original_x_text(self, article: ArticleLike) -> str:
-        """Recupera il testo reale del post X, inclusi gli a capo originali."""
+    @staticmethod
+    def _same_x_status_url(candidate_url: str, article_url: str) -> bool:
+        """Evita di trattare il permalink del post come contenuto allegato."""
+        candidate_match = X_STATUS_ID_RE.search(str(candidate_url or ""))
+        article_match = X_STATUS_ID_RE.search(str(article_url or ""))
+        return bool(
+            candidate_match
+            and article_match
+            and candidate_match.group(1) == article_match.group(1)
+        )
+
+    def _original_x_content(self, article: ArticleLike) -> tuple[str, str]:
+        """Recupera testo X e primo link allegato, separandoli tra loro."""
         if not str(article.source or "").startswith("X - "):
-            return ""
+            return "", ""
 
         tweet_id = self._x_tweet_id(article.url)
         if not tweet_id:
-            return ""
+            return "", ""
 
         get = getattr(self.session, "get", None)
         if not callable(get):
-            return ""
+            return "", ""
 
         for template in X_TEXT_API_TEMPLATES:
             try:
@@ -300,20 +329,89 @@ class TelegramClient:
             if not isinstance(tweet, dict):
                 continue
 
+            raw_text = tweet.get("raw_text")
             text = tweet.get("text")
             if not isinstance(text, str) or not text.strip():
-                raw_text = tweet.get("raw_text")
                 if isinstance(raw_text, dict):
                     text = raw_text.get("text")
 
-            if isinstance(text, str) and text.strip():
-                return _clean_x_text(text)
+            if not isinstance(text, str) or not text.strip():
+                continue
 
-        return ""
+            content_url = ""
+            removable_variants: list[str] = []
+
+            # FxTwitter v2 espone i link come facet del raw_text.
+            # "replacement" contiene normalmente l'URL espanso, mentre
+            # "original" è spesso il t.co presente nel testo originale.
+            if isinstance(raw_text, dict):
+                facets = raw_text.get("facets")
+                if isinstance(facets, list):
+                    for facet in facets:
+                        if not isinstance(facet, dict):
+                            continue
+                        if str(facet.get("type") or "").lower() != "url":
+                            continue
+
+                        variants = [
+                            str(facet.get("replacement") or "").strip(),
+                            str(facet.get("original") or "").strip(),
+                            str(facet.get("display") or "").strip(),
+                        ]
+                        target = next(
+                            (
+                                value
+                                for value in variants
+                                if value.startswith(("http://", "https://"))
+                                and not self._same_x_status_url(
+                                    value,
+                                    article.url,
+                                )
+                            ),
+                            "",
+                        )
+                        if not target:
+                            continue
+
+                        content_url = target
+                        removable_variants = [
+                            value for value in variants if value
+                        ]
+                        break
+
+            # Fallback per mirror/API che non espongono i facets.
+            if not content_url:
+                for match in X_URL_RE.finditer(text):
+                    raw_candidate = match.group(0)
+                    candidate = raw_candidate.rstrip(".,;:!?)]}")
+                    if self._same_x_status_url(candidate, article.url):
+                        continue
+                    content_url = candidate
+                    removable_variants = [raw_candidate, candidate]
+                    break
+
+            if content_url:
+                for variant in sorted(
+                    set(removable_variants),
+                    key=len,
+                    reverse=True,
+                ):
+                    text = text.replace(variant, "")
+
+            cleaned_text = _clean_x_text(text)
+            cleaned_text = re.sub(r"[ \t]+\n", "\n", cleaned_text)
+            cleaned_text = re.sub(r"\n{3,}", "\n\n", cleaned_text).strip()
+            return cleaned_text, content_url
+
+        return "", ""
+
+    def _original_x_text(self, article: ArticleLike) -> str:
+        """Compatibilità: restituisce solo il testo originale del post X."""
+        return self._original_x_content(article)[0]
 
     def _message_article(self, article: ArticleLike) -> ArticleLike:
-        """Per X usa il testo originale; per le altre fonti non cambia nulla."""
-        original_x_text = self._original_x_text(article)
+        """Per X separa testo, permalink del post e link allegato."""
+        original_x_text, content_url = self._original_x_content(article)
         if not original_x_text:
             return article
         return _MessageArticle(
@@ -321,6 +419,7 @@ class TelegramClient:
             title=original_x_text,
             url=article.url,
             summary=article.summary,
+            content_url=content_url,
         )
 
     @staticmethod
