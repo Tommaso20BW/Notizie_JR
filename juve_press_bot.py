@@ -241,7 +241,7 @@ URL_DATE_RE = re.compile(r"/(\d{4})/(\d{2})/(\d{2})(?:-|/)")
 JUVE_KEYWORD_RE = re.compile(r"\b(?:juventus|juve)\b", re.IGNORECASE)
 JUVENTUS_KEYWORD_RE = re.compile(r"\bjuventus\b", re.IGNORECASE)
 GAZZETTA_ENGLISH_PATH_RE = re.compile(r"^/en(?:/|$)", re.IGNORECASE)
-X_JUVENTUS_MENTION_RE = re.compile(r"(?<!\w)@juventusfc\b", re.IGNORECASE)
+X_JUVENTUS_MENTION_RE = re.compile(r"(?<!\w)@?juventusfc\b", re.IGNORECASE)
 SKY_RECAP_TITLE_RE = re.compile(
     r"^calciomercato,.*\bnews\b.*\boggi\b",
     re.IGNORECASE,
