@@ -11,10 +11,12 @@ on:
       - "preview_image.py"
       - "video_media.py"
       - "article_journal.py"
-      - "referee_designations.py"
       - "requirements-juve-press.txt"
       - ".github/workflows/juve-press-news.yml"
 
+# Un solo worker per branch. Un normale riavvio resta in coda, mentre un push
+# di codice nuovo interrompe il worker precedente per non farlo girare con
+# una versione ormai vecchia del bot.
 concurrency:
   group: notizie-web-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'push' }}
@@ -51,38 +53,59 @@ jobs:
           git config user.name "notizie-jr-bot[bot]"
           git config user.email "notizie-jr-bot[bot]@users.noreply.github.com"
 
-      - name: Controlla notizie e designazioni per circa un'ora
-        id: workers
+      - name: Controlla e pubblica le notizie per circa un'ora
+        id: news_worker
         shell: bash
         run: |
           set -euo pipefail
 
+          touch "$WORKER_HEARTBEAT_FILE"
           setsid python -u juve_press_bot.py \
             --worker \
             --duration-seconds 3300 \
             --interval-seconds 15 &
-          NEWS_PID=$!
+          BOT_PID=$!
 
-          setsid python -u referee_designations.py \
-            --duration-seconds 3300 \
-            --interval-seconds 60 &
-          REFEREE_PID=$!
+          # Se per cinque minuti il bot non completa nessun progresso, termina
+          # l'intero gruppo di processi. I passi successivi salvano lo stato e
+          # accodano immediatamente un worker sostitutivo.
+          (
+            while kill -0 "$BOT_PID" 2>/dev/null; do
+              sleep 30
+              if ! kill -0 "$BOT_PID" 2>/dev/null; then
+                exit 0
+              fi
+
+              NOW="$(date +%s)"
+              LAST_HEARTBEAT="$(stat -c %Y "$WORKER_HEARTBEAT_FILE")"
+              if (( NOW - LAST_HEARTBEAT > 300 )); then
+                echo "Worker bloccato: nessun progresso da oltre 5 minuti."
+                kill -TERM -- "-$BOT_PID" 2>/dev/null || true
+                sleep 10
+                kill -KILL -- "-$BOT_PID" 2>/dev/null || true
+                exit 0
+              fi
+            done
+          ) &
+          WATCHDOG_PID=$!
 
           set +e
-          wait "$NEWS_PID"
-          NEWS_STATUS=$?
-          wait "$REFEREE_PID"
-          REFEREE_STATUS=$?
+          wait "$BOT_PID"
+          BOT_STATUS=$?
+          kill "$WATCHDOG_PID" 2>/dev/null || true
+          wait "$WATCHDOG_PID" 2>/dev/null || true
           set -e
 
-          if (( NEWS_STATUS != 0 )); then
-            echo "Worker notizie terminato con codice $NEWS_STATUS."
-            exit "$NEWS_STATUS"
-          fi
-          if (( REFEREE_STATUS != 0 )); then
-            echo "Worker designazioni terminato con codice $REFEREE_STATUS."
-            exit "$REFEREE_STATUS"
-          fi
+          exit "$BOT_STATUS"
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+          TELEGRAM_RICH_MESSAGES: "1"
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+          YOUTUBE_CHANNELS_PER_CYCLE: "1"
+          BASELINE_IF_NO_STATE: "true"
+          CHECKPOINT_STATE_TO_GIT: "true"
+          WORKER_HEARTBEAT_FILE: ${{ runner.temp }}/juve-press-worker-heartbeat
 
       - name: Salva lo stato per il worker successivo
         id: persist_state
@@ -93,22 +116,15 @@ jobs:
         run: |
           set -euo pipefail
 
-          FILES=()
-          for file in \
-            .seen_juve_press_news.json \
-            .pending_juve_press_news.json \
-            .seen_juve_referee_designations.json
-          do
-            [[ -e "$file" ]] && FILES+=("$file")
-          done
-
-          if (( ${#FILES[@]} > 0 )) && [[ -n "$(git status --porcelain -- "${FILES[@]}")" ]]; then
-            git add "${FILES[@]}"
-            git commit -m "chore: aggiorna stato notizie e designazioni"
+          if [[ -n "$(git status --porcelain -- .seen_juve_press_news.json .pending_juve_press_news.json)" ]]; then
+            git add .seen_juve_press_news.json .pending_juve_press_news.json
+            git commit -m "chore: aggiorna stato notizie"
           else
             echo "Nessuna modifica locale da aggiungere al checkpoint."
           fi
 
+          # Pubblica anche eventuali checkpoint già committati dal bot ma non
+          # ancora arrivati al remote per un errore di rete transitorio.
           git pull --rebase origin "$TARGET_REF"
           git push origin "HEAD:$TARGET_REF"
 
@@ -120,6 +136,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           gh api \
             "repos/${GITHUB_REPOSITORY}/actions/workflows/juve-press-news.yml/runs?status=completed&per_page=100" \
             --jq '.workflow_runs | sort_by(.created_at) | reverse | .['"$KEEP"':] | .[].id' |
@@ -129,6 +146,7 @@ jobs:
                 "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}" || true
             fi
           done
+
           echo "Pulizia completata."
 
       - name: Avvia il worker successivo
