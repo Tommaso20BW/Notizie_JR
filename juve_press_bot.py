@@ -9,7 +9,7 @@ Controlla le notizie Juventus pubblicate OGGI su:
 - Sky Sport: pagina notizie Juventus
 - Juventus.com
 - Comunicati stampa PDF Juventus.com
-- Gianluca Di Marzio (titolo o testo con "Juventus") e Alfredo Pedullà
+- Gianluca Di Marzio (filtro di rilevanza Juventus) e Alfredo Pedullà
 - Borsa Italiana (notizie sull'azione Juventus)
 - YouTube: Juventus, Fabrizio Romano e Romeo Agresti
 - X: profili configurati (filtri e repost definiti per account)
@@ -242,6 +242,53 @@ JUVE_KEYWORD_RE = re.compile(r"\b(?:juventus|juve)\b", re.IGNORECASE)
 JUVENTUS_KEYWORD_RE = re.compile(r"\bjuventus\b", re.IGNORECASE)
 GAZZETTA_ENGLISH_PATH_RE = re.compile(r"^/en(?:/|$)", re.IGNORECASE)
 X_JUVENTUS_MENTION_RE = re.compile(r"(?<!\w)@?juventusfc\b", re.IGNORECASE)
+DI_MARZIO_JUVENTUS_CONTEXT_RE = re.compile(
+    r"\b(?:"
+    r"mercato|calciomercato|trattativa|trattative|contatti|contatto|"
+    r"offerta|offerte|accordo|accordi|firma|firmare|rinnovo|rinnovato|rinnovi|"
+    r"acquisto|acquistare|cessione|cedere|prestito|scambio|"
+    r"interesse|interessa|interessato|interessati|obiettivo|obiettivi|"
+    r"segue|seguito|seguire|monitora|monitorato|monitorare|"
+    r"cerca|cercano|cercando|vuole|vogliono|punta|puntano|"
+    r"trattando|tratterà|trattare|proposta|proposte|operazione|operazioni|"
+    r"visite mediche|ufficiale|ufficialità|esordio|formazione|"
+    r"infortunio|infortuni|squalifica|convocato|convocazione|"
+    r"allenatore|allenatori|dirigenza|dirigente|dirigenti|proprietà|"
+    r"contratto|contratti|tesserato|tesseramento|rescissione|"
+    r"partita|partite|gol|rete|reti|campionato|sfida|sfidare|affronta|"
+    r"affrontare|derby|coppa|champions|europa league|serie a|"
+    r"al lavoro|in trattativa|pronta|pronto|interessata|interessato"
+    r")\b",
+    re.IGNORECASE,
+)
+DI_MARZIO_JUVENTUS_DIRECT_RE = re.compile(
+    r"(?:"
+    r"\b(?:la\s+)?(?:juventus|juve)\b[^.!?]{0,120}"
+    r"\b(?:ha|hanno|sta|stanno|vuole|vogliono|cerca|cercano|"
+    r"punta|puntano|tratta|trattano|segue|seguono|monitora|monitorano|"
+    r"lavora|lavorano|lavorare|valuta|valutano|offre|offrono|"
+    r"propone|propongono|contatta|contattano|incontra|incontrano|"
+    r"chiama|chiamano|annuncia|annunciano|acquista|acquistano|"
+    r"cede|cedono|rinnova|rinnovano|firma|firmano|chiude|chiudono|"
+    r"convoca|convocano|schiera|schierano|affronta|affrontano|"
+    r"sfida|sfidano|batte|pareggia|pareggiano|sconfigge|sconfiggono|"
+    r"perde|vince|gioca|giocano|giocherà|esordisce|torna|arriva|"
+    r"approda|sbarca|si\s+trasferisce|intende|pens[aao]|prepara|"
+    r"preparano|provando|provano|può|puo|potrebbe|potrà|potra)\b"
+    r"|"
+    r"\b(?:piace|interessa|intriga|conviene|serve|manca|"
+    r"si\s+avvicina|si\s+allontana|è\s+vicino|e\s+vicino|"
+    r"resta\s+vicino|approda|arriva|torna)\b[^.!?]{0,100}"
+    r"\b(?:alla\s+)?(?:juventus|juve)\b"
+    r"|"
+    r"\b(?:nel\s+mirino|obiettivo|obiettivo\s+di|obiettivi\s+di|"
+    r"destinazione|direzione|accordo\s+con|contatti\s+con|"
+    r"interesse\s+per|interesse\s+della|trattativa\s+con|"
+    r"trattativa\s+della|offerta\s+della|proposta\s+della)\b"
+    r"[^.!?]{0,100}\b(?:juventus|juve)\b"
+    r")",
+    re.IGNORECASE,
+)
 SKY_RECAP_TITLE_RE = re.compile(
     r"^calciomercato,.*\bnews\b.*\boggi\b",
     re.IGNORECASE,
@@ -1681,6 +1728,73 @@ def _gianluca_di_marzio_listing_candidates(
     return candidates
 
 
+def _di_marzio_juventus_is_contextually_relevant(text: str) -> bool:
+    """Accetta Juve/Juventus solo quando la citazione è realmente contestuale."""
+    cleaned = JUVE_STABIA_RE.sub(" ", str(text or ""))
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if not cleaned or not JUVE_KEYWORD_RE.search(cleaned):
+        return False
+
+    # Le citazioni parentetiche (es. "Alajbegovic (Juventus)") sono tipicamente
+    # appartenenza di squadra dentro una lista e non rendono l'articolo una news Juve.
+    cleaned = re.sub(
+        r"\([^)]*\b(?:juventus|juve)\b[^)]*\)",
+        " ",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    # Anche riferimenti puramente biografici non sono sufficienti.
+    cleaned = re.sub(
+        r"\b(?:ex|l'\s*ex)\s+(?:giocatore|calciatore|allenatore)?\s*(?:della|di|con)?\s*(?:juventus|juve)\b",
+        " ",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(
+        r"\b(?:ha|hanno)\s+giocat[oa]\s+(?:per|con|nella|nella squadra della|alla|in)\s+(?:la\s+)?(?:juventus|juve)\b",
+        " ",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+
+    sentences = [
+        part.strip()
+        for part in re.split(r"(?<=[.!?])\s+|\n+", cleaned)
+        if part.strip()
+    ]
+    for sentence in sentences:
+        if not JUVE_KEYWORD_RE.search(sentence):
+            continue
+        if DI_MARZIO_JUVENTUS_DIRECT_RE.search(sentence):
+            return True
+        if DI_MARZIO_JUVENTUS_CONTEXT_RE.search(sentence):
+            return True
+    return False
+
+
+def _is_relevant_di_marzio_juventus_article(
+    listing_title: str,
+    preview_text: str,
+    article_title: str,
+    summary: str,
+    article_body: str,
+    meta_description: str,
+) -> bool:
+    """Filtro specifico Di Marzio per evitare citazioni Juventus incidentali."""
+    # Titolo della card o titolo dell'articolo: segnale più forte.
+    if is_juventus_title(listing_title) or is_juventus_title(article_title):
+        return True
+
+    # Preview, summary e description vengono considerati solo se la citazione
+    # è accompagnata da una relazione concreta con la Juventus.
+    for text in (preview_text, summary, meta_description):
+        if _di_marzio_juventus_is_contextually_relevant(text):
+            return True
+
+    # Nel corpo non basta più trovare "Juventus" una sola volta.
+    return _di_marzio_juventus_is_contextually_relevant(article_body)
+
+
 def scrape_gianluca_di_marzio(
     session: requests.Session,
     requested_dates: set[date],
@@ -1745,21 +1859,17 @@ def scrape_gianluca_di_marzio(
             ('meta[name="description"]', 'meta[property="og:description"]'),
         )
 
-        # Controlliamo solo dati della card e della singola pagina articolo,
-        # non menu o articoli correlati dell'intero sito.
-        searchable_text = " ".join(
-            part
-            for part in (
-                listing_title,
-                preview_text,
-                article_title,
-                summary,
-                article_body,
-                meta_description,
-            )
-            if part
-        )
-        if not JUVENTUS_KEYWORD_RE.search(searchable_text):
+        # Una citazione isolata di "Juventus" nel corpo non è sufficiente.
+        # Titolo/card sono il segnale forte; gli altri campi devono mostrare
+        # un rapporto concreto con la Juventus.
+        if not _is_relevant_di_marzio_juventus_article(
+            listing_title,
+            preview_text,
+            article_title,
+            summary,
+            article_body,
+            meta_description,
+        ):
             continue
 
         articles.append(
