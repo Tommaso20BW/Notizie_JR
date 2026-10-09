@@ -6,7 +6,7 @@ Controlla le notizie Juventus pubblicate OGGI su:
 - Corriere dello Sport
 - La Gazzetta dello Sport
 - Sky Sport Calciomercato ("Juve"/"Juventus", esclusi i titoli "video")
-- Sky Sport: pagina notizie Juventus
+- Sky Sport: feed RSS Serie A (solo articoli pertinenti alla Juventus)
 - Juventus.com
 - Comunicati stampa PDF Juventus.com
 - Gianluca Di Marzio (filtro di rilevanza Juventus) e Alfredo Pedullà
@@ -27,7 +27,13 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable, Iterable
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import (
+    FIRST_COMPLETED,
+    Future,
+    ThreadPoolExecutor,
+    as_completed,
+    wait,
+)
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from email.utils import parsedate_to_datetime
@@ -113,12 +119,19 @@ SKY_URL_TEMPLATE = (
     "https://sport.sky.it/calciomercato/{year}/{month:02d}/{day:02d}/"
     "calciomercato-news-trattative-oggi-{day}-{month_name}"
 )
-SKY_JUVENTUS_NEWS_URLS = (
-    "https://sport.sky.it/argomenti/juve",
-    "https://sport.sky.it/calcio/squadre/juventus/news",
+SKY_JUVENTUS_RSS_URLS = (
+    "https://sport.sky.it/rss/sport_calcio.xml",
+    "https://sport.sky.it/rss/sport_calcio_serie-a.xml",
 )
+# Se un feed risponde e l'altro è lento, dopo questo tempo non si attende più
+# il ritardatario: le sue notizie saranno riprese al ciclo successivo.
+SKY_JUVENTUS_FEED_GRACE_SECONDS = 5.0
 SKY_JUVENTUS_DETAIL_MAX_WORKERS = 6
 SKY_JUVENTUS_SEEN_KEYS: set[str] | None = None
+# Articoli Sky già valutati in modo definitivo durante questo worker: il feed
+# contiene tutta la Serie A, quindi senza questa cache le notizie non Juve
+# verrebbero riaperte a ogni ciclo. Come per Di Marzio vive solo in memoria.
+SKY_JUVENTUS_CHECKED_URLS: set[str] = set()
 JUVENTUS_NEWS_URL = "https://www.juventus.com/it/news/"
 JUVENTUS_FEED_TEMPLATE = (
     "https://www.juventus.com/it/news/_libraries/"
@@ -295,6 +308,21 @@ SKY_RECAP_TITLE_RE = re.compile(
 )
 SKY_VIDEO_TITLE_RE = re.compile(r"\bvideo\b", re.IGNORECASE)
 JUVE_STABIA_RE = re.compile(r"\bjuve(?:\s+|[-_/]+)stabia\b", re.IGNORECASE)
+# Squadre Juventus diverse dalla prima squadra maschile (Sky Juventus le esclude).
+SKY_JUVENTUS_OTHER_TEAM_RE = re.compile(
+    r"\b(?:juventus|juve)\s+"
+    r"(?:women|femminile|next\s*gen(?:eration)?|primavera|under\s*\d{2}|u\s?\d{2})\b",
+    re.IGNORECASE,
+)
+# Perifrasi con cui Sky indica la Juventus senza scrivere "Juve/Juventus".
+# Vengono considerate solo se l'articolo ha già un'ancora esplicita sulla Juve
+# (tag/parole chiave o citazione nel corpo): "bianconeri" vale anche l'Udinese.
+SKY_JUVENTUS_ALIAS_RE = re.compile(
+    r"\b(?:bianconer[oiae]|vecchia\s+signora)\b",
+    re.IGNORECASE,
+)
+# Un solo accenno nel corpo non basta: servono più citazioni oppure un tag Juve.
+SKY_JUVENTUS_BODY_MIN_MENTIONS = 3
 BORSA_DATE_RE = re.compile(
     r"\b(\d{1,2})\s+"
     r"(gen|feb|mar|apr|mag|giu|lug|ago|set|ott|nov|dic)\s+"    r"(\d{1,2}):(\d{2})\b",
@@ -1010,12 +1038,13 @@ def _feed_articles_from_xml(
     for item in nodes:
         title = _clean_feed_text(_feed_item_text(item, "title"))
         raw_link = _feed_item_link(item) or _feed_item_text(item, "guid")
-        raw_published = _feed_item_text(
-            item,
-            "pubDate",
-            "published",
-            "updated",
-            "date",
+        # Priorità alla data di prima pubblicazione: "updated" (ultima modifica)
+        # viene usata solo se il feed non espone nessun'altra data.
+        raw_published = (
+            _feed_item_text(item, "pubDate")
+            or _feed_item_text(item, "published")
+            or _feed_item_text(item, "date")
+            or _feed_item_text(item, "updated")
         )
         if not title or not raw_link or not raw_published:
             continue
@@ -1221,35 +1250,128 @@ def _scrape_article_detail_candidates(
     return articles
 
 
-def _sky_juventus_listing_urls(
-    session: requests.Session,
-    page_url: str,
-    requested_dates: set[date],
-) -> list[str]:
-    """Estrae gli URL Sky del periodo richiesto da una pagina elenco."""
-    response = session.get(page_url, timeout=10)
-    response.raise_for_status()
-    soup = BeautifulSoup(response.text, "html.parser")
+def _json_ld_text(value: object, _depth: int = 0) -> str:
+    """Normalizza in testo semplice i campi JSON-LD (str, lista, dict, altro).
 
-    urls: list[str] = []
-    urls_done: set[str] = set()
-    for link in soup.select("a[href]"):
-        url = normalize_url(urljoin(page_url, str(link.get("href") or "")))
-        if urlsplit(url).netloc.lower() != "sport.sky.it":
-            continue
+    keywords, about e articleBody non hanno un formato fisso: possono essere
+    stringhe, liste di stringhe, oggetti con "name" o liste di oggetti.
+    """
+    if value is None or _depth > 4:
+        return ""
+    if isinstance(value, str):
+        return _clean_feed_text(value)
+    if isinstance(value, dict):
+        parts = (
+            _json_ld_text(value.get(key), _depth + 1)
+            for key in ("name", "alternateName", "headline", "description")
+        )
+        return " ".join(part for part in parts if part)
+    if isinstance(value, (list, tuple, set)):
+        parts = (_json_ld_text(item, _depth + 1) for item in value)
+        return " ".join(part for part in parts if part)
+    return ""
 
-        url_date = date_from_article_url(url)
-        if (
-            url_date is None
-            or not is_requested_date(url_date, requested_dates)
-            or url in urls_done
-        ):
-            continue
 
-        urls_done.add(url)
-        urls.append(url)
+def _sky_article_body(
+    soup: BeautifulSoup,
+    article_data: dict,
+    max_length: int = 8000,
+) -> str:
+    """Corpo dell'articolo da JSON-LD, con ripiego sui paragrafi della pagina."""
+    body = _json_ld_text(article_data.get("articleBody"))
+    if len(body) < 200:
+        container = soup.find("article") or soup.find("main")
+        if container is not None:
+            paragraphs = (
+                paragraph.get_text(" ", strip=True)
+                for paragraph in container.find_all("p")
+            )
+            fallback = " ".join(text for text in paragraphs if text)
+            if len(fallback) > len(body):
+                body = fallback
+    return body[:max_length]
 
-    return urls
+
+def _sky_article_keywords(soup: BeautifulSoup, article_data: dict) -> str:
+    """Parole chiave e tag da JSON-LD (keywords, about) e meta tag della pagina."""
+    meta_tags = (
+        str(tag.get("content") or "").strip()
+        for selector in (
+            'meta[property="article:tag"]',
+            'meta[name="keywords"]',
+            'meta[name="news_keywords"]',
+        )
+        for tag in soup.select(selector)
+    )
+    parts = (
+        _json_ld_text(article_data.get("keywords")),
+        _json_ld_text(article_data.get("about")),
+        *meta_tags,
+    )
+    return " ".join(part for part in parts if part)
+
+
+def _is_relevant_sky_juventus_article(
+    title: str,
+    summary: str,
+    meta_description: str,
+    article_body: str,
+    keywords: str = "",
+) -> bool:
+    """Filtro di pertinenza Juventus per il feed Sky Serie A.
+
+    Riutilizza i criteri di ``_is_relevant_di_marzio_juventus_article`` per
+    titolo, sommario e meta description, senza modificarli. In più valuta il
+    contesto del corpo e dei tag, perché il feed contiene tutta la Serie A:
+    una citazione marginale della Juventus non rende l'articolo una notizia Juve.
+    """
+    title, summary, meta_description, article_body, keywords = (
+        SKY_JUVENTUS_OTHER_TEAM_RE.sub(" ", str(text or ""))
+        for text in (title, summary, meta_description, article_body, keywords)
+    )
+
+    tags_mention_juve = is_juventus_title(keywords)
+    body_mentions = len(
+        JUVE_KEYWORD_RE.findall(JUVE_STABIA_RE.sub(" ", article_body))
+    )
+    # "Bianconeri" vale come Juventus solo con un'ancora esplicita sulla Juve.
+    if tags_mention_juve or body_mentions >= SKY_JUVENTUS_BODY_MIN_MENTIONS:
+        title, summary, meta_description, article_body = (
+            SKY_JUVENTUS_ALIAS_RE.sub("Juventus", text)
+            for text in (title, summary, meta_description, article_body)
+        )
+        body_mentions = len(
+            JUVE_KEYWORD_RE.findall(JUVE_STABIA_RE.sub(" ", article_body))
+        )
+
+    # Titolo (segnale forte), sommario e meta description: stessi criteri Di Marzio.
+    if _is_relevant_di_marzio_juventus_article(
+        title,
+        summary,
+        title,
+        summary,
+        "",
+        meta_description,
+    ):
+        return True
+
+    # Titolo e sommario non bastano: il corpo deve parlare concretamente della
+    # Juventus e la citazione deve essere ripetuta oppure confermata dai tag.
+    if not _di_marzio_juventus_is_contextually_relevant(article_body):
+        return False
+    return tags_mention_juve or body_mentions >= SKY_JUVENTUS_BODY_MIN_MENTIONS
+
+
+def _is_sky_editorial_url(url: str) -> bool:
+    """Accetta solo articoli di sport.sky.it, non pagine di categoria o ricerca."""
+    parts = urlsplit(url)
+    if parts.netloc.lower() != "sport.sky.it":
+        return False
+    path = parts.path.casefold()
+    return not any(
+        segment in path
+        for segment in ("/argomenti/", "/squadre/", "/tag/", "/search", "/ricerca")
+    )
 
 
 def _sky_juventus_article_from_url(
@@ -1258,10 +1380,14 @@ def _sky_juventus_article_from_url(
     requested_dates: set[date],
 ) -> Article | None:
     """Apre un singolo articolo Sky e verifica che riguardi davvero la Juve."""
+    if not _is_sky_editorial_url(url):
+        return None
+
     try:
         article_response = session.get(url, timeout=15)
         article_response.raise_for_status()
     except requests.RequestException:
+        # Errore transitorio: l'URL non entra nella cache e sarà ritentato.
         return None
 
     article_soup = BeautifulSoup(article_response.text, "html.parser")
@@ -1286,6 +1412,7 @@ def _sky_juventus_article_from_url(
         or "calciomercato-news-trattative-oggi" in url
         or "calciomercato-news-" in url
     ):
+        SKY_JUVENTUS_CHECKED_URLS.add(url)
         return None
 
     published = None
@@ -1326,38 +1453,35 @@ def _sky_juventus_article_from_url(
     ):
         return None
 
-    summary = str(
-        article_data.get("description")
-        or article_data.get("abstract")
-        or ""
-    ).strip()
+    summary = _json_ld_text(
+        article_data.get("description") or article_data.get("abstract")
+    )
+    meta_description = _first_meta_content(
+        article_soup,
+        (
+            'meta[name="description"]',
+            'meta[property="og:description"]',
+        ),
+    )
     if not summary:
-        summary = _first_meta_content(
-            article_soup,
-            (
-                'meta[name="description"]',
-                'meta[property="og:description"]',
-            ),
-        )
-    summary = BeautifulSoup(summary, "html.parser").get_text(" ", strip=True)
+        summary = meta_description
+    summary = _clean_feed_text(summary)
+    meta_description = _clean_feed_text(meta_description)
 
-    tags = " ".join(
-        str(tag.get("content") or "").strip()
-        for tag in article_soup.select('meta[property="article:tag"]')
-        if str(tag.get("content") or "").strip()
-    )
-    searchable_text = " ".join(
-        part
-        for part in (
-            title,
-            summary,
-            str(article_data.get("keywords") or ""),
-            str(article_data.get("about") or ""),
-            tags,
-        )
-        if part
-    )
-    if not is_juventus_title(searchable_text):
+    article_body = _sky_article_body(article_soup, article_data)
+    keywords = _sky_article_keywords(article_soup, article_data)
+
+    if not _is_relevant_sky_juventus_article(
+        title,
+        summary,
+        meta_description,
+        article_body,
+        keywords,
+    ):
+        # Scarto definitivo: dipende solo dal contenuto della pagina. Gli
+        # articoli accettati non entrano nella cache, così restano recuperabili
+        # finché lo stato persistente non li registra come inviati.
+        SKY_JUVENTUS_CHECKED_URLS.add(url)
         return None
 
     image_url = _schema_image_url(article_data.get("image"), url)
@@ -1371,70 +1495,174 @@ def _sky_juventus_article_from_url(
     )
 
 
+def _sky_today() -> date:
+    """Data odierna italiana, ricalcolata a ogni chiamata (cambio giorno incluso)."""
+    return datetime.now(ROME).date()
+
+
+def _sky_url_key(url: str) -> str:
+    """Chiave per riconoscere lo stesso articolo anche con maiuscole o slash finale."""
+    parts = urlsplit(url)
+    return f"{parts.netloc.lower()}{parts.path.rstrip('/').casefold()}"
+
+
+def _sky_feed_urls(
+    session: requests.Session,
+    feed_url: str,
+    requested_dates: set[date],
+) -> list[str]:
+    """Scarica un feed RSS Sky e restituisce gli URL pubblicati nelle date richieste."""
+    response = session.get(feed_url, timeout=20)
+    response.raise_for_status()
+    feed_articles = _feed_articles_from_xml(
+        response.content,
+        source="Sky Sport - Juventus",
+        base_url="https://sport.sky.it/",
+        allowed_hosts={"sport.sky.it"},
+        requested_dates=requested_dates,
+        juventus_only=False,
+    )
+    return [feed_article.url for feed_article in feed_articles]
+
+
 def scrape_sky_juventus_news(
     session: requests.Session,
     requested_dates: set[date],
 ) -> list[Article]:
-    """Monitora sia il tag Juve sia la pagina squadra, aprendo solo URL nuovi."""
-    candidate_urls: list[str] = []
-    urls_done: set[str] = set()
-    listing_errors: list[requests.RequestException] = []
+    """Legge in parallelo i feed RSS Sky e tiene le notizie di oggi sulla Juventus.
 
-    # Le due pagine vengono lette in parallelo: la pagina /argomenti/juve
-    # intercetta spesso prima la pubblicazione, la pagina squadra resta fallback.
-    with ThreadPoolExecutor(max_workers=len(SKY_JUVENTUS_NEWS_URLS)) as executor:
-        future_pages = {
-            executor.submit(
-                _sky_juventus_listing_urls,
-                session,
-                page_url,
-                requested_dates,
-            ): page_url
-            for page_url in SKY_JUVENTUS_NEWS_URLS
-        }
-        for future in as_completed(future_pages):
-            try:
-                page_urls = future.result()
-            except requests.RequestException as error:
-                listing_errors.append(error)
-                continue
-            for url in page_urls:
-                if url not in urls_done:
-                    urls_done.add(url)
-                    candidate_urls.append(url)
-
-    if not candidate_urls and len(listing_errors) == len(SKY_JUVENTUS_NEWS_URLS):
-        raise listing_errors[0]
-
-    # Nel worker reale lo stato persistente contiene gli URL già inviati.
-    # Questi articoli non vengono più riaperti a ogni ciclo. In --dry-run il
-    # valore è None e vengono invece analizzati tutti i candidati, come prima.
-    if SKY_JUVENTUS_SEEN_KEYS is not None:
-        candidate_urls = [
-            url for url in candidate_urls if url not in SKY_JUVENTUS_SEEN_KEYS
-        ]
-
-    if not candidate_urls:
+    Ogni feed passa i propri URL ai worker di dettaglio appena risponde, senza
+    attendere l'altro: vale la prima versione valida intercettata e le copie
+    successive (stesso URL nell'altro feed) vengono scartate. Un feed in errore
+    non blocca quello funzionante; solo se falliscono tutti l'errore risale a
+    ``collect_articles``, che lo registra come per le altre fonti.
+    """
+    # Solo notizie di oggi (Europe/Rome), anche se il feed contiene i giorni scorsi.
+    sky_dates = {_sky_today()} & set(requested_dates)
+    if not sky_dates:
         return []
 
+    claimed: set[str] = set()
     articles: list[Article] = []
-    with ThreadPoolExecutor(
-        max_workers=min(SKY_JUVENTUS_DETAIL_MAX_WORKERS, len(candidate_urls)),
-    ) as executor:
-        futures = [
-            executor.submit(
-                _sky_juventus_article_from_url,
-                session,
-                url,
-                requested_dates,
-            )
-            for url in candidate_urls
-        ]
-        for future in as_completed(futures):
-            article = future.result()
-            if article is not None:
-                articles.append(article)
+    feed_errors: list[Exception] = []
+    feeds_ok = 0
 
+    feed_executor = ThreadPoolExecutor(max_workers=len(SKY_JUVENTUS_RSS_URLS))
+    detail_executor = ThreadPoolExecutor(
+        max_workers=SKY_JUVENTUS_DETAIL_MAX_WORKERS,
+    )
+    try:
+        feed_futures: dict[Future, str] = {
+            feed_executor.submit(
+                _sky_feed_urls,
+                session,
+                feed_url,
+                sky_dates,
+            ): feed_url
+            for feed_url in SKY_JUVENTUS_RSS_URLS
+        }
+        detail_futures: dict[Future, str] = {}
+        pending: set[Future] = set(feed_futures)
+        grace_deadline: float | None = None
+
+        while pending:
+            timeout = (
+                None
+                if grace_deadline is None
+                else max(0.0, grace_deadline - time.monotonic())
+            )
+            done, pending = wait(
+                pending,
+                timeout=timeout,
+                return_when=FIRST_COMPLETED,
+            )
+            if not done:
+                # Un feed ha già risposto e l'altro è lento: non lo si attende
+                # oltre, riproveremo al prossimo ciclo.
+                for future in [f for f in pending if f in feed_futures]:
+                    future.cancel()
+                    pending.discard(future)
+                    print(
+                        "[RSS] Sky Sport - Juventus: feed troppo lento, "
+                        f"riprovo al prossimo ciclo ({feed_futures[future]})"
+                    )
+                grace_deadline = None
+                continue
+
+            for future in done:
+                if future in feed_futures:
+                    feed_url = feed_futures[future]
+                    try:
+                        feed_urls = future.result()
+                    except (
+                        requests.RequestException,
+                        ET.ParseError,
+                        ValueError,
+                    ) as error:
+                        feed_errors.append(error)
+                        print(
+                            f"[RSS] Sky Sport - Juventus: feed {feed_url} "
+                            f"errore ({compact_log_text(error, 70)})"
+                        )
+                        continue
+
+                    feeds_ok += 1
+                    for url in feed_urls:
+                        # Stesso articolo già preso in carico dall'altro feed.
+                        key = _sky_url_key(url)
+                        if key in claimed:
+                            continue
+                        claimed.add(key)
+
+                        # Nel worker reale lo stato persistente contiene gli URL
+                        # già inviati. In --dry-run il valore è None e si
+                        # analizzano tutti i candidati, come prima.
+                        if (
+                            SKY_JUVENTUS_SEEN_KEYS is not None
+                            and url in SKY_JUVENTUS_SEEN_KEYS
+                        ):
+                            continue
+                        # Già valutato e scartato in questo worker.
+                        if url in SKY_JUVENTUS_CHECKED_URLS:
+                            continue
+
+                        detail_future = detail_executor.submit(
+                            _sky_juventus_article_from_url,
+                            session,
+                            url,
+                            sky_dates,
+                        )
+                        detail_futures[detail_future] = url
+                        pending.add(detail_future)
+                    continue
+
+                try:
+                    article = future.result()
+                except (requests.RequestException, ValueError, KeyError) as error:
+                    # Una pagina difettosa non deve far perdere le altre notizie.
+                    print(
+                        f"[SKY] {detail_futures[future]}: errore "
+                        f"({compact_log_text(error, 70)})"
+                    )
+                    continue
+                if article is not None:
+                    articles.append(article)
+
+            if (
+                grace_deadline is None
+                and feeds_ok
+                and any(f in feed_futures for f in pending)
+            ):
+                grace_deadline = (
+                    time.monotonic() + SKY_JUVENTUS_FEED_GRACE_SECONDS
+                )
+    finally:
+        # Un feed bloccato non deve trattenere il ciclo oltre il suo timeout.
+        feed_executor.shutdown(wait=False, cancel_futures=True)
+        detail_executor.shutdown(wait=True)
+
+    if not feeds_ok and feed_errors:
+        raise feed_errors[0]
     return articles
 
 
