@@ -586,6 +586,17 @@ class SkyRealFeedFormatTests(unittest.TestCase):
         )
         self.assertEqual(parsed.hour, 10)
 
+    def test_video_urls_are_discarded_without_being_opened(self):
+        video = "https://sport.sky.it/calcio/serie-a/video/2026/10/09/juve-1130337"
+        article = BASE + "articolo-juve"
+        session = make_session(
+            {video: juve_page(), article: juve_page()},
+            calcio=rss(video, article),
+        )
+        urls = [a.url for a in bot.scrape_sky_juventus_news(session, {TODAY})]
+        self.assertEqual(urls, [article])
+        self.assertNotIn(video, session.calls)
+
     def test_real_style_feed_produces_articles(self):
         late = BASE + "notte"
         early = BASE + "mattina"
