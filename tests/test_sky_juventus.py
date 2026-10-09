@@ -531,5 +531,80 @@ class SkyJuventusFilterTests(unittest.TestCase):
         self.assertEqual(bot._json_ld_text({"name": "Juventus"}), "Juventus")
 
 
+class SkyRealFeedFormatTests(unittest.TestCase):
+    """Il feed Sky vero usa giorni/mesi italiani e scrive "GMT" su ora locale."""
+
+    def setUp(self):
+        bot.SKY_JUVENTUS_CHECKED_URLS.clear()
+        self.addCleanup(bot.SKY_JUVENTUS_CHECKED_URLS.clear)
+        for patcher in (
+            mock.patch.object(bot, "SKY_JUVENTUS_SEEN_KEYS", None),
+            mock.patch.object(bot, "_sky_today", return_value=TODAY),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_feed_urls_are_the_canonical_ones(self):
+        self.assertEqual(
+            bot.SKY_JUVENTUS_RSS_URLS,
+            (
+                "https://sport.sky.it/rss/sport.calcio.xml",
+                "https://sport.sky.it/rss/sport.calcio.serie-a.xml",
+            ),
+        )
+
+    def test_italian_month_and_weekday_are_parsed(self):
+        for raw, expected in (
+            ("ven, 09 ott 2026 17:25:00 GMT", (2026, 10, 9)),
+            ("sab, 10 ott 2026 18:30:00 GMT", (2026, 10, 10)),
+            ("mar, 06 ott 2026 12:56:43 GMT", (2026, 10, 6)),
+            ("dom, 24 mag 2026 20:45:00 GMT", (2026, 5, 24)),
+            ("gio, 31 dic 2026 09:00:00 GMT", (2026, 12, 31)),
+        ):
+            with self.subTest(raw=raw):
+                parsed = bot._parse_feed_published(raw)
+                self.assertIsNotNone(parsed)
+                self.assertEqual(
+                    (parsed.year, parsed.month, parsed.day), expected
+                )
+
+    def test_english_dates_still_parse(self):
+        parsed = bot._parse_feed_published("Fri, 09 Oct 2026 10:00:00 +0200")
+        self.assertEqual(parsed.date(), TODAY)
+
+    def test_gmt_label_is_read_as_rome_clock_when_requested(self):
+        raw = "ven, 09 ott 2026 23:30:00 GMT"
+        as_utc = bot._parse_feed_published(raw)
+        as_local = bot._parse_feed_published(raw, zero_offset_is_local=True)
+        self.assertEqual(as_utc.date(), date(2026, 10, 10))
+        self.assertEqual(as_local.date(), TODAY)
+        self.assertEqual((as_local.hour, as_local.minute), (23, 30))
+
+    def test_explicit_offset_is_respected_even_when_local_is_requested(self):
+        parsed = bot._parse_feed_published(
+            "Fri, 09 Oct 2026 10:00:00 +0200", zero_offset_is_local=True
+        )
+        self.assertEqual(parsed.hour, 10)
+
+    def test_real_style_feed_produces_articles(self):
+        late = BASE + "notte"
+        early = BASE + "mattina"
+        feed = (
+            '<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel>'
+            f"<item><title>Notte</title><link>{late}</link>"
+            "<pubDate>ven, 09 ott 2026 23:40:00 GMT</pubDate></item>"
+            f"<item><title>Mattina</title><link>{early}</link>"
+            "<pubDate>ven, 09 ott 2026 08:05:00 GMT</pubDate></item>"
+            "</channel></rss>"
+        ).encode()
+        session = make_session(
+            {late: juve_page(), early: juve_page()}, calcio=feed
+        )
+        urls = [
+            a.url for a in bot.scrape_sky_juventus_news(session, {TODAY})
+        ]
+        self.assertCountEqual(urls, [late, early])
+
+
 if __name__ == "__main__":
     unittest.main()
