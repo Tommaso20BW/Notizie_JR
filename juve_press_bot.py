@@ -1406,7 +1406,14 @@ def _is_sky_editorial_url(url: str) -> bool:
     path = parts.path.casefold()
     return not any(
         segment in path
-        for segment in ("/argomenti/", "/squadre/", "/tag/", "/search", "/ricerca")
+        for segment in (
+            "/argomenti/",
+            "/squadre/",
+            "/tag/",
+            "/search",
+            "/ricerca",
+            "/video/",
+        )
     )
 
 
