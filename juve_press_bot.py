@@ -119,9 +119,10 @@ SKY_URL_TEMPLATE = (
     "https://sport.sky.it/calciomercato/{year}/{month:02d}/{day:02d}/"
     "calciomercato-news-trattative-oggi-{day}-{month_name}"
 )
+# URL canonici: sono quelli dichiarati dal feed stesso (atom:link rel="self").
 SKY_JUVENTUS_RSS_URLS = (
-    "https://sport.sky.it/rss/sport_calcio.xml",
-    "https://sport.sky.it/rss/sport_calcio_serie-a.xml",
+    "https://sport.sky.it/rss/sport.calcio.xml",
+    "https://sport.sky.it/rss/sport.calcio.serie-a.xml",
 )
 # Se un feed risponde e l'altro è lento, dopo questo tempo non si attende più
 # il ritardatario: le sue notizie saranno riprese al ciclo successivo.
@@ -997,19 +998,50 @@ def _feed_item_link(item: ET.Element) -> str:
     return ""
 
 
-def _parse_feed_published(raw_value: str) -> datetime | None:
-    """Supporta sia RFC 2822 dei feed RSS sia date ISO/Atom."""
+_IT_MONTH_ABBR_TO_EN = {
+    "gen": "Jan", "feb": "Feb", "mar": "Mar", "apr": "Apr",
+    "mag": "May", "giu": "Jun", "lug": "Jul", "ago": "Aug",
+    "set": "Sep", "ott": "Oct", "nov": "Nov", "dic": "Dec",
+}
+_IT_MONTH_IN_RFC2822_RE = re.compile(
+    r"(\b\d{1,2}\s+)(" + "|".join(_IT_MONTH_ABBR_TO_EN) + r")[a-zà-ù]*(?=\s+\d{2,4}\b)",
+    re.IGNORECASE,
+)
+_ZERO_OFFSET_LABEL_RE = re.compile(r"\s(?:GMT|UTC?)\s*$", re.IGNORECASE)
+
+
+def _english_rfc2822_months(raw_value: str) -> str:
+    """Sky pubblica le date RFC 2822 con mesi italiani ("ven, 09 ott 2026")."""
+    return _IT_MONTH_IN_RFC2822_RE.sub(
+        lambda m: m.group(1) + _IT_MONTH_ABBR_TO_EN[m.group(2).casefold()],
+        raw_value,
+    )
+
+
+def _parse_feed_published(
+    raw_value: str,
+    *,
+    zero_offset_is_local: bool = False,
+) -> datetime | None:
+    """Supporta sia RFC 2822 dei feed RSS sia date ISO/Atom.
+
+    Con ``zero_offset_is_local`` un'etichetta GMT/UTC viene ignorata e l'orario
+    è letto come ora di Roma: il feed Sky scrive "GMT" ma pubblica ora locale.
+    """
     raw_value = str(raw_value or "").strip()
     if not raw_value:
         return None
+    local_clock = zero_offset_is_local and bool(
+        _ZERO_OFFSET_LABEL_RE.search(raw_value)
+    )
     try:
-        parsed = parsedate_to_datetime(raw_value)
+        parsed = parsedate_to_datetime(_english_rfc2822_months(raw_value))
     except (TypeError, ValueError, OverflowError):
         try:
             return parse_iso_datetime(raw_value)
         except ValueError:
             return None
-    if parsed.tzinfo is None:
+    if parsed.tzinfo is None or local_clock:
         parsed = parsed.replace(tzinfo=ROME)
     return parsed.astimezone(ROME)
 
@@ -1022,6 +1054,7 @@ def _feed_articles_from_xml(
     allowed_hosts: set[str],
     requested_dates: set[date],
     juventus_only: bool = False,
+    zero_offset_is_local: bool = False,
 ) -> list[Article]:
     """Converte un feed RSS/Atom in Article applicando il filtro data."""
     root = ET.fromstring(content)
@@ -1049,7 +1082,10 @@ def _feed_articles_from_xml(
         if not title or not raw_link or not raw_published:
             continue
 
-        published = _parse_feed_published(raw_published)
+        published = _parse_feed_published(
+            raw_published,
+            zero_offset_is_local=zero_offset_is_local,
+        )
         if (
             published is None
             or not is_requested_date(published, requested_dates)
@@ -1521,6 +1557,7 @@ def _sky_feed_urls(
         allowed_hosts={"sport.sky.it"},
         requested_dates=requested_dates,
         juventus_only=False,
+        zero_offset_is_local=True,
     )
     return [feed_article.url for feed_article in feed_articles]
 
