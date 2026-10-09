@@ -2256,20 +2256,15 @@ def scrape_gianluca_di_marzio(
         # Una citazione isolata di "Juventus" nel corpo non è sufficiente.
         # Titolo/card sono il segnale forte; gli altri campi devono mostrare
         # un rapporto concreto con la Juventus.
-        reason = _di_marzio_juventus_relevance_reason(
+        if not _is_relevant_di_marzio_juventus_article(
             listing_title,
             preview_text,
             article_title,
             summary,
             article_body,
             meta_description,
-        )
-        if reason is None:
+        ):
             continue
-        print(
-            f"[DI MARZIO] pertinente ({reason}) | "
-            f"{compact_log_text(article_title, 65)}"
-        )
 
         articles.append(
             Article(
