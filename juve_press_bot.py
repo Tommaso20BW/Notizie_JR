@@ -303,6 +303,50 @@ DI_MARZIO_JUVENTUS_DIRECT_RE = re.compile(
     r")",
     re.IGNORECASE,
 )
+# Parole di contesto "forti": legano la Juventus a mercato, contratti o dirigenza.
+# Le parole generiche di DI_MARZIO_JUVENTUS_CONTEXT_RE (formazione, partita, gol,
+# campionato, ...) compaiono in qualunque articolo sulle altre squadre e quindi
+# non bastano da sole quando la Juventus è citata una volta sola.
+DI_MARZIO_JUVENTUS_STRONG_CONTEXT_RE = re.compile(
+    r"\b(?:"
+    r"mercato|calciomercato|trattativa|trattative|contatti|contatto|"
+    r"offerta|offerte|accordo|accordi|firma|firmare|rinnovo|rinnovato|rinnovi|"
+    r"acquisto|acquistare|cessione|cedere|prestito|scambio|"
+    r"interesse|interessa|interessato|interessati|interessata|"
+    r"obiettivo|obiettivi|segue|seguito|seguire|"
+    r"monitora|monitorato|monitorare|cerca|cercano|cercando|"
+    r"vuole|vogliono|punta|puntano|trattando|tratterà|trattare|"
+    r"proposta|proposte|operazione|operazioni|visite mediche|"
+    r"ufficiale|ufficialità|dirigenza|dirigente|dirigenti|proprietà|"
+    r"contratto|contratti|tesserato|tesseramento|rescissione|"
+    r"al lavoro|in trattativa"
+    r")\b",
+    re.IGNORECASE,
+)
+# La Juventus citata solo come avversaria ("l'ultima gara contro la Juventus",
+# "la sconfitta con la Juve") non rende l'articolo una notizia sulla Juventus.
+DI_MARZIO_JUVENTUS_OPPONENT_RE = re.compile(
+    r"(?:"
+    r"\b(?:contro|vs\.?|versus)\s+(?:la\s+|l['’]\s*)?(?:juventus|juve)\b"
+    r"|"
+    r"\b(?:sfida|gara|partita|match|scontro|vittoria|sconfitta|pareggio|"
+    r"successo|k\.?o\.?|big\s+match)\s+"
+    r"(?:con|contro|a|alla|in\s+casa\s+(?:della|di))\s+"
+    r"(?:la\s+)?(?:juventus|juve)\b"
+    r")",
+    re.IGNORECASE,
+)
+# Intestazioni in maiuscolo seguite da trattino o due punti, per esempio
+# "LA PROBABILE FORMAZIONE - Sarri ...": non fanno parte della frase che segue.
+DI_MARZIO_HEADING_RE = re.compile(
+    r"(?<!\S)((?:[A-ZÀ-ÖØ-Þ0-9’'/]{2,}\s+){0,7}[A-ZÀ-ÖØ-Þ0-9’'/]{2,})"
+    r"\s*[-–—:]\s+"
+)
+# Distanza massima (in caratteri) tra la Juventus e una parola di contesto forte.
+DI_MARZIO_JUVENTUS_CONTEXT_WINDOW = 80
+# Con tre o più citazioni l'articolo parla davvero della Juventus: in quel caso
+# bastano anche le parole di contesto generiche.
+DI_MARZIO_JUVENTUS_REPEATED_MENTIONS = 3
 SKY_RECAP_TITLE_RE = re.compile(
     r"^calciomercato,.*\bnews\b.*\boggi\b",
     re.IGNORECASE,
@@ -2000,8 +2044,44 @@ def _gianluca_di_marzio_listing_candidates(
     return candidates
 
 
+def _di_marzio_isolate_headings(text: str) -> str:
+    """Trasforma le intestazioni in maiuscolo in frasi a sé stanti.
+
+    Senza questo passaggio "LA PROBABILE FORMAZIONE - Sarri ... contro la
+    Juventus" è un'unica frase e la parola "formazione" dell'intestazione veniva
+    scambiata per contesto della citazione. Le intestazioni che contengono
+    Juve/Juventus restano unite al testo seguente.
+    """
+
+    def isolate(match: re.Match) -> str:
+        heading = match.group(1)
+        if JUVE_KEYWORD_RE.search(heading):
+            return match.group(0)
+        return f". {heading}. "
+
+    return DI_MARZIO_HEADING_RE.sub(isolate, text)
+
+
+def _juventus_near_strong_context(sentence: str) -> bool:
+    """True se vicino a una citazione della Juventus c'è una parola di mercato."""
+    for mention in JUVE_KEYWORD_RE.finditer(sentence):
+        window = sentence[
+            max(0, mention.start() - DI_MARZIO_JUVENTUS_CONTEXT_WINDOW):
+            mention.end() + DI_MARZIO_JUVENTUS_CONTEXT_WINDOW
+        ]
+        if DI_MARZIO_JUVENTUS_STRONG_CONTEXT_RE.search(window):
+            return True
+    return False
+
+
 def _di_marzio_juventus_is_contextually_relevant(text: str) -> bool:
-    """Accetta Juve/Juventus solo quando la citazione è realmente contestuale."""
+    """Accetta Juve/Juventus solo quando la citazione è realmente contestuale.
+
+    Una citazione singola conta soltanto se la Juventus è protagonista della
+    frase (soggetto o oggetto di un'azione) o è vicina a parole di mercato.
+    Non bastano parole generiche come "formazione" o "partita", e non basta
+    nemmeno essere citata come avversaria ("contro la Juventus").
+    """
     cleaned = JUVE_STABIA_RE.sub(" ", str(text or ""))
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     if not cleaned or not JUVE_KEYWORD_RE.search(cleaned):
@@ -2029,6 +2109,12 @@ def _di_marzio_juventus_is_contextually_relevant(text: str) -> bool:
         flags=re.IGNORECASE,
     )
 
+    cleaned = _di_marzio_isolate_headings(cleaned)
+    mentions = len(JUVE_KEYWORD_RE.findall(cleaned))
+    if not mentions:
+        return False
+    repeated = mentions >= DI_MARZIO_JUVENTUS_REPEATED_MENTIONS
+
     sentences = [
         part.strip()
         for part in re.split(r"(?<=[.!?])\s+|\n+", cleaned)
@@ -2037,11 +2123,48 @@ def _di_marzio_juventus_is_contextually_relevant(text: str) -> bool:
     for sentence in sentences:
         if not JUVE_KEYWORD_RE.search(sentence):
             continue
-        if DI_MARZIO_JUVENTUS_DIRECT_RE.search(sentence):
+        # Prima si tolgono le citazioni come semplice avversaria: quelle che
+        # restano devono mostrare la Juventus come protagonista.
+        without_opponent = DI_MARZIO_JUVENTUS_OPPONENT_RE.sub(" ", sentence)
+        if (
+            JUVE_KEYWORD_RE.search(without_opponent)
+            and DI_MARZIO_JUVENTUS_DIRECT_RE.search(without_opponent)
+        ):
             return True
-        if DI_MARZIO_JUVENTUS_CONTEXT_RE.search(sentence):
+        if _juventus_near_strong_context(sentence):
+            return True
+        if repeated and DI_MARZIO_JUVENTUS_CONTEXT_RE.search(sentence):
             return True
     return False
+
+
+def _di_marzio_juventus_relevance_reason(
+    listing_title: str,
+    preview_text: str,
+    article_title: str,
+    summary: str,
+    article_body: str,
+    meta_description: str,
+) -> str | None:
+    """Indica quale campo ha reso l'articolo pertinente, o None se non lo è."""
+    # Titolo della card o titolo dell'articolo: segnale più forte.
+    if is_juventus_title(listing_title) or is_juventus_title(article_title):
+        return "titolo"
+
+    # Preview, summary e description vengono considerati solo se la citazione
+    # è accompagnata da una relazione concreta con la Juventus.
+    for label, text in (
+        ("anteprima", preview_text),
+        ("sommario", summary),
+        ("descrizione", meta_description),
+    ):
+        if _di_marzio_juventus_is_contextually_relevant(text):
+            return label
+
+    # Nel corpo non basta più trovare "Juventus" una sola volta.
+    if _di_marzio_juventus_is_contextually_relevant(article_body):
+        return "corpo"
+    return None
 
 
 def _is_relevant_di_marzio_juventus_article(
@@ -2053,18 +2176,17 @@ def _is_relevant_di_marzio_juventus_article(
     meta_description: str,
 ) -> bool:
     """Filtro specifico Di Marzio per evitare citazioni Juventus incidentali."""
-    # Titolo della card o titolo dell'articolo: segnale più forte.
-    if is_juventus_title(listing_title) or is_juventus_title(article_title):
-        return True
-
-    # Preview, summary e description vengono considerati solo se la citazione
-    # è accompagnata da una relazione concreta con la Juventus.
-    for text in (preview_text, summary, meta_description):
-        if _di_marzio_juventus_is_contextually_relevant(text):
-            return True
-
-    # Nel corpo non basta più trovare "Juventus" una sola volta.
-    return _di_marzio_juventus_is_contextually_relevant(article_body)
+    return (
+        _di_marzio_juventus_relevance_reason(
+            listing_title,
+            preview_text,
+            article_title,
+            summary,
+            article_body,
+            meta_description,
+        )
+        is not None
+    )
 
 
 def scrape_gianluca_di_marzio(
@@ -2134,15 +2256,20 @@ def scrape_gianluca_di_marzio(
         # Una citazione isolata di "Juventus" nel corpo non è sufficiente.
         # Titolo/card sono il segnale forte; gli altri campi devono mostrare
         # un rapporto concreto con la Juventus.
-        if not _is_relevant_di_marzio_juventus_article(
+        reason = _di_marzio_juventus_relevance_reason(
             listing_title,
             preview_text,
             article_title,
             summary,
             article_body,
             meta_description,
-        ):
+        )
+        if reason is None:
             continue
+        print(
+            f"[DI MARZIO] pertinente ({reason}) | "
+            f"{compact_log_text(article_title, 65)}"
+        )
 
         articles.append(
             Article(
