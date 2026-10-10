@@ -347,6 +347,8 @@ DI_MARZIO_JUVENTUS_CONTEXT_WINDOW = 80
 # Con tre o più citazioni l'articolo parla davvero della Juventus: in quel caso
 # bastano anche le parole di contesto generiche.
 DI_MARZIO_JUVENTUS_REPEATED_MENTIONS = 3
+# Soglia minima di citazioni nel solo corpo quando il titolo non nomina la Juve.
+DI_MARZIO_JUVENTUS_BODY_MIN_MENTIONS = 2
 SKY_RECAP_TITLE_RE = re.compile(
     r"^calciomercato,.*\bnews\b.*\boggi\b",
     re.IGNORECASE,
@@ -1400,8 +1402,8 @@ def _is_relevant_sky_juventus_article(
 ) -> bool:
     """Filtro di pertinenza Juventus per il feed Sky Serie A.
 
-    Riutilizza i criteri di ``_is_relevant_di_marzio_juventus_article`` per
-    titolo, sommario e meta description, senza modificarli. In più valuta il
+    Riutilizza i criteri condivisi di ``_is_relevant_juventus_article_lenient``
+    per titolo, sommario e meta description, senza modificarli. In più valuta il
     contesto del corpo e dei tag, perché il feed contiene tutta la Serie A:
     una citazione marginale della Juventus non rende l'articolo una notizia Juve.
     """
@@ -1424,8 +1426,9 @@ def _is_relevant_sky_juventus_article(
             JUVE_KEYWORD_RE.findall(JUVE_STABIA_RE.sub(" ", article_body))
         )
 
-    # Titolo (segnale forte), sommario e meta description: stessi criteri Di Marzio.
-    if _is_relevant_di_marzio_juventus_article(
+    # Titolo (segnale forte), sommario e meta description: stessi criteri
+    # condivisi (invariati rispetto alla versione precedente).
+    if _is_relevant_juventus_article_lenient(
         title,
         summary,
         title,
@@ -2138,7 +2141,13 @@ def _di_marzio_juventus_is_contextually_relevant(text: str) -> bool:
     return False
 
 
-def _di_marzio_juventus_relevance_reason(
+def _count_juventus_mentions(text: str) -> int:
+    """Conta Juve/Juventus (senza distinzione di maiuscole), escludendo Juve Stabia."""
+    cleaned = JUVE_STABIA_RE.sub(" ", str(text or ""))
+    return len(JUVE_KEYWORD_RE.findall(cleaned))
+
+
+def _juventus_relevance_reason_lenient(
     listing_title: str,
     preview_text: str,
     article_title: str,
@@ -2146,7 +2155,11 @@ def _di_marzio_juventus_relevance_reason(
     article_body: str,
     meta_description: str,
 ) -> str | None:
-    """Indica quale campo ha reso l'articolo pertinente, o None se non lo è."""
+    """Criteri storici (titolo, anteprima, sommario, descrizione, corpo).
+
+    Restano invariati e sono usati solo dal filtro Sky Serie A, che non deve
+    cambiare. Il filtro Di Marzio usa ``_di_marzio_juventus_relevance_reason``.
+    """
     # Titolo della card o titolo dell'articolo: segnale più forte.
     if is_juventus_title(listing_title) or is_juventus_title(article_title):
         return "titolo"
@@ -2163,6 +2176,63 @@ def _di_marzio_juventus_relevance_reason(
 
     # Nel corpo non basta più trovare "Juventus" una sola volta.
     if _di_marzio_juventus_is_contextually_relevant(article_body):
+        return "corpo"
+    return None
+
+
+def _is_relevant_juventus_article_lenient(
+    listing_title: str,
+    preview_text: str,
+    article_title: str,
+    summary: str,
+    article_body: str,
+    meta_description: str,
+) -> bool:
+    """Wrapper booleano dei criteri storici (usato dal filtro Sky)."""
+    return (
+        _juventus_relevance_reason_lenient(
+            listing_title,
+            preview_text,
+            article_title,
+            summary,
+            article_body,
+            meta_description,
+        )
+        is not None
+    )
+
+
+def _di_marzio_juventus_relevance_reason(
+    listing_title: str,
+    preview_text: str,
+    article_title: str,
+    summary: str,
+    article_body: str,
+    meta_description: str,
+) -> str | None:
+    """Indica perché l'articolo Di Marzio è pertinente alla Juventus, o None.
+
+    Regole:
+    1. Se il titolo dell'articolo o quello della card contiene Juve/Juventus
+       (esclusa "Juve Stabia") l'articolo passa sempre, anche con corpo senza
+       citazioni.
+    2. Altrimenti servono almeno 2 occorrenze di Juve/Juventus nel solo corpo
+       (esclusa "Juve Stabia"); titolo, anteprima, sommario e meta description
+       non contribuiscono alla soglia.
+    3. Raggiunta la soglia si applica il filtro contestuale esistente, per
+       evitare citazioni incidentali.
+    """
+    # Regola 1: titolo effettivo o titolo della card.
+    if is_juventus_title(article_title) or is_juventus_title(listing_title):
+        return "titolo"
+
+    # Regola 2: soglia minima di citazioni, contate solo nel corpo.
+    body = str(article_body or "")
+    if _count_juventus_mentions(body) < DI_MARZIO_JUVENTUS_BODY_MIN_MENTIONS:
+        return None
+
+    # Regola 3: il corpo deve riguardare davvero la Juventus.
+    if _di_marzio_juventus_is_contextually_relevant(body):
         return "corpo"
     return None
 
@@ -2253,9 +2323,8 @@ def scrape_gianluca_di_marzio(
             ('meta[name="description"]', 'meta[property="og:description"]'),
         )
 
-        # Una citazione isolata di "Juventus" nel corpo non è sufficiente.
-        # Titolo/card sono il segnale forte; gli altri campi devono mostrare
-        # un rapporto concreto con la Juventus.
+        # Titolo (articolo o card) con Juve/Juventus: passa sempre. Altrimenti
+        # servono almeno 2 citazioni nel solo corpo, con contesto pertinente.
         if not _is_relevant_di_marzio_juventus_article(
             listing_title,
             preview_text,
