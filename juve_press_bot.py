@@ -1,104 +1,160 @@
-            f'{receipt.mode} #{receipt.message_id or "?"} | stato salvato'
-        )
-        time.sleep(0.8)
 
-    pending = [article_from_journal(entry) for entry in journal.entries]
-    pending.sort(key=lambda item: (item.published, item.source, item.title))
-    for article in pending:
-        if not is_collection_candidate(article.published, requested_dates):
-            journal.remove(article.notification_key)
-            continue
-        try_delivery(article)
-
-    def publish_discovered(article: Article) -> None:
-        if article.notification_key in seen:
-            return
-        journal.add(article)
-        try_delivery(article)
-
-    collect_articles(session, requested_dates, on_article=publish_discovered)
-    checkpoint_state_to_git()
-    return sent_count
+def compact_log_text(value: object, limit: int = 90) -> str:
+    """Rende leggibili i log senza stampare titoli o errori interminabili."""
+    text = " ".join(str(value).split())
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
 
 
-def run_worker(
-    duration_seconds: float = DEFAULT_WORKER_DURATION_SECONDS,
-    poll_interval_seconds: float = DEFAULT_POLL_INTERVAL_SECONDS,
-    *,
-    dry_run: bool = False,
-    include_yesterday: bool = False,
-    preview_messages: bool = False,
-    clock: Callable[[], float] | None = None,
-    sleep: Callable[[float], None] | None = None,
-) -> None:
-    if duration_seconds <= 0:
-        raise ValueError('La durata del worker deve essere maggiore di zero.')
-    if poll_interval_seconds <= 0:
-        raise ValueError("L'intervallo del worker deve essere maggiore di zero.")
-    monotonic = clock or time.monotonic
-    sleeper = sleep or time.sleep
-    deadline = monotonic() + duration_seconds
-    cycle = 0
-    touch_worker_heartbeat()
-    print(f'[WORKER] attivo {duration_seconds / 60:.0f} min | pausa {poll_interval_seconds:.0f}s dopo ogni ciclo')
-    while monotonic() < deadline:
-        cycle += 1
-        touch_worker_heartbeat()
-        cycle_started = monotonic()
-        sent_count = 0
-        outcome = 'ok'
-        try:
-            sent_count = run(
-                dry_run=dry_run,
-                include_yesterday=include_yesterday,
-                preview_messages=preview_messages,
-            )
-        except CollectionError as error:
-            outcome = f'errore: {compact_log_text(error, 70)}'
-            checkpoint_state_to_git()
-        touch_worker_heartbeat()
-        elapsed = monotonic() - cycle_started
-        remaining = deadline - monotonic()
-        if remaining <= 0:
-            print(f'[CICLO {cycle}] nuove={sent_count} | {outcome} | {elapsed:.1f}s')
-            break
-        wait_seconds = min(poll_interval_seconds, remaining)
-        print(f'[CICLO {cycle}] nuove={sent_count} | {outcome} | {elapsed:.1f}s | pausa={wait_seconds:.0f}s')
-        sleeper(wait_seconds)
-        touch_worker_heartbeat()
-    print(f'\n[WORKER] fine | cicli={cycle} | arresto pulito')
+TUTTOSPORT_URL = "https://www.tuttosport.com/squadra/calcio/juventus/t128"
+TUTTOSPORT_RSS_URL = "https://www.tuttosport.com/rss/calcio/serie-a/juventus"
+CORRIERE_URL = (
+    "https://www.corrieredellosport.it/squadra/calcio/juventus/t128"
+)
+CORRIERE_RSS_URL = "https://www.corrieredellosport.it/rss/calcio/serie-a/juve"
+GAZZETTA_PAGE_URL = (
+    "https://www.gazzetta.it/calcio/squadre/juventus/notizie/"
+)
+GAZZETTA_API_URL = (
+    "https://appservice.gazzetta.it/gaz/app/api/mygazzetta/search"
+)
+SKY_URL_TEMPLATE = (
+    "https://sport.sky.it/calciomercato/{year}/{month:02d}/{day:02d}/"
+    "calciomercato-news-trattative-oggi-{day}-{month_name}"
+)
+# URL canonici: sono quelli dichiarati dal feed stesso (atom:link rel="self").
+SKY_JUVENTUS_RSS_URLS = (
+    "https://sport.sky.it/rss/sport.calcio.xml",
+    "https://sport.sky.it/rss/sport.calcio.serie-a.xml",
+)
+# Se un feed risponde e l'altro è lento, dopo questo tempo non si attende più
+# il ritardatario: le sue notizie saranno riprese al ciclo successivo.
+SKY_JUVENTUS_FEED_GRACE_SECONDS = 5.0
+SKY_JUVENTUS_DETAIL_MAX_WORKERS = 6
+SKY_JUVENTUS_SEEN_KEYS: set[str] | None = None
+# Articoli Sky già valutati in modo definitivo durante questo worker: il feed
+# contiene tutta la Serie A, quindi senza questa cache le notizie non Juve
+# verrebbero riaperte a ogni ciclo. Come per Di Marzio vive solo in memoria.
+SKY_JUVENTUS_CHECKED_URLS: set[str] = set()
+JUVENTUS_NEWS_URL = "https://www.juventus.com/it/news/"
+JUVENTUS_FEED_TEMPLATE = (
+    "https://www.juventus.com/it/news/_libraries/"
+    "{date_value}/{date_value}/{page}/_news-list"
+)
+JUVENTUS_PRESS_RELEASE_LIBRARY_TEMPLATE = (
+    "https://www.juventus.com/it/club/investitori/_libraries/"
+    "season-{season}/{page}/_price-sensitive-press-releases"
+)
+JUVENTUS_PRESS_RELEASE_MAX_PAGES = 4
+JUVENTUS_PRESS_RELEASE_DATE_CACHE: dict[str, datetime | None] = {}
+JUVENTUS_PDF_SIZE_RE = re.compile(
+    r"\s+\d+(?:[.,]\d+)?\s*(?:KB|MB|GB)\s*$",
+    re.IGNORECASE,
+)
+JUVENTUS_PDF_NUMERIC_DATE_RE = re.compile(
+    r"\b(\d{1,2})[./-](\d{1,2})[./-](\d{4})\b"
+)
+GIANLUCA_DI_MARZIO_URL = "https://www.gianlucadimarzio.com/"
+GIANLUCA_DI_MARZIO_LISTING_URLS = (
+    GIANLUCA_DI_MARZIO_URL,
+    "https://www.gianlucadimarzio.com/calciomercato/",
+)
+GIANLUCA_DI_MARZIO_ARTICLE_PATH_RE = re.compile(r"-\d{5,}$")
+GIANLUCA_DI_MARZIO_CHECKED_URLS: set[str] = set()
+ALFREDO_PEDULLA_JUVENTUS_URLS = (
+    "https://www.alfredopedulla.com/search/juve/",
+)
+BORSA_ITALIANA_JUVENTUS_URL = (
+    "https://www.borsaitaliana.it/borsa/azioni/"
+    "elenco-completo-notizie.html?isin=IT0005572778&lang=it"
+)
+YOUTUBE_CHANNELS = (
+    {
+        "source": "YouTube - Juventus",
+        "channel_id": "UCLzKhsxrExAC6yAdtZ-BOWw",
+        "channel_url": "https://www.youtube.com/@Juventus",
+    },
+    {
+        "source": "YouTube - Fabrizio Romano",
+        "channel_id": "UC7pT9g1-oKwVgbpipZODvBA",
+        "channel_url": "https://www.youtube.com/@FabrizioRomanoItaliano",
+    },
+    {
+        "source": "YouTube - Romeo Agresti",
+        "channel_id": "UCmlXlTE2oTArVL8DafyRsXA",
+        "channel_url": "https://www.youtube.com/@RomeoAgresti",
+    },
+)
+YOUTUBE_API_URL = "https://www.googleapis.com/youtube/v3"
+YOUTUBE_API_KEY_ENV = "YOUTUBE_API_KEY"
+YOUTUBE_CHANNELS_PER_CYCLE_ENV = "YOUTUBE_CHANNELS_PER_CYCLE"
+YOUTUBE_SHORTS_URL_TEMPLATE = "https://www.youtube.com/shorts/{video_id}"
 
+# Cache in memoria per tutta la durata del worker.
+# La playlist uploads di ogni canale non cambia durante il processo, quindi
+# basta recuperarla una sola volta tramite channels.list.
+YOUTUBE_UPLOAD_PLAYLISTS: dict[str, str] = {}
+YOUTUBE_SHORT_CACHE: dict[str, bool] = {}
+YOUTUBE_CHANNEL_CURSOR = 0
+X_ACCOUNTS = (
+    {"handle": "juventusfc", "filter_juventus": False, "include_reposts": False},
+    {"handle": "Glongari", "filter_juventus": True, "include_reposts": False},
+    {"handle": "romeoagresti", "filter_juventus": False, "include_reposts": False},
+    {"handle": "NicoSchira", "filter_juventus": True, "include_reposts": False},
+    {"handle": "AlfredoPedulla", "filter_juventus": True, "include_reposts": False},
+    {"handle": "MatteMoretto", "filter_juventus": True, "include_reposts": False},
+    {"handle": "FabrizioRomano", "filter_juventus": True, "include_reposts": False},
+    {"handle": "DiMarzio", "filter_juventus": True, "include_reposts": False},
+    {"handle": "_Morik92_", "filter_juventus": False, "include_reposts": False},
+    {"handle": "ilbianconerocom", "filter_juventus": False, "include_reposts": False},
+    {"handle": "BaridonMarco", "filter_juventus": False, "include_reposts": False},
+    {"handle": "GiovaAlbanese", "filter_juventus": False, "include_reposts": False},
+    {"handle": "David_Ornstein", "filter_juventus": True, "include_reposts": False},
+    {"handle": "Plettigoal", "filter_juventus": True, "include_reposts": False},
+    {"handle": "SkySportsNews", "filter_juventus": True, "include_reposts": False},
+    {"handle": "SkySportDE", "filter_juventus": True, "include_reposts": False},
+    {"handle": "Tanziloic", "filter_juventus": True, "include_reposts": False},
+    {"handle": "JacobsBen", "filter_juventus": True, "include_reposts": False},
+    {"handle": "sachatavolieri", "filter_juventus": True, "include_reposts": False},
+)
+X_RSS_MIRROR_TEMPLATES = (
+    "https://fxtwitter.com/{handle}/feed.xml",
+    "https://fixupx.com/{handle}/feed.xml",
+)
+X_RSS_HEADERS = {
+    "User-Agent": "Notizie_JR/1.0 (RSS reader; GitHub Actions)",
+    "Accept": "application/rss+xml, application/xml;q=0.9, text/xml;q=0.8",
+}
+X_RSS_TIMEOUT_SECONDS = 12
+X_MEDIA_API_TEMPLATES = (
+    "https://api.fxtwitter.com/status/{tweet_id}",
+    "https://api.vxtwitter.com/status/{tweet_id}",
+)
+X_MEDIA_API_TIMEOUT_SECONDS = 12
+# Telegram può scaricare da un URL remoto file non-foto fino a 20 MB.
+# Teniamo un margine per l'audio, che non è incluso nel bitrate video.
+TELEGRAM_REMOTE_VIDEO_TARGET_BYTES = 18_000_000
+X_STATUS_PATH_RE = re.compile(r"^/([A-Za-z0-9_]+)/status/(\d+)$")
+X_HASHTAG_RE = re.compile(r"#(\w+)", re.UNICODE)
+X_REPOST_RE = re.compile(r"^RT(?:\s+by)?\s+@", re.IGNORECASE)
+X_MARKER_TRANSLATION = str.maketrans("", "", "#@")
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description='Invia su Telegram le notizie Juventus pubblicate oggi.')
-    parser.add_argument('--dry-run', action='store_true', help='Recupera e mostra le notizie senza usare Telegram.')
-    parser.add_argument('--include-yesterday', action='store_true', help='Compatibilità: le notizie di ieri sono ora controllate automaticamente.')
-    parser.add_argument('--preview-messages', action='store_true', help='Con --dry-run mostra il testo HTML esatto che verrebbe inviato a Telegram.')
-    parser.add_argument('--worker', action='store_true', help='Ripete i controlli fino alla durata configurata.')
-    parser.add_argument('--duration-seconds', type=float, default=DEFAULT_WORKER_DURATION_SECONDS, help='Durata totale del worker (predefinita: 3300 secondi).')
-    parser.add_argument('--interval-seconds', type=float, default=DEFAULT_POLL_INTERVAL_SECONDS, help='Pausa dopo ogni ciclo (predefinita: 15 secondi).')
-    args = parser.parse_args()
-    if args.preview_messages and not args.dry_run:
-        parser.error('--preview-messages richiede --dry-run')
-    if args.worker:
-        run_worker(
-            duration_seconds=args.duration_seconds,
-            poll_interval_seconds=args.interval_seconds,
-            dry_run=args.dry_run,
-            include_yesterday=args.include_yesterday,
-            preview_messages=args.preview_messages,
-        )
-    else:
-        run(
-            dry_run=args.dry_run,
-            include_yesterday=args.include_yesterday,
-            preview_messages=args.preview_messages,
-        )
+SKY_MONTH_NAMES = {
+    1: "gennaio",
+    2: "febbraio",
+    3: "marzo",
+    4: "aprile",
+    5: "maggio",
+    6: "giugno",
+    7: "luglio",
+    8: "agosto",
+    9: "settembre",
+    10: "ottobre",
+    11: "novembre",
+    12: "dicembre",
+}
 
-
-if __name__ == '__main__':
-    try:
-        main()
-    except Exception as error:
-        print(f'Errore: {error}', file=sys.stderr)
-        sys.exit(1)
+URL_DATE_RE = re.compile(r"/(\d{4})/(\d{2})/(\d{2})(?:-|/)")
+JUVE_KEYWORD_RE = re.compile(r"\b(?:juventus|juve)\b", re.IGNORECASE)
+JUVENTUS_KEYWORD_RE = re.compile(r"\bjuventus\b", re.IGNORECASE)
