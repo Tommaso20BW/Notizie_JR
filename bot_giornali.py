@@ -45,17 +45,17 @@ FONTI_VALIDE = ("TUTTO", "GAZZETTA", "CORRIERE")
 FONTI_TELEGRAM = {
     "GAZZETTA": {
         "nome": "La Gazzetta dello Sport",
-        "emoji_id": "6032862491623559282",
+        "emoji_id": "5974032198561439462",
         "fallback": "📰",
     },
     "CORRIERE": {
         "nome": "Corriere dello Sport",
-        "emoji_id": "6030691308346019878",
+        "emoji_id": "5972246690462178631",
         "fallback": "📰",
     },
     "TUTTO": {
         "nome": "Tuttosport",
-        "emoji_id": "6032834612990841221",
+        "emoji_id": "5974087719603674267",
         "fallback": "📰",
     },
 }
