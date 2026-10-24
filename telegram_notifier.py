@@ -32,15 +32,15 @@ X_HASHTAG_RE = re.compile(r"#(\w+)", re.UNICODE)
 X_MARKER_TRANSLATION = str.maketrans("", "", "#@")
 
 SOURCE_EMOJIS = (
-    ("Sky Sport", "6033058586945392520", "📰"),
-    ("La Gazzetta dello Sport", "6032862491623559282", "📰"),
-    ("Corriere dello Sport", "6030691308346019878", "📰"),
-    ("Tuttosport", "6032834612990841221", "📰"),
-    ("X - ", "5796663209016431644", "📲"),
-    ("YouTube - ", "6032683730789732131", "🖥"),
+    ("Sky Sport", "5974058122984038105", "📰"),
+    ("La Gazzetta dello Sport", "5974032198561439462", "📰"),
+    ("Corriere dello Sport", "5972246690462178631", "📰"),
+    ("Tuttosport", "5974087719603674267", "📰"),
+    ("X - ", "5974571247021859439", "📲"),
+    ("YouTube - ", "5974578526991425004", "🖥"),
     ("Gianluca Di Marzio", "5785253271912324677", "📲"),
     ("Alfredo Pedullà", "5785322627044220734", "📲"),
-    ("Borsa Italiana", "5373001317042101552", "📈"),
+    ("Borsa Italiana", "5244837092042750681", "📈"),
     ("Juventus.com", "6028591382870888482", "⚪️"),
 )
 
