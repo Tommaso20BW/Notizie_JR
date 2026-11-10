@@ -72,13 +72,15 @@ class DiMarzioRelevanceTests(unittest.TestCase):
                 "",
                 "Carnevali su Ekhator",
                 "",
-                "La Juventus sta provando a portare a termine un'operazione per Jeff Ekhator.",
+                "La Juventus sta provando a portare a termine un'operazione per Jeff Ekhator. "
+                "Per la Juventus è un'operazione importante.",
                 "",
             )
         )
 
-    def test_juventus_summary_with_market_context_is_accepted(self):
-        self.assertTrue(
+    def test_juventus_summary_alone_is_not_enough(self):
+        # Regola attuale: senza "Juve" nel titolo contano solo le citazioni nel corpo.
+        self.assertFalse(
             _is_relevant_di_marzio_juventus_article(
                 "",
                 "La Juventus continua a lavorare sul mercato per un nuovo attaccante.",
@@ -222,7 +224,8 @@ class DiMarzioJuventusStoriesStillAcceptedTests(unittest.TestCase):
         )
         self.assertEqual(
             _di_marzio_juventus_relevance_reason(
-                "", "", "Mercato, le news", "", "La Juventus sta trattando X.", ""
+                "", "", "Mercato, le news", "",
+                "La Juventus sta trattando X. La Juventus punta a chiudere entro la settimana.", ""
             ),
             "corpo",
         )

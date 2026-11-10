@@ -12,7 +12,7 @@ Controlla le notizie Juventus pubblicate OGGI su:
 - Gianluca Di Marzio (filtro di rilevanza Juventus) e Alfredo Pedullà
 - Borsa Italiana (notizie sull'azione Juventus)
 - YouTube: Juventus, Fabrizio Romano e Romeo Agresti
-- X: profili configurati (filtri e repost definiti per account)
+- X: profili configurati (filtro Juventus per account; i repost non vengono mai inviati)
 
 Ogni notizia viene inviata su Telegram una sola volta. Lo stato è salvato nel file
 .seen_juve_press_news.json accanto allo script.
@@ -23,6 +23,7 @@ import argparse
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -83,6 +84,10 @@ SOURCE_MAX_WORKERS = 6
 DEFAULT_WORKER_DURATION_SECONDS = 55 * 60
 DEFAULT_POLL_INTERVAL_SECONDS = 15
 STATE_CHECKPOINT_ENV = "CHECKPOINT_STATE_TO_GIT"
+# Stato su un ramo a parte (un solo commit, sovrascritto): main non riceve più un
+# commit per ogni notizia. Il workflow prepara la cartella del ramo in STATE_WORKTREE.
+STATE_WORKTREE_ENV = "STATE_WORKTREE"
+STATE_BRANCH_ENV = "STATE_BRANCH"
 HEARTBEAT_FILE_ENV = "WORKER_HEARTBEAT_FILE"
 
 HEADERS = {
@@ -194,30 +199,40 @@ YOUTUBE_UPLOAD_PLAYLISTS: dict[str, str] = {}
 YOUTUBE_SHORT_CACHE: dict[str, bool] = {}
 YOUTUBE_CHANNEL_CURSOR = 0
 X_ACCOUNTS = (
-    {"handle": "juventusfc", "filter_juventus": False, "include_reposts": False},
-    {"handle": "Glongari", "filter_juventus": True, "include_reposts": False},
-    {"handle": "romeoagresti", "filter_juventus": False, "include_reposts": False},
-    {"handle": "NicoSchira", "filter_juventus": True, "include_reposts": False},
-    {"handle": "AlfredoPedulla", "filter_juventus": True, "include_reposts": False},
-    {"handle": "MatteMoretto", "filter_juventus": True, "include_reposts": False},
-    {"handle": "FabrizioRomano", "filter_juventus": True, "include_reposts": False},
-    {"handle": "DiMarzio", "filter_juventus": True, "include_reposts": False},
-    {"handle": "_Morik92_", "filter_juventus": False, "include_reposts": False},
-    {"handle": "ilbianconerocom", "filter_juventus": False, "include_reposts": False},
-    {"handle": "BaridonMarco", "filter_juventus": False, "include_reposts": False},
-    {"handle": "GiovaAlbanese", "filter_juventus": False, "include_reposts": False},
-    {"handle": "David_Ornstein", "filter_juventus": True, "include_reposts": False},
-    {"handle": "Plettigoal", "filter_juventus": True, "include_reposts": False},
-    {"handle": "SkySportsNews", "filter_juventus": True, "include_reposts": False},
-    {"handle": "SkySportDE", "filter_juventus": True, "include_reposts": False},
-    {"handle": "Tanziloic", "filter_juventus": True, "include_reposts": False},
-    {"handle": "JacobsBen", "filter_juventus": True, "include_reposts": False},
-    {"handle": "sachatavolieri", "filter_juventus": True, "include_reposts": False},
+    {"handle": "juventusfc", "filter_juventus": False},
+    {"handle": "Glongari", "filter_juventus": True},
+    {"handle": "romeoagresti", "filter_juventus": False},
+    {"handle": "NicoSchira", "filter_juventus": True},
+    {"handle": "AlfredoPedulla", "filter_juventus": True},
+    {"handle": "MatteMoretto", "filter_juventus": True},
+    {"handle": "FabrizioRomano", "filter_juventus": True},
+    {"handle": "DiMarzio", "filter_juventus": True},
+    {"handle": "_Morik92_", "filter_juventus": False},
+    {"handle": "ilbianconerocom", "filter_juventus": False},
+    {"handle": "BaridonMarco", "filter_juventus": False},
+    {"handle": "GiovaAlbanese", "filter_juventus": False},
+    {"handle": "David_Ornstein", "filter_juventus": True},
+    {"handle": "Plettigoal", "filter_juventus": True},
+    {"handle": "SkySportsNews", "filter_juventus": True},
+    {"handle": "SkySportDE", "filter_juventus": True},
+    {"handle": "Tanziloic", "filter_juventus": True},
+    {"handle": "JacobsBen", "filter_juventus": True},
+    {"handle": "sachatavolieri", "filter_juventus": True},
 )
 X_RSS_MIRROR_TEMPLATES = (
     "https://fxtwitter.com/{handle}/feed.xml",
-    "https://fixupx.com/{handle}/feed.xml",
 )
+# Riserva quando il feed RSS non risponde: post del profilo dall'API di FxTwitter,
+# trasformati nello stesso formato RSS. Risponde a volte 404: un secondo tentativo.
+X_PROFILE_API_TEMPLATE = "https://api.fxtwitter.com/2/profile/{handle}/statuses"
+X_PROFILE_API_ATTEMPTS = 2
+X_PROFILE_API_PAUSE_SECONDS = 1.5
+# Worker: ogni account X una volta al minuto circa, sparsi tra i cicli; se il feed
+# non risponde si aspetta di più (2, 4, 8... minuti, al massimo 10).
+X_ACCOUNT_INTERVAL_SECONDS = 60
+X_ACCOUNT_BACKOFF_MAX_SECONDS = 600
+X_ROTATION = {"enabled": False}
+_X_SCHEDULE: dict[str, tuple[float, int]] = {}
 X_RSS_HEADERS = {
     "User-Agent": "Notizie_JR/1.0 (RSS reader; GitHub Actions)",
     "Accept": "application/rss+xml, application/xml;q=0.9, text/xml;q=0.8",
@@ -2846,7 +2861,77 @@ def _download_first_x_feed(
             continue
         if _x_rss_has_status_item(root):
             return root
+    return _x_profile_api_feed(handle, headers)
+
+
+def _x_profile_api_feed(handle: str, headers: dict[str, str]) -> ET.Element | None:
+    """Riserva: i post del profilo dall'API di FxTwitter, nello stesso formato RSS."""
+    url = X_PROFILE_API_TEMPLATE.format(handle=handle.lower())
+    for attempt in range(X_PROFILE_API_ATTEMPTS):
+        if attempt:
+            time.sleep(X_PROFILE_API_PAUSE_SECONDS)
+        try:
+            response = requests.get(url, headers=headers, timeout=X_RSS_TIMEOUT_SECONDS)
+            if response.status_code != 200:
+                continue
+            results = response.json().get("results") or []
+        except (requests.RequestException, ValueError, AttributeError):
+            continue
+        root = _x_statuses_to_rss(results)
+        if _x_rss_has_status_item(root):
+            return root
     return None
+
+
+def _x_statuses_to_rss(results: list) -> ET.Element:
+    """Post dell'API FxTwitter -> <rss><channel><item>... come i feed del mirror."""
+    media_ns = "http://search.yahoo.com/mrss/"
+    root = ET.Element("rss")
+    channel = ET.SubElement(root, "channel")
+    for status in results:
+        if not isinstance(status, dict) or status.get("type") != "status":
+            continue
+        if status.get("replying_to"):
+            continue                                   # le risposte non sono notizie
+        text = str(status.get("text") or "").strip()
+        url = str(status.get("url") or "").strip()
+        status_id = str(status.get("id") or "").strip()
+        created = str(status.get("created_at") or "").strip()
+        if not (text and url and status_id and created):
+            continue
+        if status.get("reposted_by"):
+            text = f"RT @: {text}"                     # repost: scartato come quelli del feed
+        item = ET.SubElement(channel, "item")
+        ET.SubElement(item, "title").text = text
+        ET.SubElement(item, "pubDate").text = created
+        ET.SubElement(item, "guid").text = status_id
+        ET.SubElement(item, "link").text = url
+        description = []
+        media = status.get("media") if isinstance(status.get("media"), dict) else {}
+        for entry in media.get("all") or ():
+            if not isinstance(entry, dict):
+                continue
+            kind = str(entry.get("type") or "").lower()
+            if kind == "photo" and entry.get("url"):
+                ET.SubElement(item, f"{{{media_ns}}}content", url=str(entry["url"]), type="image/jpeg")
+            elif kind == "video" and entry.get("url"):
+                ET.SubElement(item, "enclosure", url=str(entry["url"]), type="video/mp4")
+                if entry.get("thumbnail_url"):
+                    description.append(f'<video poster="{entry["thumbnail_url"]}"></video>')
+            elif kind == "gif" and entry.get("thumbnail_url"):
+                description.append(f'<video poster="{entry["thumbnail_url"]}"></video>')
+        ET.SubElement(item, "description").text = "".join(description)
+    return root
+
+
+def x_photo_url(url: str) -> str:
+    """Foto di X in formato JPG "large" (max 2048 px): le originali, soprattutto
+    i PNG, possono superare i 5 MB che Telegram accetta per una foto da link."""
+    parts = urlsplit(url)
+    if parts.netloc.lower() != "pbs.twimg.com" or not parts.path.startswith("/media/"):
+        return url
+    media_id = parts.path.rsplit("/", 1)[-1].split(".", 1)[0]
+    return f"https://pbs.twimg.com/media/{media_id}?format=jpg&name=large"
 
 
 def _rss_item_images(item: ET.Element, page_url: str = "") -> list[str]:
@@ -2903,7 +2988,7 @@ def _rss_item_has_native_video(item: ET.Element) -> bool:
     description = item.findtext("description", default="")
     return bool(
         re.search(
-            r"<brYs*/?>Ys*Video\s*<br\s*/?>",
+            r"<br\s*/?>\s*Video\s*<br\s*/?>",
             description,
             flags=re.IGNORECASE,
         )
@@ -2967,7 +3052,7 @@ def _x_media_from_payload(payload: dict) -> XMedia:
         media = tweet.get("media")
         if isinstance(media, dict):
             image_urls = tuple(
-                image_url
+                x_photo_url(image_url)
                 for photo in (media.get("photos") or ())
                 if isinstance(photo, dict)
                 if (image_url := normalize_image_url(str(photo.get("url") or "")))
@@ -2984,10 +3069,12 @@ def _x_media_from_payload(payload: dict) -> XMedia:
                             ),
                             image_urls=image_urls,
                         )
+            if image_urls:
+                return XMedia(image_urls=image_urls)
 
     extended_media = payload.get("media_extended") or ()
     image_urls = tuple(
-        image_url
+        x_photo_url(image_url)
         for media in extended_media
         if isinstance(media, dict)
         if str(media.get("type") or "").lower() in {"image", "photo"}
@@ -3013,7 +3100,10 @@ def _x_media_from_payload(payload: dict) -> XMedia:
 
 
 def _resolve_x_media(tweet_id: str) -> XMedia:
-    """Recupera i media da API pubbliche, senza bloccare le altre fonti."""
+    """Recupera i media da API pubbliche, senza bloccare le altre fonti.
+
+    Preferisce un video; altrimenti restituisce le foto della prima API che ne ha."""
+    photos_only = XMedia()
     for template in X_MEDIA_API_TEMPLATES:
         try:
             response = requests.get(
@@ -3030,7 +3120,34 @@ def _resolve_x_media(tweet_id: str) -> XMedia:
         media = _x_media_from_payload(payload)
         if media.video_url:
             return media
-    return XMedia()
+        if media.image_urls and not photos_only.image_urls:
+            photos_only = media
+    return photos_only
+
+
+def _x_accounts_due(now: float | None = None) -> list[dict]:
+    """Account da controllare in questo ciclo (tutti, se la rotazione è spenta)."""
+    if not X_ROTATION["enabled"]:
+        return list(X_ACCOUNTS)
+    now = time.monotonic() if now is None else now
+    return [a for a in X_ACCOUNTS if _X_SCHEDULE.get(a["handle"], (0.0, 0))[0] <= now]
+
+
+def _x_schedule_next(handle: str, *, ok: bool, now: float | None = None) -> None:
+    """Prossimo controllo dell'account: un intervallo dopo, sparsi tra gli account;
+    più tardi (2, 4, 8... minuti) se il feed non risponde."""
+    if not X_ROTATION["enabled"]:
+        return
+    now = time.monotonic() if now is None else now
+    fails = 0 if ok else _X_SCHEDULE.get(handle, (0.0, 0))[1] + 1
+    if fails:
+        wait = min(X_ACCOUNT_INTERVAL_SECONDS * 2 ** fails, X_ACCOUNT_BACKOFF_MAX_SECONDS)
+    else:
+        handles = [a["handle"] for a in X_ACCOUNTS]
+        spread = handles.index(handle) / max(len(handles), 1) if handle in handles else 0
+        # Al primo giro tutti insieme; poi ognuno al suo turno nel minuto.
+        wait = X_ACCOUNT_INTERVAL_SECONDS * ((1 + spread) if handle not in _X_SCHEDULE else 1)
+    _X_SCHEDULE[handle] = (now + wait, fails)
 
 
 def scrape_x_profiles(
@@ -3043,9 +3160,12 @@ def scrape_x_profiles(
     articles: list[Article] = []
     keys_done: set[str] = set()
     headers = {**session.headers, **X_RSS_HEADERS}
+    accounts = _x_accounts_due()
+    if not accounts:
+        return []
 
     with ThreadPoolExecutor(
-        max_workers=min(SOURCE_MAX_WORKERS, len(X_ACCOUNTS)),
+        max_workers=min(SOURCE_MAX_WORKERS, len(accounts)),
     ) as executor:
         future_sources = {
             executor.submit(
@@ -3053,11 +3173,12 @@ def scrape_x_profiles(
                 account["handle"],
                 headers,
             ): account
-            for account in X_ACCOUNTS
+            for account in accounts
         }
         for future in as_completed(future_sources):
             account = future_sources[future]
             root = future.result()
+            _x_schedule_next(account["handle"], ok=root is not None)
             if root is None:
                 continue
             channel = root.find("channel")
@@ -3074,10 +3195,11 @@ def scrape_x_profiles(
                 if not title or not raw_published or not tweet_id:
                     continue
 
-                # Per gli account indicati dall'utente si mantengono anche i repost.
-                if (
-                    not account["include_reposts"]
-                    and X_REPOST_RE.match(title)
+                # Repost: mai inviati. Nei feed FxTwitter non iniziano con "RT @":
+                # arrivano come post normali ma il link punta all'autore originale.
+                link_match = X_STATUS_PATH_RE.match(urlsplit(raw_link).path)
+                if X_REPOST_RE.match(title) or (
+                    link_match and link_match.group(1).lower() != handle.lower()
                 ):
                     continue
                 if (
@@ -3096,7 +3218,6 @@ def scrape_x_profiles(
                 if not is_requested_date(published, requested_dates):
                     continue
 
-                link_match = X_STATUS_PATH_RE.match(urlsplit(raw_link).path)
                 if link_match:
                     tweet_url = (
                         f"https://x.com/{link_match.group(1)}/status/"
@@ -3111,7 +3232,7 @@ def scrape_x_profiles(
                     continue
 
                 keys_done.add(state_key)
-                image_urls = tuple(_rss_item_images(item, raw_link))
+                image_urls = tuple(x_photo_url(url) for url in _rss_item_images(item, raw_link))
                 rss_image_urls = image_urls
                 video_url = ""
                 video_thumbnail_url = _rss_item_video_thumbnail(item, raw_link)
@@ -3351,24 +3472,16 @@ def checkpoint_state_to_git() -> bool:
     enabled = os.environ.get(STATE_CHECKPOINT_ENV, '').lower() in {'1', 'true', 'yes'}
     if not enabled:
         return False
+    state_paths = (STATE_FILE.name, PENDING_FILE.name)
+    worktree = os.environ.get(STATE_WORKTREE_ENV, '').strip()
+    if worktree:
+        return _checkpoint_state_branch(Path(worktree), state_paths)
     target_ref = os.environ.get('GITHUB_REF_NAME', '').strip()
     if not target_ref:
         raise StateCheckpointError('GITHUB_REF_NAME mancante: impossibile salvare lo stato.')
-    state_paths = (STATE_FILE.name, PENDING_FILE.name)
+
     def git(*arguments: str, allowed_codes: tuple[int, ...] = (0,)):
-        touch_worker_heartbeat()
-        result = subprocess.run(
-            ('git', *arguments),
-            cwd=SCRIPT_DIR,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        touch_worker_heartbeat()
-        if result.returncode not in allowed_codes:
-            detail = (result.stderr or result.stdout or 'errore sconosciuto').strip()
-            raise StateCheckpointError(f"git {' '.join(arguments)} fallito: {detail}")
-        return result
+        return _git(SCRIPT_DIR, *arguments, allowed_codes=allowed_codes)
 
     git('add', '--', *state_paths)
     diff = git('diff', '--cached', '--quiet', '--', *state_paths, allowed_codes=(0, 1))
@@ -3378,6 +3491,42 @@ def checkpoint_state_to_git() -> bool:
     git('pull', '--rebase', 'origin', target_ref)
     git('push', 'origin', f'HEAD:{target_ref}')
     return True
+
+
+def _checkpoint_state_branch(worktree: Path, state_paths: tuple[str, ...]) -> bool:
+    """Copia lo stato nella cartella del ramo e lo pubblica come unico commit."""
+    branch = os.environ.get(STATE_BRANCH_ENV, '').strip() or 'stato-notizie'
+    for name in state_paths:
+        source = SCRIPT_DIR / name
+        if source.exists():
+            shutil.copyfile(source, worktree / name)
+    present = tuple(name for name in state_paths if (worktree / name).exists())
+    if not present:
+        return False
+    _git(worktree, 'add', '--', *present)
+    diff = _git(worktree, 'diff', '--cached', '--quiet', allowed_codes=(0, 1))
+    if diff.returncode == 0:
+        return False
+    # Sempre lo stesso commit, riscritto: il ramo non cresce.
+    _git(worktree, 'commit', '--amend', '--quiet', '-m', 'stato notizie')
+    _git(worktree, 'push', '--quiet', '--force', 'origin', f'HEAD:{branch}')
+    return True
+
+
+def _git(cwd: Path, *arguments: str, allowed_codes: tuple[int, ...] = (0,)):
+    touch_worker_heartbeat()
+    result = subprocess.run(
+        ('git', *arguments),
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    touch_worker_heartbeat()
+    if result.returncode not in allowed_codes:
+        detail = (result.stderr or result.stdout or 'errore sconosciuto').strip()
+        raise StateCheckpointError(f"git {' '.join(arguments)} fallito: {detail}")
+    return result
 
 
 def article_from_journal(entry: dict) -> Article:
@@ -3471,6 +3620,13 @@ def deliver_article(
         return receipt
 
     image_urls = preview_resolver.resolve_all(article.url, article.all_image_urls)
+    if article.source.startswith("X - ") and not image_urls and not article.video_url:
+        # Il feed a volte non riporta le foto del post: le chiediamo alle API pubbliche.
+        tweet_id = article.notification_key.rsplit(":", 1)[-1]
+        if tweet_id.isdigit():
+            image_urls = list(_resolve_x_media(tweet_id).image_urls)
+            if image_urls:
+                print(f'[MEDIA] foto X recuperate dalle API: {len(image_urls)}')
     if article.video_url:
         try:
             with prepare_telegram_video(session, article.video_url) as video_file:
@@ -3697,6 +3853,7 @@ def main() -> None:
     if args.preview_messages and not args.dry_run:
         parser.error('--preview-messages richiede --dry-run')
     if args.worker:
+        X_ROTATION["enabled"] = True      # account X a turno invece che tutti a ogni ciclo
         run_worker(
             duration_seconds=args.duration_seconds,
             poll_interval_seconds=args.interval_seconds,

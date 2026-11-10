@@ -15,6 +15,8 @@ from typing import Protocol
 
 import requests
 
+from translator import translate_to_italian
+
 TELEGRAM_MAX_MESSAGE_LENGTH = 4096
 TELEGRAM_MAX_CAPTION_LENGTH = 1024
 TELEGRAM_RICH_MAX_MEDIA = 50
@@ -71,6 +73,24 @@ class _MessageArticle:
     url: str
     summary: str
     content_url: str = ""
+    translated_from: str = ""      # lingua originale, se il testo è stato tradotto
+
+
+def _translate_x(article) -> object:
+    """Post X in un'altra lingua: testo tradotto in italiano (con TRANSLATE_X_POSTS=1)."""
+    if os.environ.get("TRANSLATE_X_POSTS", "").strip() != "1":
+        return article
+    translation = translate_to_italian(str(article.title or ""))
+    if translation is None:
+        return article
+    return _MessageArticle(
+        source=article.source,
+        title=translation.text,
+        url=article.url,
+        summary=article.summary,
+        content_url=str(getattr(article, "content_url", "") or ""),
+        translated_from=translation.language_name,
+    )
 
 
 def _split_x_hashtag(hashtag: str) -> str:
@@ -189,6 +209,14 @@ def format_article_message(
     return message
 
 
+def _lighter_photo(url: str) -> str:
+    """Foto di X in versione media (max 1200 px): l'ultimo tentativo prima del solo testo."""
+    if "pbs.twimg.com/media/" not in url:
+        return url
+    media_id = url.split("?", 1)[0].rsplit("/", 1)[-1].split(".", 1)[0]
+    return f"https://pbs.twimg.com/media/{media_id}?format=jpg&name=medium"
+
+
 def format_article_rich_html(
     article: ArticleLike,
     *,
@@ -216,6 +244,9 @@ def format_article_rich_html(
         # Su X il testo originale è il contenuto principale, non un titolo.
         if title:
             parts.append(f"<p>{title}</p>")
+        translated_from = str(getattr(article, "translated_from", "") or "")
+        if translated_from:
+            parts.append(f"<p><i>🌐 Tradotto · originale in {escape(translated_from)}</i></p>")
         if media_block:
             parts.append(media_block)
     else:
@@ -436,15 +467,15 @@ class TelegramClient:
         # correttamente vuoto: manteniamo comunque content_url per mostrare
         # "Apri contenuto" accanto ad "Apri X".
         if not original_x_text and not content_url:
-            return article
+            return _translate_x(article)
 
-        return _MessageArticle(
+        return _translate_x(_MessageArticle(
             source=article.source,
             title=original_x_text,
             url=article.url,
             summary=article.summary,
             content_url=content_url,
-        )
+        ))
 
     @staticmethod
     def _response_data(response: requests.Response) -> dict:
@@ -940,10 +971,33 @@ class TelegramClient:
 
             print(
                 "[TELEGRAM RICH] media non disponibile dopo "
-                f"{MEDIA_DOWNLOAD_MAX_ATTEMPTS} tentativi ({error}); "
-                "invio la notizia senza media, sempre in Rich Message."
+                f"{MEDIA_DOWNLOAD_MAX_ATTEMPTS} tentativi ({error})"
             )
 
+        # Prima del solo testo: una foto sola (la prima), più leggera se viene da X.
+        photos = [url for url in ([photo_url] if photo_url else []) + list(photo_urls) if url]
+        # Solo se cambia qualcosa rispetto al tentativo fallito (via il video o le altre
+        # foto, oppure una versione più leggera della foto di X).
+        if photos and not has_document and (
+            has_video or len(photos) > 1 or _lighter_photo(photos[0]) != photos[0]
+        ):
+            try:
+                message_id = self._send_rich_article(
+                    article,
+                    photo_urls=[_lighter_photo(photos[0])],
+                    retry_media_download=True,
+                )
+                print("[TELEGRAM RICH] inviata con una sola foto.")
+                return DeliveryReceipt(
+                    message_id,
+                    "rich_one_photo",
+                    photo_fallback=len(photos) > 1,
+                    video_fallback=has_video,
+                )
+            except (TelegramDeliveryError, ValueError) as error:
+                print(f"[TELEGRAM RICH] anche la foto singola non va ({error}).")
+
+        print("[TELEGRAM RICH] invio la notizia senza media, sempre in Rich Message.")
         message_id = self._send_rich_article(article)
         return DeliveryReceipt(
             message_id,

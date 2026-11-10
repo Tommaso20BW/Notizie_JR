@@ -159,10 +159,10 @@ class InvioTelegramTests(unittest.TestCase):
 
         self.assertTrue(risultato)
         payload = [call.kwargs["json"] for call in post.call_args_list]
-        self.assertTrue(
-            payload[0]["text"].startswith("📰 <b>Tuttosport</b> (1/3)")
-        )
-        self.assertNotIn("<i>", payload[0]["text"])
+        # Rich Message: fonte nel titolo e "Parte 1 di 3" in fondo.
+        html = payload[0]["rich_message"]["html"]
+        self.assertIn("Tuttosport</h2>", html)
+        self.assertIn("<footer>Parte 1 di 3</footer>", html)
         self.assertNotIn("reply_parameters", payload[0])
         self.assertEqual(
             payload[1]["reply_parameters"],

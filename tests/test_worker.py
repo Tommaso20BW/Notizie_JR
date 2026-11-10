@@ -56,22 +56,22 @@ class WorkerTests(unittest.TestCase):
             {today, datetime(2026, 8, 12).date()},
         )
 
-    def test_yesterday_at_2349_is_rejected(self):
+    def test_yesterday_at_2329_is_rejected(self):
         requested_dates = bot.collection_dates(datetime(2026, 8, 13).date())
 
         self.assertFalse(
             bot.is_collection_candidate(
-                datetime(2026, 8, 12, 23, 49, tzinfo=bot.ROME),
+                datetime(2026, 8, 12, 23, 29, tzinfo=bot.ROME),
                 requested_dates,
             )
         )
 
-    def test_yesterday_at_2350_is_accepted(self):
+    def test_yesterday_at_2330_is_accepted(self):
         requested_dates = bot.collection_dates(datetime(2026, 8, 13).date())
 
         self.assertTrue(
             bot.is_collection_candidate(
-                datetime(2026, 8, 12, 23, 50, tzinfo=bot.ROME),
+                datetime(2026, 8, 12, 23, 30, tzinfo=bot.ROME),
                 requested_dates,
             )
         )
@@ -108,8 +108,8 @@ class WorkerTests(unittest.TestCase):
         def scraper(session, dates):
             self.assertEqual(dates, requested_dates)
             return [
-                article_at(23, 49, "yesterday:2349"),
-                article_at(23, 50, "yesterday:2350"),
+                article_at(23, 29, "yesterday:2329"),
+                article_at(23, 30, "yesterday:2330"),
                 article_at(23, 59, "yesterday:2359"),
                 article_at(0, 1, "today:0001", day=13),
             ]
@@ -126,7 +126,7 @@ class WorkerTests(unittest.TestCase):
 
         self.assertEqual(
             [article.notification_key for article in articles],
-            ["yesterday:2350", "yesterday:2359", "today:0001"],
+            ["yesterday:2330", "yesterday:2359", "today:0001"],
         )
         self.assertEqual(errors, [])
 
@@ -180,13 +180,36 @@ class WorkerTests(unittest.TestCase):
         self.assertFalse(changed)
         run.assert_not_called()
 
+    def test_state_is_saved_on_its_own_branch_as_one_commit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            worktree = Path(directory) / "stato"
+            worktree.mkdir()
+            ok = subprocess.CompletedProcess([], 0, "", "")
+            changed = subprocess.CompletedProcess([], 1, "", "")
+            with (
+                patch.dict(os.environ, {bot.STATE_CHECKPOINT_ENV: "true", "STATE_WORKTREE": str(worktree),
+                                        "STATE_BRANCH": "stato-notizie"}, clear=True),
+                patch.object(bot, "SCRIPT_DIR", worktree.parent),
+                patch.object(bot.shutil, "copyfile", side_effect=lambda src, dst: Path(dst).write_text("{}")),
+                patch.object(bot.subprocess, "run", side_effect=[ok, changed, ok, ok]) as run,
+            ):
+                (worktree.parent / bot.STATE_FILE.name).write_text("{}")
+                self.assertTrue(bot.checkpoint_state_to_git())
+        commands = [call.args[0] for call in run.call_args_list]
+        self.assertIn("--amend", commands[2])
+        self.assertEqual(commands[3][-2:], ("origin", "HEAD:stato-notizie"))
+        self.assertIn("--force", commands[3])
+
     def test_workflow_has_watchdog_backup_and_failure_handoff(self):
         workflow = (
             bot.SCRIPT_DIR / ".github" / "workflows" / "juve-press-news.yml"
         ).read_text(encoding="utf-8")
 
-        self.assertIn('cron: "*/5 * * * *"', workflow)
+        self.assertIn('cron: "7,27,47 * * * *"', workflow)
         self.assertIn("NOW - LAST_HEARTBEAT > 300", workflow)
+        # Stato sul ramo a parte: nessun commit su main per ogni notizia.
+        self.assertIn("STATE_BRANCH: stato-notizie", workflow)
+        self.assertNotIn('git push origin "HEAD:$TARGET_REF"', workflow)
         self.assertIn("steps.persist_state.outcome == 'success'", workflow)
         self.assertNotIn("steps.news_worker.outcome == 'success'", workflow)
 

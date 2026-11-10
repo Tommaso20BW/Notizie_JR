@@ -1,3 +1,4 @@
+import json
 import unittest
 from dataclasses import dataclass
 from pathlib import Path
@@ -67,38 +68,6 @@ class TelegramNotifierTests(unittest.TestCase):
             message,
         )
 
-    def test_rate_limit_uses_retry_after_and_returns_message_id(self):
-        session = FakeSession(
-            [
-                FakeResponse(
-                    429,
-                    {
-                        "ok": False,
-                        "description": "Too Many Requests",
-                        "parameters": {"retry_after": 4},
-                    },
-                ),
-                FakeResponse(
-                    200,
-                    {"ok": True, "result": {"message_id": 123}},
-                ),
-            ]
-        )
-        sleeps = []
-        client = TelegramClient(
-            "token",
-            "chat",
-            session=session,
-            sleep=sleeps.append,
-        )
-
-        receipt = client.send_article(SampleArticle())
-
-        self.assertEqual(receipt.message_id, 123)
-        self.assertEqual(receipt.mode, "testo")
-        self.assertEqual(sleeps, [4])
-        self.assertEqual(len(session.calls), 2)
-
     def test_network_error_is_retried(self):
         session = FakeSession(
             [
@@ -135,288 +104,144 @@ class TelegramNotifierTests(unittest.TestCase):
             client.send_article(SampleArticle())
         self.assertEqual(len(session.calls), 1)
 
-    def test_article_with_image_is_sent_as_photo(self):
-        session = FakeSession(
-            [
-                FakeResponse(
-                    200,
-                    {"ok": True, "result": {"message_id": 789}},
-                )
-            ]
-        )
+
+    # Il bot invia sempre un Rich Message (sendRichMessage): niente più sendPhoto,
+    # sendVideo o album. I test controllano gli stessi casi nel formato attuale.
+
+    def _client(self, results, sleeps=None):
+        session = FakeSession(results)
         client = TelegramClient(
             "token",
             "chat",
             session=session,
-            sleep=lambda _: None,
+            sleep=(sleeps.append if sleeps is not None else (lambda _: None)),
         )
+        return client, session
 
-        receipt = client.send_article(
-            SampleArticle(),
-            photo_url="https://example.com/photo.jpg",
+    @staticmethod
+    def _html(call):
+        payload = call[1]
+        rich = payload["rich_message"]
+        if isinstance(rich, str):
+            rich = json.loads(rich)
+        return rich["html"]
+
+    def test_rate_limit_uses_retry_after_and_returns_message_id(self):
+        sleeps = []
+        client, session = self._client(
+            [
+                FakeResponse(429, {"ok": False, "description": "Too Many Requests",
+                                   "parameters": {"retry_after": 4}}),
+                FakeResponse(200, {"ok": True, "result": {"message_id": 123}}),
+            ],
+            sleeps,
         )
+        receipt = client.send_article(SampleArticle())
+        self.assertEqual(receipt.message_id, 123)
+        self.assertEqual(receipt.mode, "rich")
+        self.assertEqual(sleeps, [4])
+        self.assertEqual(len(session.calls), 2)
 
-        endpoint, payload, _ = session.calls[0]
-        self.assertTrue(endpoint.endswith("/sendPhoto"))
-        self.assertEqual(payload["photo"], "https://example.com/photo.jpg")
-        self.assertLessEqual(len(payload["caption"]), 1024)
-        self.assertEqual(receipt.mode, "foto")
+    def test_article_with_image_is_sent_as_photo(self):
+        client, session = self._client(
+            [FakeResponse(200, {"ok": True, "result": {"message_id": 789}})]
+        )
+        receipt = client.send_article(SampleArticle(), photo_url="https://example.com/photo.jpg")
+        self.assertTrue(session.calls[0][0].endswith("/sendRichMessage"))
+        self.assertIn('<img src="https://example.com/photo.jpg"/>', self._html(session.calls[0]))
+        self.assertEqual(receipt.mode, "rich")
         self.assertFalse(receipt.photo_fallback)
 
     def test_rejected_photo_falls_back_to_text(self):
-        session = FakeSession(
-            [
-                FakeResponse(
-                    400,
-                    {"ok": False, "description": "wrong file identifier"},
-                ),
-                FakeResponse(
-                    200,
-                    {"ok": True, "result": {"message_id": 790}},
-                ),
-            ]
+        rejected = FakeResponse(400, {"ok": False, "description": "wrong file identifier"})
+        client, session = self._client(
+            [rejected] * 5 + [FakeResponse(200, {"ok": True, "result": {"message_id": 790}})]
         )
-        client = TelegramClient(
-            "token",
-            "chat",
-            session=session,
-            sleep=lambda _: None,
-        )
-
-        receipt = client.send_article(
-            SampleArticle(),
-            photo_url="https://example.com/broken.jpg",
-        )
-
-        self.assertTrue(session.calls[0][0].endswith("/sendPhoto"))
-        self.assertTrue(session.calls[1][0].endswith("/sendMessage"))
+        receipt = client.send_article(SampleArticle(), photo_url="https://example.com/broken.jpg")
+        # Una sola foto di un sito: 5 tentativi, poi subito il solo testo.
+        self.assertEqual(len(session.calls), 6)
+        self.assertNotIn("<img", self._html(session.calls[-1]))
         self.assertEqual(receipt.message_id, 790)
-        self.assertEqual(receipt.mode, "testo")
+        self.assertEqual(receipt.mode, "rich_text")
         self.assertTrue(receipt.photo_fallback)
 
     def test_x_photo_download_is_retried_before_text_fallback(self):
-        session = FakeSession(
-            [
-                FakeResponse(
-                    400,
-                    {
-                        "ok": False,
-                        "description": "failed to get HTTP URL content",
-                    },
-                ),
-                FakeResponse(
-                    400,
-                    {
-                        "ok": False,
-                        "description": "failed to get HTTP URL content",
-                    },
-                ),
-                FakeResponse(
-                    200,
-                    {"ok": True, "result": {"message_id": 791}},
-                ),
-            ]
-        )
+        failed = FakeResponse(400, {"ok": False, "description": "failed to get HTTP URL content"})
         sleeps = []
-        client = TelegramClient(
-            "token",
-            "chat",
-            session=session,
-            sleep=sleeps.append,
+        client, session = self._client(
+            [failed, failed, FakeResponse(200, {"ok": True, "result": {"message_id": 791}})],
+            sleeps,
         )
-
         receipt = client.send_article(
-            SampleArticle(
-                source="X - Reporter",
-                url="https://x.com/Reporter/status/1234567890",
-            ),
+            SampleArticle(source="X - Reporter", url="https://x.com/Reporter/status/1234567890"),
             photo_url="https://pbs.twimg.com/media/photo.jpg",
         )
-
         self.assertEqual(len(session.calls), 3)
-        self.assertTrue(
-            all(call[0].endswith("/sendPhoto") for call in session.calls)
-        )
         self.assertEqual(sleeps, [1, 2])
         self.assertEqual(receipt.message_id, 791)
-        self.assertEqual(receipt.mode, "foto")
+        self.assertEqual(receipt.mode, "rich")
         self.assertFalse(receipt.photo_fallback)
 
     def test_x_photo_falls_back_to_text_after_three_failed_attempts(self):
-        failed_download = FakeResponse(
-            400,
-            {
-                "ok": False,
-                "description": "failed to get HTTP URL content",
-            },
+        failed = FakeResponse(400, {"ok": False, "description": "failed to get HTTP URL content"})
+        client, session = self._client(
+            [failed] * 10 + [FakeResponse(200, {"ok": True, "result": {"message_id": 792}})]
         )
-        session = FakeSession(
-            [
-                failed_download,
-                failed_download,
-                failed_download,
-                FakeResponse(
-                    200,
-                    {"ok": True, "result": {"message_id": 792}},
-                ),
-            ]
-        )
-        sleeps = []
-        client = TelegramClient(
-            "token",
-            "chat",
-            session=session,
-            sleep=sleeps.append,
-        )
-
         receipt = client.send_article(
-            SampleArticle(
-                source="X - Reporter",
-                url="https://x.com/Reporter/status/1234567890",
-            ),
+            SampleArticle(source="X - Reporter", url="https://x.com/Reporter/status/1234567890"),
             photo_url="https://pbs.twimg.com/media/broken.jpg",
         )
-
-        self.assertEqual(len(session.calls), 4)
-        self.assertTrue(
-            all(
-                call[0].endswith("/sendPhoto")
-                for call in session.calls[:3]
-            )
-        )
-        self.assertTrue(session.calls[3][0].endswith("/sendMessage"))
-        self.assertEqual(sleeps, [1, 2])
+        # 5 tentativi con la foto, 5 con la versione più leggera, poi il solo testo.
+        self.assertEqual(len(session.calls), 11)
+        self.assertIn("name=medium", self._html(session.calls[5]))
+        self.assertNotIn("<img", self._html(session.calls[-1]))
         self.assertEqual(receipt.message_id, 792)
-        self.assertEqual(receipt.mode, "testo")
+        self.assertEqual(receipt.mode, "rich_text")
         self.assertTrue(receipt.photo_fallback)
 
     def test_article_with_video_is_sent_as_streaming_video(self):
-        session = FakeSession(
-            [
-                FakeResponse(
-                    200,
-                    {"ok": True, "result": {"message_id": 791}},
-                )
-            ]
+        client, session = self._client(
+            [FakeResponse(200, {"ok": True, "result": {"message_id": 791}})]
         )
-        client = TelegramClient(
-            "token",
-            "chat",
-            session=session,
-            sleep=lambda _: None,
-        )
-
-        receipt = client.send_article(
-            SampleArticle(),
-            video_url="https://video.twimg.com/clip.mp4",
-        )
-
-        endpoint, payload, _ = session.calls[0]
-        self.assertTrue(endpoint.endswith("/sendVideo"))
-        self.assertEqual(payload["video"], "https://video.twimg.com/clip.mp4")
-        self.assertTrue(payload["supports_streaming"])
-        self.assertLessEqual(len(payload["caption"]), 1024)
+        receipt = client.send_article(SampleArticle(), video_url="https://video.twimg.com/clip.mp4")
+        self.assertIn('<video src="https://video.twimg.com/clip.mp4"></video>', self._html(session.calls[0]))
         self.assertEqual(receipt.message_id, 791)
-        self.assertEqual(receipt.mode, "video")
+        self.assertEqual(receipt.mode, "rich")
         self.assertFalse(receipt.video_fallback)
 
     def test_prepared_video_is_uploaded_as_multipart_video(self):
-        session = FakeSession(
-            [
-                FakeResponse(
-                    200,
-                    {"ok": True, "result": {"message_id": 795}},
-                )
-            ]
+        client, session = self._client(
+            [FakeResponse(200, {"ok": True, "result": {"message_id": 795}})]
         )
-        client = TelegramClient(
-            "token",
-            "chat",
-            session=session,
-            sleep=lambda _: None,
-        )
-
         with TemporaryDirectory() as directory:
             video_file = Path(directory) / "prepared.mp4"
             video_file.write_bytes(b"prepared-video")
-            receipt = client.send_article(
-                SampleArticle(),
-                video_file_path=str(video_file),
-            )
-
-        endpoint, payload, timeout = session.calls[0]
-        self.assertTrue(endpoint.endswith("/sendVideo"))
-        self.assertEqual(payload["supports_streaming"], "true")
-        self.assertEqual(timeout, 60)
-        self.assertIn("video", session.files[0])
+            receipt = client.send_article(SampleArticle(), video_file_path=str(video_file))
+        self.assertTrue(session.calls[0][0].endswith("/sendRichMessage"))
+        self.assertIn("rich_video", session.files[0])
+        self.assertIn("tg://video?id=video_0", self._html(session.calls[0]))
         self.assertEqual(receipt.message_id, 795)
-        self.assertEqual(receipt.mode, "video")
+        self.assertEqual(receipt.mode, "rich")
 
     def test_video_and_photos_are_sent_as_one_mixed_album(self):
-        session = FakeSession(
-            [
-                FakeResponse(
-                    200,
-                    {
-                        "ok": True,
-                        "result": [
-                            {"message_id": 792},
-                            {"message_id": 793},
-                            {"message_id": 794},
-                        ],
-                    },
-                )
-            ]
+        client, session = self._client(
+            [FakeResponse(200, {"ok": True, "result": {"message_id": 792}})]
         )
-        client = TelegramClient(
-            "token",
-            "chat",
-            session=session,
-            sleep=lambda _: None,
-        )
-
         receipt = client.send_article(
             SampleArticle(),
             video_url="https://video.twimg.com/clip.mp4",
-            photo_urls=(
-                "https://pbs.twimg.com/photo-1.jpg",
-                "https://pbs.twimg.com/photo-2.jpg",
-            ),
+            photo_urls=("https://pbs.twimg.com/photo-1.jpg", "https://pbs.twimg.com/photo-2.jpg"),
         )
-
-        endpoint, payload, _ = session.calls[0]
-        self.assertTrue(endpoint.endswith("/sendMediaGroup"))
-        self.assertEqual(
-            [item["type"] for item in payload["media"]],
-            ["video", "photo", "photo"],
-        )
-        self.assertIn("caption", payload["media"][0])
-        self.assertNotIn("caption", payload["media"][1])
+        html = self._html(session.calls[0])
+        self.assertIn("<tg-collage><video", html)
+        self.assertEqual(html.count("<img "), 2)
+        self.assertEqual(len(session.calls), 1)
         self.assertEqual(receipt.message_id, 792)
-        self.assertEqual(receipt.mode, "album")
 
     def test_prepared_video_and_photos_use_multipart_mixed_album(self):
-        session = FakeSession(
-            [
-                FakeResponse(
-                    200,
-                    {
-                        "ok": True,
-                        "result": [
-                            {"message_id": 796},
-                            {"message_id": 797},
-                        ],
-                    },
-                )
-            ]
+        client, session = self._client(
+            [FakeResponse(200, {"ok": True, "result": {"message_id": 796}})]
         )
-        client = TelegramClient(
-            "token",
-            "chat",
-            session=session,
-            sleep=lambda _: None,
-        )
-
         with TemporaryDirectory() as directory:
             video_file = Path(directory) / "prepared.mp4"
             video_file.write_bytes(b"prepared-video")
@@ -425,49 +250,27 @@ class TelegramNotifierTests(unittest.TestCase):
                 video_file_path=str(video_file),
                 photo_urls=("https://pbs.twimg.com/photo.jpg",),
             )
-
-        endpoint, payload, _ = session.calls[0]
-        self.assertTrue(endpoint.endswith("/sendMediaGroup"))
-        self.assertIn('"media": "attach://video"', payload["media"])
-        self.assertIn("video", session.files[0])
+        html = self._html(session.calls[0])
+        self.assertIn("rich_video", session.files[0])
+        self.assertIn('<tg-collage><video src="tg://video?id=video_0"></video><img', html)
         self.assertEqual(receipt.message_id, 796)
-        self.assertEqual(receipt.mode, "album")
 
     def test_rejected_video_falls_back_to_poster(self):
-        session = FakeSession(
-            [
-                FakeResponse(
-                    400,
-                    {"ok": False, "description": "bad mixed media"},
-                ),
-                FakeResponse(
-                    400,
-                    {"ok": False, "description": "failed to get HTTP URL"},
-                ),
-                FakeResponse(
-                    200,
-                    {"ok": True, "result": {"message_id": 792}},
-                ),
-            ]
+        failed = FakeResponse(400, {"ok": False, "description": "failed to get HTTP URL"})
+        client, session = self._client(
+            [failed] * 5 + [FakeResponse(200, {"ok": True, "result": {"message_id": 792}})]
         )
-        client = TelegramClient(
-            "token",
-            "chat",
-            session=session,
-            sleep=lambda _: None,
-        )
-
         receipt = client.send_article(
             SampleArticle(),
             video_url="https://video.twimg.com/broken.mp4",
             photo_url="https://example.com/poster.jpg",
         )
-
-        self.assertTrue(session.calls[0][0].endswith("/sendMediaGroup"))
-        self.assertTrue(session.calls[1][0].endswith("/sendVideo"))
-        self.assertTrue(session.calls[2][0].endswith("/sendPhoto"))
+        # Video rifiutato: la notizia parte con la sola foto, senza video.
+        last = self._html(session.calls[-1])
+        self.assertIn('<img src="https://example.com/poster.jpg"/>', last)
+        self.assertNotIn("<video", last)
         self.assertEqual(receipt.message_id, 792)
-        self.assertEqual(receipt.mode, "foto")
+        self.assertEqual(receipt.mode, "rich_one_photo")
         self.assertTrue(receipt.video_fallback)
         self.assertFalse(receipt.photo_fallback)
 

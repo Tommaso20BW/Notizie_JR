@@ -14,6 +14,7 @@ on:
       - "preview_image.py"
       - "video_media.py"
       - "article_journal.py"
+      - "translator.py"
       - "requirements-juve-press.txt"
       - ".github/workflows/juve-press-news.yml"
 
@@ -33,6 +34,8 @@ jobs:
     name: Worker
     runs-on: ubuntu-latest
     timeout-minutes: 65
+    env:
+      STATE_BRANCH: stato-notizie
 
     steps:
       - name: Scarica il repository
@@ -55,6 +58,34 @@ jobs:
         run: |
           git config user.name "notizie-jr-bot[bot]"
           git config user.email "notizie-jr-bot[bot]@users.noreply.github.com"
+
+      # Lo stato (notizie già inviate) vive sul ramo stato-notizie, un solo commit
+      # riscritto a ogni salvataggio: main non riceve più un commit per notizia.
+      - name: Prepara il ramo dello stato
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          STATE_WORKTREE="$RUNNER_TEMP/stato-notizie"
+          STATE_FILES=(.seen_juve_press_news.json .pending_juve_press_news.json)
+          if git fetch --quiet origin "$STATE_BRANCH"; then
+            git worktree add --quiet --detach "$STATE_WORKTREE" FETCH_HEAD
+            for f in "${STATE_FILES[@]}"; do
+              if [[ -f "$STATE_WORKTREE/$f" ]]; then cp "$STATE_WORKTREE/$f" "$f"; fi
+            done
+          else
+            # Primo avvio: il ramo nasce dallo stato ancora salvato su main.
+            git worktree add --quiet --detach "$STATE_WORKTREE" HEAD
+            git -C "$STATE_WORKTREE" checkout --quiet --orphan stato-iniziale
+            git -C "$STATE_WORKTREE" rm -r -f --quiet .
+            for f in "${STATE_FILES[@]}"; do
+              if [[ -f "$f" ]]; then cp "$f" "$STATE_WORKTREE/$f"; fi
+            done
+            git -C "$STATE_WORKTREE" add -A
+            git -C "$STATE_WORKTREE" commit --quiet -m "stato notizie"
+            git -C "$STATE_WORKTREE" push --quiet origin "HEAD:$STATE_BRANCH"
+          fi
+          echo "STATE_WORKTREE=$STATE_WORKTREE" >> "$GITHUB_ENV"
 
       - name: Controlla e pubblica le notizie per circa un'ora
         id: news_worker
@@ -104,6 +135,9 @@ jobs:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
           TELEGRAM_RICH_MESSAGES: "1"
+          # Post X in altre lingue tradotti in italiano (DeepL se c'è il secret, altrimenti Google).
+          TRANSLATE_X_POSTS: "1"
+          DEEPL_API_KEY: ${{ secrets.DEEPL_API_KEY }}
           YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
           YOUTUBE_CHANNELS_PER_CYCLE: "1"
           BASELINE_IF_NO_STATE: "true"
@@ -114,22 +148,13 @@ jobs:
         id: persist_state
         if: always()
         env:
-          TARGET_REF: ${{ github.ref_name }}
+          CHECKPOINT_STATE_TO_GIT: "true"
         shell: bash
         run: |
           set -euo pipefail
 
-          if [[ -n "$(git status --porcelain -- .seen_juve_press_news.json .pending_juve_press_news.json)" ]]; then
-            git add .seen_juve_press_news.json .pending_juve_press_news.json
-            git commit -m "chore: aggiorna stato notizie"
-          else
-            echo "Nessuna modifica locale da aggiungere al checkpoint."
-          fi
-
-          # Pubblica anche eventuali checkpoint già committati dal bot ma non
-          # ancora arrivati al remote per un errore di rete transitorio.
-          git pull --rebase origin "$TARGET_REF"
-          git push origin "HEAD:$TARGET_REF"
+          # Ultimo salvataggio sul ramo dello stato (se il bot si è fermato a metà).
+          python -c "import juve_press_bot as bot; print('Stato salvato.' if bot.checkpoint_state_to_git() else 'Stato già salvato.')"
 
       - name: Pulisci la cronologia dei run
         if: always()
