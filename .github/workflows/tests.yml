@@ -12,6 +12,7 @@ on:
 
 permissions:
   contents: read
+  actions: write
 
 concurrency:
   group: test-${{ github.ref }}
@@ -42,3 +43,19 @@ jobs:
 
       - name: Test
         run: python -m unittest discover -s tests -v
+
+      # Tiene solo l'esecuzione in corso: cancella quelle già finite (come negli altri workflow).
+      - name: Pulisci la cronologia dei test
+        if: always() && !cancelled()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEEP: "0"
+        shell: bash
+        run: |
+          gh api             "repos/${{ github.repository }}/actions/workflows/tests.yml/runs?status=completed&per_page=100"             --jq '.workflow_runs | sort_by(.created_at) | reverse | .['"$KEEP"':] | .[].id' |
+          while read -r RUN_ID; do
+            if [ -n "$RUN_ID" ]; then
+              gh api -X DELETE "repos/${{ github.repository }}/actions/runs/$RUN_ID" >/dev/null 2>&1 || true
+            fi
+          done
+          echo "Pulizia completata."
