@@ -23,6 +23,7 @@ import bot_giornali as bg
 MAX_CARATTERI = int(os.getenv("YOUTUBE_MAX_CARATTERI", "320"))
 ATTESA = int(os.getenv("YOUTUBE_ATTESA", "900"))     # quanto aspettare un video non ancora leggibile (s)
 PAUSA = int(os.getenv("YOUTUBE_PAUSA", "120"))       # ogni quanto riprovare (s)
+TIMEOUT_GEMINI = int(os.getenv("YOUTUBE_TIMEOUT_GEMINI", "90"))   # risposta di un modello, poi il successivo (s)
 ATTESA_GEMINI = int(os.getenv("YOUTUBE_ATTESA_GEMINI", "1800"))   # Gemini Flash occupato (503): quanto aspettare (s)
 ATTESA_SOTTOTITOLI = int(os.getenv("YOUTUBE_ATTESA_SOTTOTITOLI", "1800"))   # attesa massima dei sottotitoli (s)
 MESSAGGIO = os.getenv("YOUTUBE_MESSAGGIO", "").strip()   # messaggio del video su cui è stato toccato il pulsante
@@ -292,7 +293,8 @@ def estrai(url, info):
     video = types.Part(file_data=types.FileData(file_uri=url))
     risposta = bg._genera_json(video, prompt(info, possibili), schema=SCHEMA, intero=True, prima_flash=True, solo_flash=True, cicli=3,
                                config_extra={"media_resolution": "MEDIA_RESOLUTION_LOW",
-                                             "thinking_config": {"thinking_budget": 8192}})
+                                             "thinking_config": {"thinking_budget": 8192},
+                                             "http_options": {"timeout": TIMEOUT_GEMINI * 1000}})
     return solo_notizie(risposta.get("notizie") or [], possibili, info)
 
 
@@ -364,7 +366,8 @@ def notizie_gemini_testo(testo, info, possibili):
     richiesta = prompt(info, possibili, trascrizione=True) + "\n" + AVVISO_SOTTOTITOLI
     risposta = bg._genera_json(f"Trascrizione del video:\n{testo}", richiesta, schema=SCHEMA, intero=True,
                                prima_flash=True, solo_flash=True, cicli=3,
-                               config_extra={"thinking_config": {"thinking_budget": 8192}})
+                               config_extra={"thinking_config": {"thinking_budget": 8192},
+                                             "http_options": {"timeout": TIMEOUT_GEMINI * 1000}})
     return risposta.get("notizie") or []
 
 

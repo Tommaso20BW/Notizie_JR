@@ -253,3 +253,14 @@ class GeminiTestoTests(unittest.TestCase):
     def test_supadata_sospeso_si_usa_il_video(self):
         self.assertFalse(yj.SUPADATA_ATTIVO)
         self.assertFalse(hasattr(yj, "GROQ_API_KEY"))
+
+
+class TimeoutTests(unittest.TestCase):
+    def test_youtube_aspetta_al_massimo_90_secondi(self):
+        visti = {}
+        def genera(video, richiesta, **k):
+            visti.update(k["config_extra"])
+            return {"notizie": []}
+        with patch.object(yj.bg, "_genera_json", side_effect=genera):
+            yj.estrai("https://youtu.be/abcdefghijk", {})
+        self.assertEqual(visti["http_options"], {"timeout": 90000})

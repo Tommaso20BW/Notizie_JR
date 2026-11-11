@@ -419,7 +419,7 @@ def _genera_json(uploaded, prompt, schema=SCHEMA_NOTIZIE, config_extra=None, int
                     attesa_ciclo = max(attesa_ciclo or 0, attesa_503)
                     print(
                         f"Modello {modello} temporaneamente non disponibile "
-                        f"({f'nessuna risposta in {TIMEOUT_GEMINI}s' if _scaduto(e) else '503'}). "
+                        f"({'nessuna risposta in tempo' if _scaduto(e) else '503'}). "
                         "Provo il modello successivo..."
                     )
                     continue
