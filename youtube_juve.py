@@ -97,6 +97,8 @@ Regole:
 - Una notizia per argomento. Se un argomento non sta in {MAX_CARATTERI} caratteri, dividilo in più
   notizie consecutive, ognuna comprensibile da sola. Non dividere se ci sta in una sola, e non unire
   argomenti diversi nella stessa notizia.
+- Non ripetere la stessa informazione in più notizie: se nel video un concetto torna più volte,
+  mettilo una volta sola, nella notizia a cui appartiene.
 - Importi in milioni di euro in forma compatta: "30 milioni di euro" -> "30M€", "tra 40 e 50" -> "40-50M€".
 - Niente emoji, hashtag, titoli, Markdown o HTML.
 - Se nel video non si parla della Juventus, restituisci una lista vuota.
