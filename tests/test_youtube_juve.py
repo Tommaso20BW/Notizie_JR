@@ -96,7 +96,7 @@ class FormatoTests(unittest.TestCase):
 class InvioTests(unittest.TestCase):
     def test_solo_i_post(self):
         inviati = []
-        with patch.object(yj.bg, "_post_telegram_rich", side_effect=lambda h: inviati.append(h) or 1), \
+        with patch.object(yj.bg, "_post_telegram_rich", side_effect=lambda h, **k: inviati.append(h) or 1), \
                 patch.object(yj.time, "sleep"):
             ok = yj.invia(["<p>uno</p>", "<p>due</p>"], "https://www.youtube.com/watch?v=dQw4w9WgXcQ", {"titolo": "Live"})
         self.assertTrue(ok)
@@ -104,7 +104,7 @@ class InvioTests(unittest.TestCase):
 
     def test_nessuna_notizia(self):
         inviati = []
-        with patch.object(yj.bg, "_post_telegram_rich", side_effect=lambda h: inviati.append(h) or 1):
+        with patch.object(yj.bg, "_post_telegram_rich", side_effect=lambda h, **k: inviati.append(h) or 1):
             yj.invia([], "https://www.youtube.com/watch?v=dQw4w9WgXcQ", {"titolo": ""})
         self.assertEqual(len(inviati), 1)
         self.assertIn("Nessuna notizia", inviati[0])
@@ -120,7 +120,7 @@ class AttesaTests(unittest.TestCase):
             return r
         avvisi = []
         with patch.object(yj, "estrai", side_effect=estrai), \
-                patch.object(yj.bg, "_post_telegram_rich", side_effect=lambda h: avvisi.append(h) or 1):
+                patch.object(yj.bg, "_post_telegram_rich", side_effect=lambda h, **k: avvisi.append(h) or 1):
             out = yj.estrai_con_attesa("u", {"canale": "Romeo Agresti"}, attesa=900, pausa=120, dormi=lambda s: None)
         self.assertEqual(out, [])
         self.assertEqual(len(avvisi), 1)                 # un solo avviso, non uno per tentativo

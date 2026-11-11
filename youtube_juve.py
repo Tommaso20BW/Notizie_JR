@@ -22,6 +22,8 @@ import bot_giornali as bg
 MAX_CARATTERI = int(os.getenv("YOUTUBE_MAX_CARATTERI", "240"))
 ATTESA = int(os.getenv("YOUTUBE_ATTESA", "900"))     # quanto aspettare un video non ancora leggibile (s)
 PAUSA = int(os.getenv("YOUTUBE_PAUSA", "120"))       # ogni quanto riprovare (s)
+ATTESA_SOTTOTITOLI = int(os.getenv("YOUTUBE_ATTESA_SOTTOTITOLI", "1800"))   # attesa massima dei sottotitoli (s)
+MESSAGGIO = os.getenv("YOUTUBE_MESSAGGIO", "").strip()   # messaggio del video su cui è stato toccato il pulsante
 YOUTUBE_EMOJI_ID = "5974578526991425004"       # per gli avvisi
 
 # Canali seguiti di più: chi può parlare (sul canale di Romano parla spesso anche Moretto).
@@ -346,9 +348,8 @@ def invia(posts, url, info):
     """Solo i post, pronti da inoltrare sul canale. Senza notizie un avviso, per sapere che è finito."""
     if not posts:
         titolo = html.escape(info.get("titolo") or url, quote=False)
-        return bg._post_telegram_rich(
-            f"{intestazione(info.get('canale') or 'YouTube')}<p>Nessuna notizia sulla Juventus in "
-            f'<a href="{html.escape(url)}">{titolo}</a>.</p>') is not None
+        return avviso(f'Nessuna notizia sulla Juventus in <a href="{html.escape(url)}">{titolo}</a>.',
+                      info) is not None
     ok = True
     for i, testo in enumerate(posts):
         if i:
@@ -357,17 +358,72 @@ def invia(posts, url, info):
     return ok
 
 
+def avviso(testo, info=None):
+    """Messaggio di servizio, in risposta al messaggio del video quando si parte dal pulsante."""
+    risposta = int(MESSAGGIO) if MESSAGGIO.isdigit() else None
+    return bg._post_telegram_rich(f"{intestazione((info or {}).get('canale') or 'YouTube')}<p>{testo}</p>",
+                                  reply_to=risposta)
+
+
 def avvisa_errore(url, errore):
-    bg._post_telegram_rich(
-        f"<h2>⚠️ Notizie da YouTube</h2><p>Non sono riuscito a leggere il video: "
-        f"{html.escape(str(errore)[:300], quote=False)}</p><p>{html.escape(url)}</p>"
-    )
+    avviso(f"⚠️ Non sono riuscito a leggere il video: {html.escape(str(errore)[:300], quote=False)}"
+           f"<br>{html.escape(url)}")
+
+
+def sottotitoli(url):
+    """True se il video ha già i sottotitoli (anche automatici), False se non ancora, None se non si
+    riesce a saperlo. YouTube Data API (captions.list), senza Gemini."""
+    chiave = os.getenv("YOUTUBE_API_KEY", "").strip()
+    if not chiave:
+        return None
+    try:
+        r = requests.get("https://www.googleapis.com/youtube/v3/captions",
+                         params={"part": "snippet", "videoId": url.rsplit("=", 1)[-1], "key": chiave},
+                         timeout=15)
+        if r.status_code != 200:
+            print(f"Sottotitoli: risposta {r.status_code} {r.text[:200]}")
+            return None
+        tracce = r.json().get("items") or []
+    except (requests.RequestException, ValueError) as e:
+        print(f"Sottotitoli: {e}")
+        return None
+    print("Sottotitoli: " + (", ".join(
+        f"{(t.get('snippet') or {}).get('language')}/{(t.get('snippet') or {}).get('trackKind')}/"
+        f"{(t.get('snippet') or {}).get('status')}" for t in tracce) or "nessuno"))
+    return any((t.get("snippet") or {}).get("status", "serving") == "serving" for t in tracce)
+
+
+def aspetta_sottotitoli(url, info, attesa=None, pausa=None, dormi=time.sleep, controlla=None):
+    """Prima di Gemini: se i sottotitoli non ci sono ancora si aspetta (controllo ogni PAUSA secondi,
+    al massimo ATTESA_SOTTOTITOLI) e si avvisa una volta. Restituisce True se ci sono."""
+    attesa = ATTESA_SOTTOTITOLI if attesa is None else attesa
+    pausa = PAUSA if pausa is None else pausa
+    controlla = controlla or sottotitoli
+    inizio, avvisato = time.monotonic(), False
+    while True:
+        stato = controlla(url)
+        if stato is None:
+            print("Sottotitoli: non verificabili, passo a Gemini.")
+            return None
+        if stato:
+            if avvisato:
+                avviso("✅ Sottotitoli pronti: estraggo le notizie.", info)
+            return True
+        if time.monotonic() - inizio + pausa > attesa:
+            avviso(f"⚠️ Sottotitoli ancora assenti dopo {attesa // 60} minuti: provo comunque a leggere "
+                   "il video.", info)
+            return False
+        if not avvisato:
+            avvisato = True
+            avviso(f"⏳ Sottotitoli non ancora pubblicati: controllo ogni {max(1, pausa // 60)} minuti "
+                   f"(al massimo {attesa // 60}) e appena ci sono estraggo le notizie.", info)
+        print(f"Sottotitoli non ancora pronti: ricontrollo tra {pausa}s.")
+        dormi(pausa)
 
 
 def estrai_con_attesa(url, info, attesa=None, pausa=None, dormi=time.sleep):
-    """Un video appena pubblicato può non essere ancora leggibile: si riprova ogni PAUSA secondi
-    per ATTESA secondi in tutto (di solito entro 10 minuti è pronto). Avviso sul bot al primo intoppo.
-    Quota giornaliera di Gemini finita: inutile aspettare."""
+    """Se Gemini non riesce a leggere il video (appena pubblicato) si riprova ogni PAUSA secondi per
+    ATTESA secondi in tutto, con un solo avviso. Quota giornaliera di Gemini finita: inutile aspettare."""
     attesa = ATTESA if attesa is None else attesa
     pausa = PAUSA if pausa is None else pausa
     inizio, avvisato = time.monotonic(), False
@@ -381,9 +437,8 @@ def estrai_con_attesa(url, info, attesa=None, pausa=None, dormi=time.sleep):
             print(f"Video non ancora leggibile ({type(e).__name__}): riprovo tra {pausa}s.")
             if not avvisato:
                 avvisato = True
-                bg._post_telegram_rich(
-                    f"{intestazione(info.get('canale') or 'Video')}<p>Il video non è ancora leggibile "
-                    f"(appena pubblicato?): riprovo ogni {pausa // 60} minuti per {attesa // 60} minuti.</p>")
+                avviso(f"⏳ Il video non è ancora leggibile: riprovo ogni {max(1, pausa // 60)} minuti "
+                       f"per {attesa // 60} minuti.", info)
             dormi(pausa)
 
 
@@ -396,6 +451,7 @@ def main(link):
         return 1
     info = info_video(url)
     print(f"Video: {info['titolo'] or url} ({info['canale'] or 'canale sconosciuto'})")
+    aspetta_sottotitoli(url, info)
     try:
         notizie = estrai_con_attesa(url, info)
     except Exception as e:

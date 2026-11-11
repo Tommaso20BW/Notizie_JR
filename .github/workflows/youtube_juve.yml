@@ -1,7 +1,7 @@
 name: Notizie da YouTube
 
 # Link di un video YouTube -> notizie sulla Juventus sul bot JR (youtube_juve.py).
-# Si avvia a mano (bottone "Run workflow") o dal Comando Rapido dell'iPhone.
+# Si avvia dal pulsante "Estrai notizie" sotto i video YouTube del bot (pulsanti_youtube.py) o a mano.
 on:
   workflow_dispatch:
     inputs:
@@ -9,6 +9,11 @@ on:
         description: "Link del video YouTube"
         required: true
         type: string
+      messaggio:
+        description: "Messaggio del bot su cui è stato toccato il pulsante (facoltativo)"
+        required: false
+        type: string
+        default: ""
 
 permissions:
   actions: write
@@ -17,7 +22,7 @@ permissions:
 jobs:
   youtube:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 60
     steps:
       - name: Scarica il repository
         uses: actions/checkout@v6
@@ -37,7 +42,9 @@ jobs:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
           YOUTUBE_URL: ${{ inputs.url }}
+          YOUTUBE_MESSAGGIO: ${{ inputs.messaggio }}
         run: python -u youtube_juve.py
 
       - name: Pulisci la cronologia dei run

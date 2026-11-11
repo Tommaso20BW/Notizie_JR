@@ -3793,6 +3793,15 @@ def _run_cycle(
     return sent_count
 
 
+def check_youtube_buttons() -> None:
+    """Pulsante "Estrai notizie" sotto i video YouTube: un errore qui non ferma le notizie."""
+    try:
+        import pulsanti_youtube
+        pulsanti_youtube.controlla()
+    except Exception as error:
+        print(f'[PULSANTI] controllo saltato: {compact_log_text(error, 120)}')
+
+
 def run_worker(
     duration_seconds: float = DEFAULT_WORKER_DURATION_SECONDS,
     poll_interval_seconds: float = DEFAULT_POLL_INTERVAL_SECONDS,
@@ -3819,6 +3828,8 @@ def run_worker(
         cycle_started = monotonic()
         sent_count = 0
         outcome = 'ok'
+        if not dry_run:
+            check_youtube_buttons()
         try:
             sent_count = run(
                 dry_run=dry_run,

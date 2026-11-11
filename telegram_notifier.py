@@ -138,6 +138,14 @@ def source_emoji(source: str) -> str:
     return "📰"
 
 
+YOUTUBE_ID_RE = re.compile(r"(?:v=|youtu\.be/|/shorts/|/live/|/embed/)([A-Za-z0-9_-]{11})")
+
+
+def youtube_video_id(url: str) -> str:
+    match = YOUTUBE_ID_RE.search(str(url or ""))
+    return match.group(1) if match and "youtu" in str(url) else ""
+
+
 def source_link_label(source: str) -> str:
     """Restituisce la CTA più adatta al tipo di fonte."""
     source = str(source or "")
@@ -270,6 +278,14 @@ def format_article_rich_html(
         buttons.append(
             f'<tg-button type="url" style="primary" url="{content_url}">'
             'Apri contenuto'
+            '</tg-button>'
+        )
+    video_id = youtube_video_id(article.url) if str(article.source or "").startswith("YouTube - ") else ""
+    if video_id:
+        # Tocco letto dal worker Notizie Web (pulsanti_youtube.py): avvia "Notizie da YouTube".
+        buttons.append(
+            f'<tg-button type="callback_data" style="primary" data="yt:{video_id}">'
+            'Estrai notizie'
             '</tg-button>'
         )
     parts.append(

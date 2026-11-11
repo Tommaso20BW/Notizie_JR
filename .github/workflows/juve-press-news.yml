@@ -11,6 +11,7 @@ on:
     paths:
       - "juve_press_bot.py"
       - "telegram_notifier.py"
+      - "pulsanti_youtube.py"
       - "preview_image.py"
       - "video_media.py"
       - "article_journal.py"
@@ -137,6 +138,8 @@ jobs:
           DEEPL_API_KEY: ${{ secrets.DEEPL_API_KEY }}
           YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
           YOUTUBE_CHANNELS_PER_CYCLE: "1"
+          # Pulsante "Estrai notizie" (pulsanti_youtube.py): avvia il workflow Notizie da YouTube.
+          GH_TOKEN: ${{ github.token }}
           BASELINE_IF_NO_STATE: "true"
           CHECKPOINT_STATE_TO_GIT: "true"
           WORKER_HEARTBEAT_FILE: ${{ runner.temp }}/juve-press-worker-heartbeat
