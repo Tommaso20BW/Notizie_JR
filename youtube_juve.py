@@ -17,6 +17,8 @@ import requests
 import bot_giornali as bg
 
 MAX_CARATTERI = int(os.getenv("YOUTUBE_MAX_CARATTERI", "240"))
+ATTESA = int(os.getenv("YOUTUBE_ATTESA", "900"))     # quanto aspettare un video non ancora leggibile (s)
+PAUSA = int(os.getenv("YOUTUBE_PAUSA", "120"))       # ogni quanto riprovare (s)
 YOUTUBE_EMOJI_ID = "5974578526991425004"       # la stessa del bot notizie per "YouTube - ..."
 LINK_EMOJI_ID = "5271604874419647061"
 
@@ -153,6 +155,29 @@ def avvisa_errore(url, errore):
     )
 
 
+def estrai_con_attesa(url, info, attesa=None, pausa=None, dormi=time.sleep):
+    """Un video appena pubblicato può non essere ancora leggibile: si riprova ogni PAUSA secondi
+    per ATTESA secondi in tutto (di solito entro 10 minuti è pronto). Avviso sul bot al primo intoppo.
+    Quota giornaliera di Gemini finita: inutile aspettare."""
+    attesa = ATTESA if attesa is None else attesa
+    pausa = PAUSA if pausa is None else pausa
+    inizio, avvisato = time.monotonic(), False
+    while True:
+        try:
+            return estrai(url, info)
+        except Exception as e:
+            passati = time.monotonic() - inizio
+            if re.search(r"PerDay|per day|daily", str(e), re.IGNORECASE) or passati + pausa > attesa:
+                raise
+            print(f"Video non ancora leggibile ({type(e).__name__}): riprovo tra {pausa}s.")
+            if not avvisato:
+                avvisato = True
+                bg._post_telegram_rich(
+                    f"{intestazione(info.get('canale') or 'Video')}<p>Il video non è ancora leggibile "
+                    f"(appena pubblicato?): riprovo ogni {pausa // 60} minuti per {attesa // 60} minuti.</p>")
+            dormi(pausa)
+
+
 def main(link):
     try:
         url = video_url(link)
@@ -163,7 +188,7 @@ def main(link):
     info = info_video(url)
     print(f"Video: {info['titolo'] or url} ({info['canale'] or 'canale sconosciuto'})")
     try:
-        persona, notizie = estrai(url, info)
+        persona, notizie = estrai_con_attesa(url, info)
     except Exception as e:
         print(f"Gemini non è riuscito a leggere il video: {e}")
         avvisa_errore(url, e)

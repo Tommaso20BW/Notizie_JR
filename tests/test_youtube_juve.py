@@ -57,5 +57,28 @@ class TestiTests(unittest.TestCase):
         self.assertIn("nessuna notizia", inviati[0])
 
 
+class AttesaTests(unittest.TestCase):
+    def test_riprova_finche_il_video_e_pronto(self):
+        risposte = [RuntimeError("400 video not ready"), RuntimeError("400 video not ready"), ("Romeo Agresti", [])]
+        def estrai(url, info):
+            r = risposte.pop(0)
+            if isinstance(r, Exception):
+                raise r
+            return r
+        avvisi = []
+        with patch.object(yj, "estrai", side_effect=estrai), \
+                patch.object(yj.bg, "_post_telegram_rich", side_effect=lambda h: avvisi.append(h) or 1):
+            out = yj.estrai_con_attesa("u", {"canale": "Romeo Agresti"}, attesa=900, pausa=120, dormi=lambda s: None)
+        self.assertEqual(out, ("Romeo Agresti", []))
+        self.assertEqual(len(avvisi), 1)                 # un solo avviso, non uno per tentativo
+
+    def test_quota_giornaliera_non_aspetta(self):
+        with patch.object(yj, "estrai", side_effect=RuntimeError("429 GenerateRequestsPerDay")), \
+                patch.object(yj.bg, "_post_telegram_rich") as post:
+            with self.assertRaises(RuntimeError):
+                yj.estrai_con_attesa("u", {}, attesa=900, pausa=120, dormi=lambda s: None)
+        post.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
