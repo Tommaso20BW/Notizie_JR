@@ -22,7 +22,7 @@ permissions:
 jobs:
   youtube:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 80
     steps:
       - name: Scarica il repository
         uses: actions/checkout@v6

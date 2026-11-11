@@ -172,5 +172,37 @@ class ModelliTests(unittest.TestCase):
         self.assertEqual(provati, ["g-3.8-flash", "g-3.7-flash"] * 2 + ["g-3.8-flash", "g-3.7-flash", "g-3.5-flash-lite"])
 
 
+class OccupatoTests(unittest.TestCase):
+    def test_solo_flash_mai_lite(self):
+        provati = []
+        def genera(model, contents, config):
+            provati.append(model)
+            raise RuntimeError("503 UNAVAILABLE")
+        with patch.object(yj.bg, "modelli_disponibili", return_value=["g-3.5-flash-lite", "g-3.8-flash"]),                 patch.object(yj.bg.client.models, "generate_content", side_effect=genera),                 patch.object(yj.bg.time, "sleep"):
+            with self.assertRaises(Exception):
+                yj.bg._genera_json("v", "p", prima_flash=True, solo_flash=True, cicli=3)
+        self.assertEqual(provati, ["g-3.8-flash"] * 3)
+
+    def test_occupato_aspetta_poi_si_arrende(self):
+        avvisi = []
+        orologio = [0]
+        def dormi(secondi):
+            orologio[0] += secondi
+        with patch.object(yj, "estrai", side_effect=RuntimeError("503 UNAVAILABLE")),                 patch.object(yj.time, "monotonic", side_effect=lambda: orologio[0]),                 patch.object(yj.bg, "_post_telegram_rich", side_effect=lambda h, **k: avvisi.append(h) or 1):
+            with self.assertRaises(yj.GeminiOccupato):
+                yj.estrai_con_attesa("u", {}, attesa=900, pausa=120, dormi=dormi, attesa_gemini=1800)
+        self.assertGreaterEqual(orologio[0], 1600)            # ha aspettato quasi 30 minuti, non 15
+        self.assertEqual(len(avvisi), 1)
+        self.assertIn("Gemini è occupato", avvisi[0])
+
+    def test_avviso_finale_resta(self):
+        yj._avvisi.clear()
+        with patch.object(yj.bg, "_post_telegram_rich", return_value=7):
+            yj.avviso("riprova più tardi", resta=True)
+            yj.avviso("attendo")
+        self.assertEqual([m for m, _ in yj._avvisi], [7])     # solo il secondo si cancellerà
+        yj._avvisi.clear()
+
+
 if __name__ == "__main__":
     unittest.main()

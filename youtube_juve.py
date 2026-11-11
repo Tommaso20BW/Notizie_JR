@@ -22,6 +22,7 @@ import bot_giornali as bg
 MAX_CARATTERI = int(os.getenv("YOUTUBE_MAX_CARATTERI", "320"))
 ATTESA = int(os.getenv("YOUTUBE_ATTESA", "900"))     # quanto aspettare un video non ancora leggibile (s)
 PAUSA = int(os.getenv("YOUTUBE_PAUSA", "120"))       # ogni quanto riprovare (s)
+ATTESA_GEMINI = int(os.getenv("YOUTUBE_ATTESA_GEMINI", "1800"))   # Gemini Flash occupato (503): quanto aspettare (s)
 ATTESA_SOTTOTITOLI = int(os.getenv("YOUTUBE_ATTESA_SOTTOTITOLI", "1800"))   # attesa massima dei sottotitoli (s)
 MESSAGGIO = os.getenv("YOUTUBE_MESSAGGIO", "").strip()   # messaggio del video su cui è stato toccato il pulsante
 CANCELLA_DOPO = int(os.getenv("YOUTUBE_CANCELLA_AVVISI", "300"))   # avvisi di servizio cancellati dopo (s)
@@ -272,7 +273,7 @@ def estrai(url, info):
     from google.genai import types
     possibili = persone_note(info)
     video = types.Part(file_data=types.FileData(file_uri=url))
-    risposta = bg._genera_json(video, prompt(info, possibili), schema=SCHEMA, intero=True, prima_flash=True, cicli=6,
+    risposta = bg._genera_json(video, prompt(info, possibili), schema=SCHEMA, intero=True, prima_flash=True, solo_flash=True, cicli=3,
                                config_extra={"media_resolution": "MEDIA_RESOLUTION_LOW",
                                              "thinking_config": {"thinking_budget": 8192}})
     return solo_notizie(risposta.get("notizie") or [], possibili, info)
@@ -395,13 +396,14 @@ def invia(posts, url, info):
     return ok
 
 
-def avviso(testo, info=None):
+def avviso(testo, info=None, resta=False):
     """Messaggio di servizio, in risposta al messaggio del video quando si parte dal pulsante.
-    Si cancella da solo CANCELLA_DOPO secondi dopo l'invio (a fine lavoro): restano solo le notizie."""
+    Si cancella da solo CANCELLA_DOPO secondi dopo l'invio (a fine lavoro): restano solo le notizie.
+    resta=True: non si cancella (es. "riprova più tardi", che deve restare visibile)."""
     risposta = int(MESSAGGIO) if MESSAGGIO.isdigit() else None
     message_id = bg._post_telegram_rich(
         f"{intestazione((info or {}).get('canale') or 'YouTube')}<p>{testo}</p>", reply_to=risposta)
-    if message_id:
+    if message_id and not resta:
         _avvisi.append((message_id, time.monotonic()))
     return message_id
 
@@ -479,24 +481,47 @@ def aspetta_sottotitoli(url, info, attesa=None, pausa=None, dormi=time.sleep, co
         dormi(pausa)
 
 
-def estrai_con_attesa(url, info, attesa=None, pausa=None, dormi=time.sleep):
-    """Se Gemini non riesce a leggere il video (appena pubblicato) si riprova ogni PAUSA secondi per
-    ATTESA secondi in tutto, con un solo avviso. Quota giornaliera di Gemini finita: inutile aspettare."""
+class GeminiOccupato(RuntimeError):
+    """Gemini Flash occupato (503) per tutta l'attesa: meglio nessuna notizia che una inventata."""
+
+
+def _occupato(errore):
+    testo = str(errore)
+    return "503" in testo or "UNAVAILABLE" in testo or "overloaded" in testo.lower()
+
+
+def estrai_con_attesa(url, info, attesa=None, pausa=None, dormi=time.sleep, attesa_gemini=None):
+    """Riprova ogni PAUSA secondi, con un solo avviso, se:
+    - Gemini non riesce ancora a leggere il video (appena pubblicato): per ATTESA secondi;
+    - Gemini Flash è occupato (503): per ATTESA_GEMINI secondi, poi GeminiOccupato.
+    Quota giornaliera di Gemini finita: inutile aspettare."""
     attesa = ATTESA if attesa is None else attesa
+    attesa_gemini = ATTESA_GEMINI if attesa_gemini is None else attesa_gemini
     pausa = PAUSA if pausa is None else pausa
-    inizio, avvisato = time.monotonic(), False
+    inizio, avvisato = time.monotonic(), set()
     while True:
         try:
             return estrai(url, info)
         except Exception as e:
             passati = time.monotonic() - inizio
-            if re.search(r"PerDay|per day|daily", str(e), re.IGNORECASE) or passati + pausa > attesa:
+            if re.search(r"PerDay|per day|daily", str(e), re.IGNORECASE):
                 raise
-            print(f"Video non ancora leggibile ({type(e).__name__}): riprovo tra {pausa}s.")
-            if not avvisato:
-                avvisato = True
-                avviso(f"⏳ Il video non è ancora leggibile: riprovo ogni {max(1, pausa // 60)} minuti "
-                       f"per {attesa // 60} minuti.", info)
+            occupato = _occupato(e)
+            limite = attesa_gemini if occupato else attesa
+            if passati + pausa > limite:
+                if occupato:
+                    raise GeminiOccupato(f"Gemini occupato da {limite // 60} minuti") from e
+                raise
+            minuti = max(1, pausa // 60)
+            if occupato:
+                print(f"Gemini Flash occupato: riprovo tra {pausa}s.")
+                testo = f"⏳ Gemini è occupato: riprovo ogni {minuti} minuti per {limite // 60} minuti."
+            else:
+                print(f"Video non ancora leggibile ({type(e).__name__}): riprovo tra {pausa}s.")
+                testo = f"⏳ Il video non è ancora leggibile: riprovo ogni {minuti} minuti per {limite // 60} minuti."
+            if occupato not in avvisato:
+                avvisato.add(occupato)
+                avviso(testo, info)
             dormi(pausa)
 
 
@@ -519,6 +544,11 @@ def elabora(link):
     aspetta_sottotitoli(url, info)
     try:
         notizie = estrai_con_attesa(url, info)
+    except GeminiOccupato as e:
+        print(f"{e}: nessuna notizia inviata.")
+        avviso(f"⚠️ Gemini è occupato da troppo tempo: non ho estratto niente. Riprova più tardi "
+               f"col pulsante.<br>{html.escape(url)}", info, resta=True)
+        return 1
     except Exception as e:
         print(f"Gemini non è riuscito a leggere il video: {e}")
         avvisa_errore(url, e)
