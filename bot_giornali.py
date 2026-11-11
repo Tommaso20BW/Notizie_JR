@@ -292,20 +292,25 @@ def modelli_disponibili():
     return scelti
 
 
-def _genera_json(uploaded, prompt, schema=SCHEMA_NOTIZIE, config_extra=None, intero=False, prima_flash=False):
+def _genera_json(uploaded, prompt, schema=SCHEMA_NOTIZIE, config_extra=None, intero=False, prima_flash=False,
+                 cicli=None):
     """Prova tutti i modelli e ripete il giro con backoff su 429/503.
     config_extra: opzioni Gemini in più; intero=True restituisce tutta la risposta (non solo le notizie);
-    prima_flash=True prova prima i Flash (più bravi) e tiene i Flash-Lite di riserva."""
+    prima_flash=True usa i Flash (più bravi): se sono occupati aspetta e li riprova, e i Flash-Lite
+    si provano solo all'ultimo giro; cicli: quanti giri al massimo (predefinito MAX_CICLI_GEMINI)."""
+    max_cicli = cicli or MAX_CICLI_GEMINI
     ultimo_errore = None
     modelli_con_quota_giornaliera_esaurita = set()
 
-    for ciclo in range(1, MAX_CICLI_GEMINI + 1):
+    for ciclo in range(1, max_cicli + 1):
         attesa_ciclo = None
         modelli_tentati = 0
 
         modelli = modelli_disponibili()
         if prima_flash:
             modelli = sorted(modelli, key=lambda m: "lite" in m)
+            if ciclo < max_cicli and any("lite" not in m for m in modelli):
+                modelli = [m for m in modelli if "lite" not in m]
         for modello in modelli:
             if modello in modelli_con_quota_giornaliera_esaurita:
                 continue
@@ -314,7 +319,7 @@ def _genera_json(uploaded, prompt, schema=SCHEMA_NOTIZIE, config_extra=None, int
             try:
                 print(
                     f"Tentativo con il modello {modello} "
-                    f"(ciclo {ciclo}/{MAX_CICLI_GEMINI})..."
+                    f"(ciclo {ciclo}/{max_cicli})..."
                 )
                 response = client.models.generate_content(
                     model=modello,
@@ -403,7 +408,7 @@ def _genera_json(uploaded, prompt, schema=SCHEMA_NOTIZIE, config_extra=None, int
 
                 raise
 
-        if ciclo >= MAX_CICLI_GEMINI or modelli_tentati == 0:
+        if ciclo >= max_cicli or modelli_tentati == 0:
             break
         if attesa_ciclo is None:
             break

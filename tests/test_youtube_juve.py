@@ -161,6 +161,16 @@ class ModelliTests(unittest.TestCase):
                 yj.bg._genera_json("v", "p", prima_flash=True)
         self.assertEqual(provati[0], "g-3.8-flash")
 
+    def test_flash_occupati_si_riprovano_prima_dei_lite(self):
+        provati = []
+        def genera(model, contents, config):
+            provati.append(model)
+            raise RuntimeError("503 UNAVAILABLE")
+        with patch.object(yj.bg, "modelli_disponibili", return_value=["g-3.5-flash-lite", "g-3.8-flash", "g-3.7-flash"]),                 patch.object(yj.bg.client.models, "generate_content", side_effect=genera),                 patch.object(yj.bg.time, "sleep"):
+            with self.assertRaises(Exception):
+                yj.bg._genera_json("v", "p", prima_flash=True, cicli=3)
+        self.assertEqual(provati, ["g-3.8-flash", "g-3.7-flash"] * 2 + ["g-3.8-flash", "g-3.7-flash", "g-3.5-flash-lite"])
+
 
 if __name__ == "__main__":
     unittest.main()

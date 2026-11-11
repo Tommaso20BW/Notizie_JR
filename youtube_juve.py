@@ -272,7 +272,7 @@ def estrai(url, info):
     from google.genai import types
     possibili = persone_note(info)
     video = types.Part(file_data=types.FileData(file_uri=url))
-    risposta = bg._genera_json(video, prompt(info, possibili), schema=SCHEMA, intero=True, prima_flash=True,
+    risposta = bg._genera_json(video, prompt(info, possibili), schema=SCHEMA, intero=True, prima_flash=True, cicli=6,
                                config_extra={"media_resolution": "MEDIA_RESOLUTION_LOW",
                                              "thinking_config": {"thinking_budget": 8192}})
     return solo_notizie(risposta.get("notizie") or [], possibili, info)
