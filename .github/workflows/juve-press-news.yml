@@ -74,15 +74,12 @@ jobs:
               if [[ -f "$STATE_WORKTREE/$f" ]]; then cp "$STATE_WORKTREE/$f" "$f"; fi
             done
           else
-            # Primo avvio: il ramo nasce dallo stato ancora salvato su main.
+            # Ramo dello stato mancante: rinasce vuoto (il bot riparte da zero senza
+            # rimandare le notizie già uscite: BASELINE_IF_NO_STATE).
             git worktree add --quiet --detach "$STATE_WORKTREE" HEAD
             git -C "$STATE_WORKTREE" checkout --quiet --orphan stato-iniziale
             git -C "$STATE_WORKTREE" rm -r -f --quiet .
-            for f in "${STATE_FILES[@]}"; do
-              if [[ -f "$f" ]]; then cp "$f" "$STATE_WORKTREE/$f"; fi
-            done
-            git -C "$STATE_WORKTREE" add -A
-            git -C "$STATE_WORKTREE" commit --quiet -m "stato notizie"
+            git -C "$STATE_WORKTREE" commit --quiet --allow-empty -m "stato notizie"
             git -C "$STATE_WORKTREE" push --quiet origin "HEAD:$STATE_BRANCH"
           fi
           echo "STATE_WORKTREE=$STATE_WORKTREE" >> "$GITHUB_ENV"

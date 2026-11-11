@@ -15,7 +15,7 @@ Controlla le notizie Juventus pubblicate OGGI su:
 - X: profili configurati (filtro Juventus per account; i repost non vengono mai inviati)
 
 Ogni notizia viene inviata su Telegram una sola volta. Lo stato è salvato nel file
-.seen_juve_press_news.json accanto allo script.
+.seen_juve_press_news.json accanto allo script (su GitHub arriva dal ramo stato-notizie).
 """
 
 import re
