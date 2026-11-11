@@ -33,13 +33,21 @@ ATTESA_503_GEMINI = max(1, int(os.getenv("ATTESA_503_GEMINI", "20")))
 
 client = genai.Client(api_key=GEMINI_API_KEY)
 
-# Modelli stabili dell'API Gemini (novembre 2026), dal più economico al più capace.
+# Modelli di riserva, usati solo se Google non risponde con l'elenco dei modelli
+# (novembre 2026, dal più economico al più capace). Di norma il bot li sceglie da solo:
+# vedi modelli_disponibili().
 MODELLI = [
     "gemini-3.5-flash-lite",
     "gemini-3.1-flash-lite",
     "gemini-3.6-flash",
     "gemini-3.8-flash",
 ]
+MODELLI_PER_TIPO = 2      # quanti Flash-Lite e quanti Flash provare (i più recenti)
+# Nomi da scartare: anteprime, sperimentali e modelli per audio, immagini, video, ecc.
+_ESCLUSI = ("preview", "exp", "tts", "live", "audio", "image", "embedding", "transcribe",
+            "translate", "omni", "robotics", "computer", "thinking")
+_STABILE = re.compile(r"^gemini-(\d+(?:\.\d+)?)-(flash|flash-lite)$")
+_modelli_scelti = None
 
 FONTI_VALIDE = ("TUTTO", "GAZZETTA", "CORRIERE")
 
@@ -240,6 +248,50 @@ def _secondi_attesa_gemini(messaggio):
     return 30
 
 
+def _scegli_modelli(nomi):
+    """Dai nomi dei modelli disponibili: prima i Flash-Lite (economici), poi i Flash,
+    ognuno dal più recente. Solo modelli stabili."""
+    trovati = {"flash-lite": [], "flash": []}
+    for nome in nomi:
+        nome = str(nome).removeprefix("models/")
+        if any(parola in nome for parola in _ESCLUSI):
+            continue
+        corrisponde = _STABILE.match(nome)
+        if corrisponde:
+            versione = tuple(int(n) for n in corrisponde.group(1).split("."))
+            trovati[corrisponde.group(2)].append((versione, nome))
+    scelti = []
+    for tipo in ("flash-lite", "flash"):
+        scelti += [nome for _, nome in sorted(trovati[tipo], reverse=True)[:MODELLI_PER_TIPO]]
+    return scelti
+
+
+def modelli_disponibili():
+    """Modelli da provare, chiesti a Google una volta per esecuzione. Se l'elenco non
+    arriva (o non contiene modelli adatti) si usano quelli di riserva in MODELLI."""
+    global _modelli_scelti
+    if _modelli_scelti is not None:
+        return _modelli_scelti
+    try:
+        nomi = [
+            m.name for m in client.models.list()
+            if not getattr(m, "supported_actions", None)
+            or "generateContent" in m.supported_actions
+        ]
+        scelti = _scegli_modelli(nomi)
+    except Exception as e:
+        print(f"Elenco dei modelli Gemini non disponibile ({type(e).__name__}): uso quelli di riserva.")
+        scelti = []
+    if scelti:
+        if scelti != MODELLI:
+            print(f"Modelli Gemini scelti in automatico: {', '.join(scelti)}")
+            print(f"(quelli di riserva nel codice sono: {', '.join(MODELLI)})")
+    else:
+        scelti = list(MODELLI)
+    _modelli_scelti = scelti
+    return scelti
+
+
 def _genera_json(uploaded, prompt, schema=SCHEMA_NOTIZIE):
     """Prova tutti i modelli e ripete il giro con backoff su 429/503."""
     ultimo_errore = None
@@ -249,7 +301,7 @@ def _genera_json(uploaded, prompt, schema=SCHEMA_NOTIZIE):
         attesa_ciclo = None
         modelli_tentati = 0
 
-        for modello in MODELLI:
+        for modello in modelli_disponibili():
             if modello in modelli_con_quota_giornaliera_esaurita:
                 continue
             modelli_tentati += 1

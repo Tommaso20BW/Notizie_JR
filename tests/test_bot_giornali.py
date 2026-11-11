@@ -35,7 +35,7 @@ class GeminiTests(unittest.TestCase):
 
         with (
             patch.object(bot_giornali, "client", client),
-            patch.object(bot_giornali, "MODELLI", ["primo", "secondo"]),
+            patch.object(bot_giornali, "modelli_disponibili", lambda: ["primo", "secondo"]),
             patch.object(bot_giornali.time, "sleep") as sleep,
         ):
             risultato = bot_giornali._genera_json(object(), "prompt")
@@ -48,6 +48,26 @@ class GeminiTests(unittest.TestCase):
         )
         sleep.assert_not_called()
 
+    def test_sceglie_da_solo_i_flash_stabili_piu_recenti(self):
+        nomi = ["models/gemini-3.8-flash", "models/gemini-3.6-flash", "models/gemini-3-flash-preview",
+                "models/gemini-3.5-flash-lite", "models/gemini-3.1-flash-lite", "models/gemini-2.5-flash-lite",
+                "models/gemini-3.8-flash-tts", "models/gemini-3.1-pro-preview", "models/gemini-10.0-flash"]
+        self.assertEqual(bot_giornali._scegli_modelli(nomi), [
+            "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-10.0-flash", "gemini-3.8-flash"])
+
+    def test_senza_elenco_usa_i_modelli_di_riserva(self):
+        client = SimpleNamespace(models=SimpleNamespace(list=Mock(side_effect=RuntimeError("rete"))))
+        with patch.object(bot_giornali, "client", client), patch.object(bot_giornali, "_modelli_scelti", None):
+            self.assertEqual(bot_giornali.modelli_disponibili(), bot_giornali.MODELLI)
+
+    def test_elenco_da_google_viene_usato(self):
+        modelli = [SimpleNamespace(name="models/gemini-4.0-flash-lite", supported_actions=["generateContent"]),
+                   SimpleNamespace(name="models/gemini-4.0-flash", supported_actions=["generateContent"]),
+                   SimpleNamespace(name="models/gemini-4.0-flash-image", supported_actions=["generateContent"])]
+        client = SimpleNamespace(models=SimpleNamespace(list=Mock(return_value=modelli)))
+        with patch.object(bot_giornali, "client", client), patch.object(bot_giornali, "_modelli_scelti", None):
+            self.assertEqual(bot_giornali.modelli_disponibili(), ["gemini-4.0-flash-lite", "gemini-4.0-flash"])
+
     def test_modello_inesistente_passa_al_successivo(self):
         models = Mock()
         models.generate_content.side_effect = [
@@ -58,7 +78,7 @@ class GeminiTests(unittest.TestCase):
 
         with (
             patch.object(bot_giornali, "client", client),
-            patch.object(bot_giornali, "MODELLI", ["vecchio", "nuovo"]),
+            patch.object(bot_giornali, "modelli_disponibili", lambda: ["vecchio", "nuovo"]),
             patch.object(bot_giornali.time, "sleep") as sleep,
         ):
             risultato = bot_giornali._genera_json(object(), "prompt")
@@ -78,7 +98,7 @@ class GeminiTests(unittest.TestCase):
 
         with (
             patch.object(bot_giornali, "client", client),
-            patch.object(bot_giornali, "MODELLI", ["unico"]),
+            patch.object(bot_giornali, "modelli_disponibili", lambda: ["unico"]),
             patch.object(bot_giornali.time, "sleep") as sleep,
         ):
             risultato = bot_giornali._genera_json(object(), "prompt")
@@ -97,7 +117,7 @@ class GeminiTests(unittest.TestCase):
 
         with (
             patch.object(bot_giornali, "client", client),
-            patch.object(bot_giornali, "MODELLI", ["primo", "secondo"]),
+            patch.object(bot_giornali, "modelli_disponibili", lambda: ["primo", "secondo"]),
             patch.object(bot_giornali, "MAX_CICLI_GEMINI", 3),
             patch.object(bot_giornali, "ATTESA_503_GEMINI", 5),
             patch.object(bot_giornali.time, "sleep") as sleep,
