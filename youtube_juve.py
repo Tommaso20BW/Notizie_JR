@@ -115,11 +115,10 @@ SCHEMA = {
                     "argomento": {"type": "string", "description": "Di cosa parla, in poche parole (es. 'Sorloth')."},
                     "minuto": {"type": "string", "description": "Minuto del video in cui inizia (mm:ss)."},
                     "persona": {"type": "string", "description": "Nome e cognome di chi dice questa notizia nel video."},
-                    "parti": {
-                        "type": "array",
-                        "description": ("La notizia: di norma UNA sola parte. Più parti solo se le informazioni "
-                                        "importanti non stanno in 240 caratteri nemmeno condensando."),
-                        "items": {"type": "string", "description": "Testo, al massimo 240 caratteri, nomi tra **."},
+                    "testo": {
+                        "type": "string",
+                        "description": ("La notizia, nomi tra **. Di norma al massimo 240 caratteri; più lunga "
+                                        "solo se ci sono molti fatti diversi da dire. Mai la stessa cosa due volte."),
                     },
                     "tono": {"type": "string", "enum": list(TONI), "description": "Che tipo di notizia è."},
                     "protagonista": {"type": "string", "description": "Cognome del protagonista (giocatore o allenatore), vuoto se nessuno."},
@@ -132,7 +131,7 @@ SCHEMA = {
                                         "dettaglio della notizia."),
                     },
                 },
-                "required": ["argomento", "minuto", "persona", "parti", "tono", "protagonista",
+                "required": ["argomento", "minuto", "persona", "testo", "tono", "protagonista",
                              "protagonista_juve", "nazione", "riscontro"],
             },
         },
@@ -220,9 +219,10 @@ Regole:
 - UNA NOTIZIA PER ARGOMENTO. Un argomento è un giocatore, una trattativa, un tema (es. tutto quello
   che si dice su Sorloth e la Juve è UN argomento, anche se se ne parla in momenti diversi del video).
   Raccogli tutto quello che riguarda lo stesso argomento in una sola voce.
-- Ogni parte al massimo {MAX_CARATTERI} caratteri (spazi compresi, ** esclusi). Prima condensa: togli
-  ripetizioni, giri di parole e dettagli secondari, e fai stare l'argomento in UNA parte. Usa una
-  seconda parte solo se restano informazioni importanti che non ci stanno; ogni parte deve reggersi da sola.
+- Un solo testo per argomento, di norma al massimo {MAX_CARATTERI} caratteri (spazi compresi, **
+  esclusi): condensa togliendo ripetizioni, giri di parole e dettagli secondari. Puoi superarli solo
+  se restano fatti importanti e diversi: in quel caso scrivi frasi complete e autonome, perché il testo
+  verrà diviso tra una frase e l'altra. Ogni fatto si scrive UNA volta sola: niente riepiloghi finali.
 - Argomenti diversi vanno in voci diverse: non unirli. Non spezzare un argomento in più voci.
 - Non ripetere la stessa informazione: un concetto detto più volte nel video va scritto una volta.
 - Importi in milioni di euro in forma compatta: "30 milioni di euro" -> "30M€", "tra 40 e 50" -> "40-50M€".
@@ -316,7 +316,7 @@ def prepara(notizie):
     (Gemini a volte lo divide lo stesso); una parte oltre il limite si divide tra una frase e l'altra."""
     argomenti = {}
     for notizia in notizie:
-        parti = notizia.get("parti") or [notizia.get("testo", "")]
+        parti = notizia.get("parti") or [notizia.get("testo", "")]     # "parti": vecchio formato
         chiave = _chiave(notizia.get("argomento")) or f"#{len(argomenti)}"
         voce = argomenti.setdefault(chiave, {**notizia, "parti": [], "riscontro": []})
         voce["parti"] += [t for t in (_pulisci(p) for p in parti) if t]
