@@ -280,7 +280,10 @@ def format_article_rich_html(
             'Apri contenuto'
             '</tg-button>'
         )
-    video_id = youtube_video_id(article.url) if str(article.source or "").startswith("YouTube - ") else ""
+    # Non sui video del canale ufficiale Juventus: lì non ci sono notizie da estrarre.
+    youtube = str(article.source or "")
+    video_id = (youtube_video_id(article.url)
+                if youtube.startswith("YouTube - ") and youtube != "YouTube - Juventus" else "")
     if video_id:
         # Tocco letto dal worker Notizie Web (pulsanti_youtube.py): avvia "Notizie da YouTube".
         buttons.append(
