@@ -48,6 +48,24 @@ class GeminiTests(unittest.TestCase):
         )
         sleep.assert_not_called()
 
+    def test_modello_inesistente_passa_al_successivo(self):
+        models = Mock()
+        models.generate_content.side_effect = [
+            RuntimeError("404 NOT_FOUND. models/vecchio is not found for API version v1beta"),
+            self._response(),
+        ]
+        client = SimpleNamespace(models=models)
+
+        with (
+            patch.object(bot_giornali, "client", client),
+            patch.object(bot_giornali, "MODELLI", ["vecchio", "nuovo"]),
+            patch.object(bot_giornali.time, "sleep") as sleep,
+        ):
+            risultato = bot_giornali._genera_json(object(), "prompt")
+
+        self.assertEqual(risultato, [{"testo": "Notizia"}])
+        sleep.assert_not_called()
+
     def test_quota_temporanea_rispetta_retry_delay(self):
         models = Mock()
         models.generate_content.side_effect = [

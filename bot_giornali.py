@@ -33,11 +33,12 @@ ATTESA_503_GEMINI = max(1, int(os.getenv("ATTESA_503_GEMINI", "20")))
 
 client = genai.Client(api_key=GEMINI_API_KEY)
 
+# Modelli stabili dell'API Gemini (novembre 2026), dal più economico al più capace.
 MODELLI = [
     "gemini-3.5-flash-lite",
     "gemini-3.1-flash-lite",
     "gemini-3.6-flash",
-    "gemini-3.5-flash",
+    "gemini-3.8-flash",
 ]
 
 FONTI_VALIDE = ("TUTTO", "GAZZETTA", "CORRIERE")
@@ -296,11 +297,18 @@ def _genera_json(uploaded, prompt, schema=SCHEMA_NOTIZIE):
                 ultimo_errore = e
                 msg = str(e)
                 errore_quota = "429" in msg or "RESOURCE_EXHAUSTED" in msg
+                # Modello ritirato o rinominato da Google: si passa al successivo.
+                modello_inesistente = "404" in msg or "NOT_FOUND" in msg
                 errore_temporaneo = (
                     "503" in msg
                     or "UNAVAILABLE" in msg
                     or "overloaded" in msg.lower()
                 )
+
+                if modello_inesistente:
+                    modelli_con_quota_giornaliera_esaurita.add(modello)
+                    print(f"{modello}: modello non disponibile. Provo il successivo...")
+                    continue
 
                 if errore_quota:
                     quota_giornaliera = bool(
