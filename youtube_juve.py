@@ -27,7 +27,7 @@ TIMEOUT_GEMINI = int(os.getenv("YOUTUBE_TIMEOUT_GEMINI", "90"))   # risposta di 
 ATTESA_GEMINI = int(os.getenv("YOUTUBE_ATTESA_GEMINI", "1800"))   # Gemini Flash occupato (503): quanto aspettare (s)
 ATTESA_SOTTOTITOLI = int(os.getenv("YOUTUBE_ATTESA_SOTTOTITOLI", "1800"))   # attesa massima dei sottotitoli (s)
 MESSAGGIO = os.getenv("YOUTUBE_MESSAGGIO", "").strip()   # messaggio del video su cui è stato toccato il pulsante
-CANCELLA_DOPO = int(os.getenv("YOUTUBE_CANCELLA_AVVISI", "300"))   # avvisi di servizio cancellati dopo (s)
+CANCELLA_DOPO = int(os.getenv("YOUTUBE_CANCELLA_AVVISI", "60"))   # avvisi di servizio cancellati dopo (s)
 _avvisi = []                                             # (message_id, quando) degli avvisi inviati
 YOUTUBE_EMOJI_ID = "5974578526991425004"       # per gli avvisi
 
@@ -488,7 +488,8 @@ def invia(posts, url, info):
 
 def avviso(testo, info=None, resta=False):
     """Messaggio di servizio, in risposta al messaggio del video quando si parte dal pulsante.
-    Si cancella da solo CANCELLA_DOPO secondi dopo l'invio (a fine lavoro): restano solo le notizie.
+    Gli avvisi d'attesa ("riprovo…") si cancellano appena il lavoro va avanti; gli altri
+    CANCELLA_DOPO secondi dopo l'invio (a fine lavoro): restano solo le notizie.
     resta=True: non si cancella (es. "riprova più tardi", che deve restare visibile)."""
     risposta = int(MESSAGGIO) if MESSAGGIO.isdigit() else None
     message_id = bg._post_telegram_rich(
@@ -498,6 +499,24 @@ def avviso(testo, info=None, resta=False):
     return message_id
 
 
+def _cancella(message_id):
+    try:
+        r = requests.post(f"https://api.telegram.org/bot{bg.TELEGRAM_TOKEN}/deleteMessage",
+                          json={"chat_id": bg.CHAT_ID, "message_id": message_id}, timeout=10)
+        if not r.ok:
+            print(f"Avviso {message_id} non cancellato: {r.text[:150]}")
+    except requests.RequestException as e:
+        print(f"Avviso {message_id} non cancellato: {e}")
+
+
+def togli(message_id):
+    """Cancella subito un avviso d'attesa ormai superato (il lavoro è andato avanti)."""
+    if not message_id or message_id < 0:
+        return
+    _avvisi[:] = [a for a in _avvisi if a[0] != message_id]
+    _cancella(message_id)
+
+
 def cancella_avvisi(dormi=time.sleep, adesso=time.monotonic):
     """A fine lavoro: aspetta che ogni avviso abbia CANCELLA_DOPO secondi e lo cancella."""
     for message_id, inviato in sorted(_avvisi, key=lambda a: a[1]):
@@ -505,13 +524,7 @@ def cancella_avvisi(dormi=time.sleep, adesso=time.monotonic):
         if resta > 0:
             print(f"Avvisi: li cancello tra {resta:.0f}s.")
             dormi(resta)
-        try:
-            r = requests.post(f"https://api.telegram.org/bot{bg.TELEGRAM_TOKEN}/deleteMessage",
-                              json={"chat_id": bg.CHAT_ID, "message_id": message_id}, timeout=10)
-            if not r.ok:
-                print(f"Avviso {message_id} non cancellato: {r.text[:150]}")
-        except requests.RequestException as e:
-            print(f"Avviso {message_id} non cancellato: {e}")
+        _cancella(message_id)
     _avvisi.clear()
 
 
@@ -549,24 +562,24 @@ def aspetta_sottotitoli(url, info, attesa=None, pausa=None, dormi=time.sleep, co
     attesa = ATTESA_SOTTOTITOLI if attesa is None else attesa
     pausa = PAUSA if pausa is None else pausa
     controlla = controlla or sottotitoli
-    inizio, avvisato = time.monotonic(), False
+    inizio, avvisato = time.monotonic(), None
     while True:
         stato = controlla(url)
         if stato is None:
             print("Sottotitoli: non verificabili, passo a Gemini.")
+            togli(avvisato)
             return None
         if stato:
-            if avvisato:
-                avviso("✅ Sottotitoli pronti: estraggo le notizie.", info)
+            togli(avvisato)
             return True
         if time.monotonic() - inizio + pausa > attesa:
+            togli(avvisato)
             avviso(f"⚠️ Sottotitoli ancora assenti dopo {attesa // 60} minuti: provo comunque a leggere "
                    "il video.", info)
             return False
         if not avvisato:
-            avvisato = True
-            avviso(f"⏳ Sottotitoli non ancora pubblicati: controllo ogni {max(1, pausa // 60)} minuti "
-                   f"(al massimo {attesa // 60}) e appena ci sono estraggo le notizie.", info)
+            avvisato = avviso(f"⏳ Sottotitoli non ancora pubblicati: controllo ogni {max(1, pausa // 60)} minuti "
+                   f"(al massimo {attesa // 60}) e appena ci sono estraggo le notizie.", info) or -1
         print(f"Sottotitoli non ancora pronti: ricontrollo tra {pausa}s.")
         dormi(pausa)
 
@@ -589,7 +602,15 @@ def estrai_con_attesa(url, info, attesa=None, pausa=None, dormi=time.sleep, atte
     attesa = ATTESA if attesa is None else attesa
     attesa_gemini = ATTESA_GEMINI if attesa_gemini is None else attesa_gemini
     pausa = PAUSA if pausa is None else pausa
-    inizio, avvisato = time.monotonic(), set()
+    inizio, avvisato = time.monotonic(), {}
+    try:
+        return _estrai_riprovando(url, info, attesa, attesa_gemini, pausa, dormi, inizio, avvisato)
+    finally:
+        for message_id in avvisato.values():
+            togli(message_id)
+
+
+def _estrai_riprovando(url, info, attesa, attesa_gemini, pausa, dormi, inizio, avvisato):
     while True:
         try:
             return estrai(url, info)
@@ -611,8 +632,7 @@ def estrai_con_attesa(url, info, attesa=None, pausa=None, dormi=time.sleep, atte
                 print(f"Video non ancora leggibile ({type(e).__name__}): riprovo tra {pausa}s.")
                 testo = f"⏳ Il video non è ancora leggibile: riprovo ogni {minuti} minuti per {limite // 60} minuti."
             if occupato not in avvisato:
-                avvisato.add(occupato)
-                avviso(testo, info)
+                avvisato[occupato] = avviso(testo, info) or -1
             dormi(pausa)
 
 

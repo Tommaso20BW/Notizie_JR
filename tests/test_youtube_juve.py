@@ -8,6 +8,47 @@ os.environ.setdefault("GEMINI_API_KEY", "test-key")
 import youtube_juve as yj
 
 
+_cancellati = []
+
+
+def setUpModule():
+    """Nessuna chiamata vera a Telegram per cancellare gli avvisi."""
+    global _patch_cancella
+    _patch_cancella = patch.object(yj, "_cancella", side_effect=_cancellati.append)
+    _patch_cancella.start()
+
+
+def tearDownModule():
+    _patch_cancella.stop()
+
+
+class AvvisiSuperatiTests(unittest.TestCase):
+    def setUp(self):
+        _cancellati.clear()
+        yj._avvisi.clear()
+
+    def test_gemini_risponde_e_toglie_subito_il_riprovo(self):
+        risposte = [RuntimeError("503 UNAVAILABLE"), []]
+        def estrai(url, info):
+            r = risposte.pop(0)
+            if isinstance(r, Exception):
+                raise r
+            return r
+        with patch.object(yj, "estrai", side_effect=estrai),                 patch.object(yj.bg, "_post_telegram_rich", return_value=42):
+            yj.estrai_con_attesa("u", {}, attesa=900, pausa=120, dormi=lambda s: None)
+        self.assertEqual(_cancellati, [42])
+        self.assertEqual(yj._avvisi, [])
+
+    def test_sottotitoli_pronti_toglie_subito_l_attesa(self):
+        stati = [False, True]
+        inviati = []
+        with patch.object(yj.bg, "_post_telegram_rich", side_effect=lambda h, **k: inviati.append(h) or 9):
+            yj.aspetta_sottotitoli("u", {}, attesa=900, pausa=120, dormi=lambda s: None,
+                                   controlla=lambda u: stati.pop(0))
+        self.assertEqual(len(inviati), 1)                # niente "sottotitoli pronti"
+        self.assertEqual(_cancellati, [9])
+
+
 def testo_visibile(post):
     """Solo il corpo della notizia, senza tag."""
     corpo = re.search(r"<p>(.*?)<br>", post).group(1)

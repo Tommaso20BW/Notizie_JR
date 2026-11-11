@@ -105,13 +105,13 @@ class SottotitoliTests(unittest.TestCase):
     def test_aspetta_finche_ci_sono(self):
         stati = [False, False, True]
         avvisi = []
-        with patch.object(yj.bg, "_post_telegram_rich", side_effect=lambda h, **k: avvisi.append(h) or 1):
+        with patch.object(yj.bg, "_post_telegram_rich", side_effect=lambda h, **k: avvisi.append(h) or 1),                 patch.object(yj, "_cancella") as cancella:
             ok = yj.aspetta_sottotitoli("u", {}, attesa=1800, pausa=120, dormi=lambda s: None,
                                         controlla=lambda u: stati.pop(0))
         self.assertTrue(ok)
-        self.assertEqual(len(avvisi), 2)                  # "non ancora pubblicati" e "pronti"
+        self.assertEqual(len(avvisi), 1)                  # solo "non ancora pubblicati"...
         self.assertIn("non ancora pubblicati", avvisi[0])
-        self.assertIn("pronti", avvisi[1])
+        cancella.assert_called_once_with(1)               # ...tolto appena ci sono
 
     def test_gia_pronti_nessun_avviso(self):
         with patch.object(yj.bg, "_post_telegram_rich") as post:
@@ -126,7 +126,7 @@ class SottotitoliTests(unittest.TestCase):
     def test_tempo_scaduto(self):
         avvisi = []
         with patch.object(yj.bg, "_post_telegram_rich", side_effect=lambda h, **k: avvisi.append(h) or 1), \
-                patch.object(yj.time, "monotonic", side_effect=lambda: orologio[0]):
+                patch.object(yj.time, "monotonic", side_effect=lambda: orologio[0]),                 patch.object(yj, "_cancella") as cancella:
             orologio = [0]
             def dormi(secondi):
                 orologio[0] += 1700               # dopo il primo controllo il tempo è quasi finito
@@ -134,18 +134,19 @@ class SottotitoliTests(unittest.TestCase):
                                         controlla=lambda u: False)
         self.assertFalse(ok)
         self.assertIn("ancora assenti", avvisi[-1])
+        cancella.assert_called_once_with(1)               # l'attesa è tolta, resta "ancora assenti"
 
 
 class CancellaAvvisiTests(unittest.TestCase):
-    def test_avvisi_cancellati_dopo_5_minuti(self):
+    def test_avvisi_cancellati_dopo_l_attesa(self):
         yj._avvisi.clear()
-        with patch.object(yj.bg, "_post_telegram_rich", side_effect=[101, 102]), \
+        with patch.object(yj, "CANCELLA_DOPO", 300), patch.object(yj.bg, "_post_telegram_rich", side_effect=[101, 102]), \
                 patch.object(yj.time, "monotonic", side_effect=[0, 200]):
             yj.avviso("⏳ attendo")
             yj.avviso("✅ pronti")
         attese, cancellati = [], []
         orologio = iter([250, 500])
-        with patch.object(yj.requests, "post", side_effect=lambda url, json, timeout: cancellati.append(json["message_id"]) or SimpleNamespace(ok=True)):
+        with patch.object(yj, "CANCELLA_DOPO", 300), patch.object(yj.requests, "post", side_effect=lambda url, json, timeout: cancellati.append(json["message_id"]) or SimpleNamespace(ok=True)):
             yj.cancella_avvisi(dormi=attese.append, adesso=lambda: next(orologio))
         self.assertEqual(cancellati, [101, 102])
         self.assertEqual(attese, [50])                      # il primo ha 250s: mancano 50s; il secondo ne ha 300
