@@ -2,7 +2,8 @@
 
 - Con il secret DEEPL_API_KEY usa DeepL (qualità migliore; il piano gratuito basta per
   i post del bot). Le chiavi del piano gratuito finiscono con ":fx".
-- Senza chiave, o se DeepL non risponde, usa Google Traduttore.
+- Senza chiave, o se DeepL non risponde, usa Google Traduttore (due indirizzi diversi, ognuno
+  con un secondo tentativo: da GitHub Google a volte risponde con errori temporanei).
 - La lingua la riconosce il servizio stesso: se il post è già in italiano non cambia nulla.
 - Qualsiasi errore lascia il post in lingua originale: la notizia parte comunque.
 """
@@ -10,6 +11,7 @@
 from __future__ import annotations
 
 import os
+import time
 from dataclasses import dataclass
 from functools import lru_cache
 
@@ -18,6 +20,9 @@ import requests
 TIMEOUT_SECONDS = 10
 MIN_LETTERS = 12          # testi brevissimi (solo emoji, "FT", un nome) restano come sono
 GOOGLE_URL = "https://translate.googleapis.com/translate_a/single"
+GOOGLE_ALT_URL = "https://clients5.google.com/translate_a/t"
+ATTEMPTS = 2              # tentativi per ogni servizio
+RETRY_SECONDS = 2
 LANGUAGE_NAMES = {
     "en": "inglese", "de": "tedesco", "fr": "francese", "es": "spagnolo",
     "pt": "portoghese", "nl": "olandese", "tr": "turco", "ar": "arabo",
@@ -68,6 +73,25 @@ def _google(text: str) -> Translation | None:
     return Translation(translated, language) if translated and language else None
 
 
+def _google_alt(text: str) -> Translation | None:
+    """Secondo indirizzo di Google: risponde [[testo, lingua]]."""
+    response = requests.get(
+        GOOGLE_ALT_URL,
+        params={"client": "dict-chrome-ex", "sl": "auto", "tl": "it", "q": text},
+        timeout=TIMEOUT_SECONDS,
+    )
+    response.raise_for_status()
+    item = response.json()[0]
+    translated, language = (item if isinstance(item, list) else [item, ""])[:2]
+    translated, language = str(translated or "").strip(), str(language or "").lower()
+    return Translation(translated, language) if translated and language else None
+
+
+def _describe(error: Exception) -> str:
+    status = getattr(getattr(error, "response", None), "status_code", None)
+    return f"{type(error).__name__}{f' {status}' if status else ''}"
+
+
 @lru_cache(maxsize=256)
 def translate_to_italian(text: str) -> Translation | None:
     """Traduzione in italiano, oppure None se il testo è già italiano o qualcosa va storto."""
@@ -75,16 +99,24 @@ def translate_to_italian(text: str) -> Translation | None:
     if _letters(text) < MIN_LETTERS:
         return None
     key = os.environ.get("DEEPL_API_KEY", "").strip()
-    providers = ([lambda t: _deepl(t, key)] if key else []) + [_google]
-    for provider in providers:
-        try:
-            result = provider(text)
-        except (requests.RequestException, ValueError, KeyError, IndexError, TypeError) as error:
-            print(f"[TRADUZIONE] servizio non disponibile: {type(error).__name__}")
-            continue
+    providers = ([("DeepL", lambda t: _deepl(t, key))] if key else []) + [
+        ("Google", _google), ("Google 2", _google_alt)]
+    for name, provider in providers:
+        for attempt in range(1, ATTEMPTS + 1):
+            try:
+                result = provider(text)
+                break
+            except (requests.RequestException, ValueError, KeyError, IndexError, TypeError) as error:
+                print(f"[TRADUZIONE] {name} non disponibile (tentativo {attempt}): {_describe(error)}", flush=True)
+                result = None
+                if attempt < ATTEMPTS:
+                    time.sleep(RETRY_SECONDS)
         if result is None:
             continue
-        if result.language.split("-")[0] == "it" or result.text == text:
+        language = result.language.split("-")[0]
+        if language == "it" or result.text == text:
             return None
-        return Translation(result.text, result.language.split("-")[0])
+        print(f"[TRADUZIONE] tradotto dall'{language} con {name}", flush=True)
+        return Translation(result.text, language)
+    print("[TRADUZIONE] nessun servizio ha tradotto: post in lingua originale", flush=True)
     return None

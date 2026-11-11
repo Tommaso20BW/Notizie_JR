@@ -83,6 +83,19 @@ class TranslationTests(unittest.TestCase):
                 patch.dict(os.environ, {"DEEPL_API_KEY": ""}):
             self.assertIsNone(translator.translate_to_italian("Accordo raggiunto con la Juventus."))
 
+    def test_second_google_address_is_used_when_the_first_fails(self):
+        translator.translate_to_italian.cache_clear()
+        alt = [["Accordo raggiunto con la Juventus.", "en"]]
+
+        def fake_get(url, **kwargs):
+            if url == translator.GOOGLE_URL:
+                raise translator.requests.ConnectionError("bloccato")
+            return Response(alt)
+
+        with patch.object(translator.requests, "get", side_effect=fake_get),                 patch.object(translator, "RETRY_SECONDS", 0),                 patch.dict(os.environ, {"DEEPL_API_KEY": ""}):
+            result = translator.translate_to_italian("Agreement reached with Juventus.")
+        self.assertEqual((result.text, result.language), ("Accordo raggiunto con la Juventus.", "en"))
+
     def test_translated_x_post_shows_italian_text_and_original_language(self):
         article = tn._MessageArticle(source="X - FabrizioRomano", title="Here we go!",
                                      url="https://x.com/FabrizioRomano/status/1", summary="")
