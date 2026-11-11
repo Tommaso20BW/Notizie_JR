@@ -39,10 +39,14 @@ client = genai.Client(api_key=GEMINI_API_KEY)
 MODELLI = [
     "gemini-3.5-flash-lite",
     "gemini-3.1-flash-lite",
-    "gemini-3.6-flash",
     "gemini-3.8-flash",
+    "gemini-3.6-flash",
+    "gemini-3-flash",
+    "gemini-2.5-flash",
 ]
-MODELLI_PER_TIPO = 2      # quanti Flash-Lite e quanti Flash provare (i più recenti)
+# Quanti modelli provare per tipo, dal più recente. Ogni Flash ha la sua quota gratuita (20 al
+# giorno), quindi se il più nuovo è occupato o esaurito conviene passare ai precedenti.
+MODELLI_PER_TIPO = {"flash-lite": 2, "flash": 5}
 # Nomi da scartare: anteprime, sperimentali e modelli per audio, immagini, video, ecc.
 _ESCLUSI = ("preview", "exp", "tts", "live", "audio", "image", "embedding", "transcribe",
             "translate", "omni", "robotics", "computer", "thinking")
@@ -262,7 +266,7 @@ def _scegli_modelli(nomi):
             trovati[corrisponde.group(2)].append((versione, nome))
     scelti = []
     for tipo in ("flash-lite", "flash"):
-        scelti += [nome for _, nome in sorted(trovati[tipo], reverse=True)[:MODELLI_PER_TIPO]]
+        scelti += [nome for _, nome in sorted(trovati[tipo], reverse=True)[:MODELLI_PER_TIPO[tipo]]]
     return scelti
 
 

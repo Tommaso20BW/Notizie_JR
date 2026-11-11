@@ -43,7 +43,6 @@ jobs:
           CHAT_ID: ${{ secrets.CHAT_ID }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           SUPADATA_API_KEY: ${{ secrets.SUPADATA_API_KEY }}
           YOUTUBE_URL: ${{ inputs.url }}
           YOUTUBE_MESSAGGIO: ${{ inputs.messaggio }}

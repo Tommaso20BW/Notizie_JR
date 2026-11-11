@@ -311,61 +311,18 @@ def solo_notizie(notizie, possibili, info):
     return tenute
 
 
-# --- Trascrizione (Gemini, anche Lite) + notizie scritte da Groq -------------------------------
-# Gemini Lite sbaglia a scrivere notizie dal video, ma per trascrivere va bene ed è meno occupato.
-# Groq (gratis, limite di circa 8.000 token al minuto) scrive le notizie dal testo: la trascrizione
-# lunga si divide in parti, poi le voci sullo stesso argomento si uniscono.
+# --- Trascrizione da Supadata + notizie scritte da Gemini Flash leggendo il testo --------------
+# SOSPESA: si attiva con YOUTUBE_SUPADATA=1 nel workflow. Spenta, Gemini Flash guarda il video.
 
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
-GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
-GROQ_MODELLI = [m.strip() for m in os.getenv(
-    "GROQ_MODELLI", "openai/gpt-oss-120b,llama-3.3-70b-versatile,qwen/qwen3.8-27b,openai/gpt-oss-20b").split(",") if m.strip()]
-GROQ_CARATTERI = int(os.getenv("GROQ_CARATTERI", "4500"))     # trascrizione per richiesta
-GROQ_CONTESTO = int(os.getenv("GROQ_CONTESTO", "800"))       # fine della parte prima, per il contesto
-GROQ_MAX_TOKEN = int(os.getenv("GROQ_MAX_TOKEN", "3500"))      # risposta (ragionamento compreso)
-
-SCHEMA_TRASCRIZIONE = {
-    "type": "object",
-    "properties": {
-        "parti": {
-            "type": "array",
-            "description": "Tutto il parlato del video, dall'inizio alla fine, in ordine.",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "minuto": {"type": "string", "description": "Minuto del video (mm:ss)."},
-                    "persona": {"type": "string", "description": "Chi parla (nome e cognome se si capisce)."},
-                    "testo": {"type": "string", "description": "Le sue parole, trascritte parola per parola."},
-                },
-                "required": ["minuto", "persona", "testo"],
-            },
-        },
-    },
-    "required": ["parti"],
-}
-
-FORMATO_GROQ = """
-Rispondi SOLO con un oggetto JSON così: {"notizie": [{"argomento": "...", "minuto": "mm:ss",
-"persona": "...", "tipo": "notizia|opinione", "importanza": "alta|media|bassa|inutile", "testo": "...", "tono": "...", "protagonista": "...",
-"protagonista_juve": true|false, "nazione": "XX", "riscontro": "..."}]}
-"tono" è uno di: """ + ", ".join(TONI) + """. "riscontro": le frasi della trascrizione su quell'argomento,
-copiate parola per parola. Lista vuota se non si parla della Juventus.
-""".strip()
-
+SUPADATA_ATTIVO = os.getenv("YOUTUBE_SUPADATA", "0").strip() == "1"
+SUPADATA_API_KEY = os.getenv("SUPADATA_API_KEY", "").strip()
+SUPADATA_URL = "https://api.supadata.ai/v1/transcript"
 
 AVVISO_SOTTOTITOLI = """
 - La trascrizione viene dai sottotitoli automatici: senza punteggiatura, senza chi parla, e i nomi
   possono essere scritti male (es. "Zegò" = Zhegrova, "Conceisao" = Conceição). Correggili con la
   grafia giusta (tesserati Juve come nell'elenco sopra) e capisci il senso dalle frasi intorno.
 """.strip()
-
-
-class GroqErrore(RuntimeError):
-    pass
-
-
-SUPADATA_API_KEY = os.getenv("SUPADATA_API_KEY", "").strip()
-SUPADATA_URL = "https://api.supadata.ai/v1/transcript"
 
 
 def _mmss(ms):
@@ -402,134 +359,6 @@ def trascrivi_supadata(url, dormi=time.sleep, get=None):
                      for c in contenuto or [] if str(c.get("text", "")).strip())
 
 
-def trascrizione_completa(url, info):
-    """Prima Supadata (sottotitoli di YouTube); se non va, Gemini Lite."""
-    try:
-        testo = trascrivi_supadata(url)
-        if len(testo.strip()) >= 50:
-            print("Trascrizione da Supadata.")
-            return testo
-        print("Supadata: trascrizione vuota.")
-    except Exception as e:
-        print(f"Supadata non va ({e}): trascrivo con Gemini Lite.")
-    return trascrivi(url, info)
-
-
-def trascrivi(url, info):
-    """Trascrizione del video come testo "[mm:ss] Persona: parole"."""
-    from google.genai import types
-    video = types.Part(file_data=types.FileData(file_uri=url))
-    richiesta = (f'Trascrivi parola per parola, in lingua originale, tutto il parlato di questo video YouTube '
-                 f'("{info.get("titolo", "")}", canale {info.get("canale", "")}). Non riassumere, non saltare '
-                 f'niente, non aggiungere niente. Indica il minuto e chi parla. Nomi dei giocatori della '
-                 f'Juventus, scritti così: {TESSERATI}.')
-    risposta = bg._genera_json(video, richiesta, schema=SCHEMA_TRASCRIZIONE, intero=True, prima_lite=True,
-                               cicli=2, chiave="parti",
-                               config_extra={"media_resolution": "MEDIA_RESOLUTION_LOW",
-                                             "thinking_config": {"thinking_budget": 1024}})
-    righe = [f"[{p.get('minuto', '')}] {p.get('persona', '')}: {' '.join(str(p.get('testo', '')).split())}"
-             for p in risposta.get("parti") or [] if str(p.get("testo", "")).strip()]
-    return "\n".join(righe)
-
-
-def dividi_trascrizione(testo, massimo=None):
-    """Parti di al massimo `massimo` caratteri, tagliate tra una riga e l'altra."""
-    massimo = massimo or GROQ_CARATTERI
-    parti, attuale = [], ""
-    for riga in testo.splitlines():
-        while len(riga) > massimo:                      # riga lunghissima: si taglia a uno spazio
-            taglio = riga.rfind(" ", 0, massimo) if " " in riga[:massimo] else massimo
-            if attuale:
-                parti.append(attuale)
-                attuale = ""
-            parti.append(riga[:taglio])
-            riga = riga[taglio:].strip()
-        if attuale and len(attuale) + 1 + len(riga) > massimo:
-            parti.append(attuale)
-            attuale = riga
-        else:
-            attuale = f"{attuale}\n{riga}" if attuale else riga
-    if attuale.strip():
-        parti.append(attuale)
-    return parti
-
-
-def groq_json(messaggi, modello, dormi=time.sleep, post=None):
-    """Una risposta JSON da Groq. Su 429 (limite al minuto) aspetta quanto chiede e riprova."""
-    post = post or requests.post
-    for tentativo in range(6):
-        r = post(GROQ_URL, timeout=180, headers={"Authorization": f"Bearer {GROQ_API_KEY}"}, json={
-            "model": modello, "messages": messaggi, "temperature": 0,
-            "max_completion_tokens": GROQ_MAX_TOKEN, "response_format": {"type": "json_object"},
-        })
-        if r.status_code == 429:
-            try:
-                aspetta = float(r.headers.get("retry-after") or 20)
-            except ValueError:
-                aspetta = 20
-            if aspetta > 120:                            # limite giornaliero: prova un altro modello
-                raise GroqErrore(f"{modello}: limite raggiunto ({r.text[:200]})")
-            print(f"  Groq {modello}: limite al minuto, aspetto {aspetta:.0f}s.")
-            dormi(aspetta + 1)
-            continue
-        if r.status_code >= 400:
-            raise GroqErrore(f"{modello}: HTTP {r.status_code} {r.text[:300]}")
-        testo = r.json()["choices"][0]["message"]["content"] or ""
-        try:
-            dati = json.loads(testo)
-        except ValueError:
-            dati = json.loads(testo[testo.find("{"):testo.rfind("}") + 1])
-        if not isinstance(dati.get("notizie"), list):
-            raise GroqErrore(f"{modello}: risposta senza lista di notizie")
-        return dati
-    raise GroqErrore(f"{modello}: troppi limiti al minuto")
-
-
-def groq_notizie(messaggi, dormi=time.sleep, post=None):
-    """Prova i modelli Groq in ordine finché uno risponde."""
-    errori = []
-    for modello in GROQ_MODELLI:
-        try:
-            print(f"  Groq: modello {modello}")
-            return groq_json(messaggi, modello, dormi=dormi, post=post)["notizie"]
-        except Exception as e:
-            print(f"  Groq {modello} non va: {e}")
-            errori.append(str(e))
-    raise GroqErrore("Nessun modello Groq ha risposto: " + " | ".join(errori))
-
-
-def unisci_argomenti(notizie, info, dormi=time.sleep, post=None):
-    """Dopo più parti di trascrizione: una sola voce per argomento, senza ripetizioni."""
-    if len(notizie) < 2:
-        return notizie
-    voci = [{k: v for k, v in n.items() if k != "riscontro"} for n in notizie]
-    messaggi = [
-        {"role": "system", "content": "Sei un redattore di notizie sulla Juventus. Rispondi solo in JSON."},
-        {"role": "user", "content": (
-            "Queste notizie vengono da parti diverse dello stesso video. Unisci in UNA voce quelle sullo "
-            "stesso argomento (stesso giocatore, stessa trattativa), togliendo le ripetizioni: ogni fatto "
-            "una volta sola, senza aggiungere né cambiare niente. Le altre lasciale come sono. Testo di "
-            f"norma al massimo {MAX_CARATTERI} caratteri, nomi tra **. Stessi campi, riscontro vuoto.\n"
-            f"{FORMATO_GROQ}\n\n" + json.dumps({"notizie": voci}, ensure_ascii=False))},
-    ]
-    try:
-        unite = groq_notizie(messaggi, dormi=dormi, post=post)
-    except Exception as e:
-        print(f"Unione degli argomenti non riuscita ({e}): tengo le voci come sono.")
-        return notizie
-    if not unite:
-        return notizie
-    # L'unione non deve perdere argomenti: una voce il cui argomento o protagonista non c'è più torna.
-    presenti = {_semplice(n.get(c)) for n in unite for c in ("argomento", "protagonista") if n.get(c)}
-    parole = set(" ".join(presenti).split())
-    for n in notizie:
-        segni = [_semplice(n.get("protagonista")), _semplice(n.get("argomento"))]
-        if not any(x and (x in presenti or set(x.split()) <= parole) for x in segni):
-            print(f"  [unione] {n.get('argomento')} era sparito: lo rimetto.")
-            unite.append(n)
-    return unite
-
-
 def notizie_gemini_testo(testo, info, possibili):
     """Gemini Flash legge la trascrizione (testo, non il video) e scrive le notizie."""
     richiesta = prompt(info, possibili, trascrizione=True) + "\n" + AVVISO_SOTTOTITOLI
@@ -539,45 +368,14 @@ def notizie_gemini_testo(testo, info, possibili):
     return risposta.get("notizie") or []
 
 
-def estrai_da_trascrizione(url, info, trascrizione=None, dormi=time.sleep, post=None):
-    """Trascrizione (Supadata) -> notizie scritte da Gemini Flash; se Flash è occupato, da Groq.
-    Errore se non si riesce: si passa a Gemini Flash sul video."""
+def estrai_da_trascrizione(url, info, trascrizione=None):
+    """Trascrizione Supadata -> notizie di Gemini Flash. Errore se non va: si passa al video."""
     possibili = persone_note(info)
-    testo = trascrizione if trascrizione is not None else trascrizione_completa(url, info)
+    testo = trascrizione if trascrizione is not None else trascrivi_supadata(url)
     if len(testo.strip()) < 50:
-        raise GroqErrore("trascrizione vuota")
-    print(f"Trascrizione: {len(testo)} caratteri.")
-    try:
-        notizie = notizie_gemini_testo(testo, info, possibili)
-        print("Notizie scritte da Gemini Flash dalla trascrizione.")
-        return solo_notizie(notizie, possibili, info)
-    except Exception as e:
-        print(f"Gemini Flash non va sulla trascrizione ({str(e)[:200]}): provo Groq.")
-    return notizie_groq(testo, info, possibili, dormi=dormi, post=post)
-
-
-def notizie_groq(testo, info, possibili, dormi=time.sleep, post=None):
-    """Notizie scritte da Groq sulla trascrizione, divisa in parti per il limite al minuto."""
-    if not GROQ_API_KEY:
-        raise GroqErrore("GROQ_API_KEY mancante")
-    parti = dividi_trascrizione(testo)
-    print(f"Groq: {len(parti)} parti.")
-    istruzioni = prompt(info, possibili, trascrizione=True) + "\n" + AVVISO_SOTTOTITOLI + "\n" + FORMATO_GROQ
-    notizie = []
-    for i, parte in enumerate(parti, 1):
-        print(f"Groq, parte {i}/{len(parti)}...")
-        prima = ""
-        if i > 1:                                   # contesto: la fine della parte precedente
-            prima = ("Fine della parte precedente, solo per capire il contesto (le sue notizie sono già "
-                     f"state scritte):\n...{parti[i - 2][-GROQ_CONTESTO:]}\n\n")
-        notizie += groq_notizie([
-            {"role": "system", "content": istruzioni},
-            {"role": "user", "content": f"{prima}Trascrizione (parte {i} di {len(parti)}):\n{parte}"},
-        ], dormi=dormi, post=post)
-    notizie = solo_notizie(notizie, possibili, info)
-    if len(parti) > 1:
-        notizie = solo_notizie(unisci_argomenti(notizie, info, dormi=dormi, post=post), possibili, info)
-    return notizie
+        raise RuntimeError("trascrizione vuota")
+    print(f"Trascrizione da Supadata: {len(testo)} caratteri.")
+    return solo_notizie(notizie_gemini_testo(testo, info, possibili), possibili, info)
 
 
 def _chiave(argomento):
@@ -831,11 +629,12 @@ def elabora(link):
     info = info_video(url)
     print(f"Video: {info['titolo'] or url} ({info['canale'] or 'canale sconosciuto'})")
     aspetta_sottotitoli(url, info)
-    try:
-        notizie = estrai_da_trascrizione(url, info)
-    except Exception as e:
-        print(f"Trascrizione + Groq non riuscita ({e}): provo Gemini Flash sul video.")
-        notizie = None
+    notizie = None
+    if SUPADATA_ATTIVO:
+        try:
+            notizie = estrai_da_trascrizione(url, info)
+        except Exception as e:
+            print(f"Trascrizione Supadata non riuscita ({e}): provo Gemini Flash sul video.")
     try:
         if notizie is None:
             notizie = estrai_con_attesa(url, info)

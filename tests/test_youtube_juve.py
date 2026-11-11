@@ -8,17 +8,6 @@ os.environ.setdefault("GEMINI_API_KEY", "test-key")
 import youtube_juve as yj
 
 
-def setUpModule():
-    # Nei test Gemini Flash sulla trascrizione è "occupato": si prova Groq (salvo test che dicono altro).
-    global _gemini_testo
-    _gemini_testo = patch.object(yj, "notizie_gemini_testo", side_effect=RuntimeError("503 UNAVAILABLE"))
-    _gemini_testo.start()
-
-
-def tearDownModule():
-    _gemini_testo.stop()
-
-
 def testo_visibile(post):
     """Solo il corpo della notizia, senza tag."""
     corpo = re.search(r"<p>(.*?)<br>", post).group(1)
@@ -219,102 +208,10 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class _Risposta:
-    def __init__(self, stato, contenuto=None, headers=None):
-        self.status_code, self.headers, self.text = stato, headers or {}, str(contenuto)
-        self._contenuto = contenuto
-
-    def json(self):
-        import json
-        return {"choices": [{"message": {"content": json.dumps(self._contenuto)}}]}
-
-
 def _voce(argomento, tipo="notizia"):
     return {"argomento": argomento, "minuto": "01:00", "persona": "Agresti", "tipo": tipo,
             "testo": f"Notizia su **{argomento}**.", "tono": "nuova", "protagonista": argomento,
             "protagonista_juve": True, "nazione": "IT", "riscontro": "..."}
-
-
-class GroqTests(unittest.TestCase):
-    def test_dividi_trascrizione(self):
-        testo = "\n".join(f"[0{i}:00] A: " + "parola " * 30 for i in range(10))
-        parti = yj.dividi_trascrizione(testo, massimo=500)
-        self.assertTrue(all(len(p) <= 500 for p in parti))
-        self.assertEqual(" ".join(" ".join(parti).split()), " ".join(testo.split()))
-
-    def test_senza_chiave_si_passa_a_gemini(self):
-        with patch.object(yj, "GROQ_API_KEY", ""):
-            with self.assertRaises(yj.GroqErrore):
-                yj.estrai_da_trascrizione("u", {}, trascrizione="x" * 100)
-
-    def test_notizie_da_groq_senza_opinioni(self):
-        risposte = [_Risposta(200, {"notizie": [_voce("Yildiz"), _voce("Mercato", "opinione")]})]
-        with patch.object(yj, "GROQ_API_KEY", "k"):
-            out = yj.estrai_da_trascrizione("u", {"canale": "Romeo Agresti"}, trascrizione="[00:10] A: " + "ciao " * 40,
-                                            post=lambda *a, **k: risposte.pop(0))
-        self.assertEqual([n["argomento"] for n in out], ["Yildiz"])
-
-    def test_limite_al_minuto_aspetta_poi_altro_modello(self):
-        attese = []
-        risposte = [_Risposta(429, "lento", {"retry-after": "7"}),
-                    _Risposta(200, {"notizie": [_voce("Vlahovic")]})]
-        with patch.object(yj, "GROQ_API_KEY", "k"):
-            out = yj.groq_notizie([], dormi=attese.append, post=lambda *a, **k: risposte.pop(0))
-        self.assertEqual(attese, [8])
-        self.assertEqual(out[0]["argomento"], "Vlahovic")
-        modelli = []
-        risposte = [_Risposta(500, "rotto"), _Risposta(200, {"notizie": []})]
-        def post(url, json=None, **k):
-            modelli.append(json["model"])
-            return risposte.pop(0)
-        with patch.object(yj, "GROQ_API_KEY", "k"):
-            self.assertEqual(yj.groq_notizie([], post=post), [])
-        self.assertEqual(modelli, yj.GROQ_MODELLI[:2])
-
-    def test_parti_unite(self):
-        risposte = [_Risposta(200, {"notizie": [_voce("Yildiz")]}), _Risposta(200, {"notizie": [_voce("Yildiz")]}),
-                    _Risposta(200, {"notizie": [_voce("Yildiz")]})]
-        chiamate = []
-        def post(url, json=None, **k):
-            chiamate.append(json["messages"][-1]["content"][:40])
-            return risposte.pop(0)
-        testo = "\n".join(f"[0{i}:00] A: " + "parola " * 30 for i in range(10))
-        with patch.object(yj, "GROQ_API_KEY", "k"), patch.object(yj, "GROQ_CARATTERI", 1200):
-            out = yj.estrai_da_trascrizione("u", {}, trascrizione=testo, post=post)
-        self.assertEqual(len(chiamate), 3)
-        self.assertIn("Queste notizie", chiamate[-1])
-        self.assertEqual(len(out), 1)
-
-
-class TrascrizioneTests(unittest.TestCase):
-    def test_trascrizione_prima_lite(self):
-        provati = []
-
-        class Modelli:
-            def generate_content(self, model, **k):
-                provati.append(model)
-                class R:
-                    candidates, parsed = [], {"parti": [{"minuto": "00:01", "persona": "A", "testo": "ciao"}]}
-                return R()
-        with patch.object(yj.bg, "modelli_disponibili", return_value=["g-3.8-flash", "g-3.5-flash-lite"]), \
-             patch.object(yj.bg, "client", type("C", (), {"models": Modelli()})()):
-            out = yj.trascrivi("https://youtu.be/abcdefghijk", {})
-        self.assertEqual(provati, ["g-3.5-flash-lite"])
-        self.assertEqual(out, "[00:01] A: ciao")
-
-
-class ContestoTests(unittest.TestCase):
-    def test_parte_dopo_con_contesto(self):
-        inviati = []
-        def post(url, json=None, **k):
-            inviati.append(json["messages"][-1]["content"])
-            return _Risposta(200, {"notizie": []})
-        testo = "\n".join(f"[0{i}:00] A: " + "parola " * 30 for i in range(10))
-        with patch.object(yj, "GROQ_API_KEY", "k"), patch.object(yj, "GROQ_CARATTERI", 1200):
-            yj.estrai_da_trascrizione("u", {}, trascrizione=testo, post=post)
-        self.assertTrue(inviati[0].startswith("Trascrizione (parte 1"))
-        self.assertIn("Fine della parte precedente", inviati[1])
-        self.assertIn("disponibilità", yj.prompt({}, [], trascrizione=True))
 
 
 class SupadataTests(unittest.TestCase):
@@ -339,21 +236,6 @@ class SupadataTests(unittest.TestCase):
             out = yj.trascrivi_supadata("u", dormi=lambda s: None, get=lambda *a, **k: R(*risposte.pop(0)))
         self.assertEqual(out, "testo intero")
 
-    def test_senza_supadata_gemini(self):
-        with patch.object(yj, "SUPADATA_API_KEY", ""), patch.object(yj, "trascrivi", return_value="gemini"):
-            self.assertEqual(yj.trascrizione_completa("u", {}), "gemini")
-
-
-class UnioneTests(unittest.TestCase):
-    def test_unione_non_perde_argomenti(self):
-        unite = [_voce("Zhegrova")]
-        def post(url, json=None, **k):
-            return _Risposta(200, {"notizie": unite})
-        with patch.object(yj, "GROQ_API_KEY", "k"):
-            out = yj.unisci_argomenti([_voce("Kalulu"), _voce("Zhegrova"), _voce("Zhegrova")], {}, post=post)
-        self.assertEqual(sorted(n["argomento"] for n in out), ["Kalulu", "Zhegrova"])
-
-
 class ImportanzaTests(unittest.TestCase):
     def test_inutili_scartate(self):
         inutile = {**_voce("Cabal"), "importanza": "inutile"}
@@ -365,6 +247,9 @@ class ImportanzaTests(unittest.TestCase):
 class GeminiTestoTests(unittest.TestCase):
     def test_prima_gemini_flash_sul_testo(self):
         with patch.object(yj, "notizie_gemini_testo", return_value=[_voce("Kalulu"), _voce("X", "opinione")]):
-            out = yj.estrai_da_trascrizione("u", {}, trascrizione="[00:10] " + "ciao " * 40,
-                                            post=lambda *a, **k: self.fail("Groq non serve"))
+            out = yj.estrai_da_trascrizione("u", {}, trascrizione="[00:10] " + "ciao " * 40)
         self.assertEqual([n["argomento"] for n in out], ["Kalulu"])
+
+    def test_supadata_sospeso_si_usa_il_video(self):
+        self.assertFalse(yj.SUPADATA_ATTIVO)
+        self.assertFalse(hasattr(yj, "GROQ_API_KEY"))

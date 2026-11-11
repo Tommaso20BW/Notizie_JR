@@ -53,7 +53,8 @@ class GeminiTests(unittest.TestCase):
                 "models/gemini-3.5-flash-lite", "models/gemini-3.1-flash-lite", "models/gemini-2.5-flash-lite",
                 "models/gemini-3.8-flash-tts", "models/gemini-3.1-pro-preview", "models/gemini-10.0-flash"]
         self.assertEqual(bot_giornali._scegli_modelli(nomi), [
-            "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-10.0-flash", "gemini-3.8-flash"])
+            "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-10.0-flash", "gemini-3.8-flash",
+            "gemini-3.6-flash"])
 
     def test_senza_elenco_usa_i_modelli_di_riserva(self):
         client = SimpleNamespace(models=SimpleNamespace(list=Mock(side_effect=RuntimeError("rete"))))
