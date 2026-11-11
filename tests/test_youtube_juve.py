@@ -304,3 +304,30 @@ class ContestoTests(unittest.TestCase):
         self.assertTrue(inviati[0].startswith("Trascrizione (parte 1"))
         self.assertIn("Fine della parte precedente", inviati[1])
         self.assertIn("disponibilità", yj.prompt({}, [], trascrizione=True))
+
+
+class SupadataTests(unittest.TestCase):
+    def test_trascrizione_con_minuti(self):
+        class R:
+            status_code = 200
+            def json(self):
+                return {"content": [{"text": "ciao  a tutti", "offset": 65000}, {"text": "Kalulu", "offset": 125500}]}
+        with patch.object(yj, "SUPADATA_API_KEY", "k"):
+            out = yj.trascrivi_supadata("u", get=lambda *a, **k: R())
+        self.assertEqual(out, "[01:05] ciao a tutti\n[02:05] Kalulu")
+
+    def test_lavoro_lungo_aspetta(self):
+        risposte = [(202, {"jobId": "j"}), (200, {"status": "active"}),
+                    (200, {"status": "completed", "content": "testo intero"})]
+        class R:
+            def __init__(self, stato, dati):
+                self.status_code, self._d, self.text = stato, dati, ""
+            def json(self):
+                return self._d
+        with patch.object(yj, "SUPADATA_API_KEY", "k"):
+            out = yj.trascrivi_supadata("u", dormi=lambda s: None, get=lambda *a, **k: R(*risposte.pop(0)))
+        self.assertEqual(out, "testo intero")
+
+    def test_senza_supadata_gemini(self):
+        with patch.object(yj, "SUPADATA_API_KEY", ""), patch.object(yj, "trascrivi", return_value="gemini"):
+            self.assertEqual(yj.trascrizione_completa("u", {}), "gemini")

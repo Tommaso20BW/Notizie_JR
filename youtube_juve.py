@@ -342,6 +342,57 @@ class GroqErrore(RuntimeError):
     pass
 
 
+SUPADATA_API_KEY = os.getenv("SUPADATA_API_KEY", "").strip()
+SUPADATA_URL = "https://api.supadata.ai/v1/transcript"
+
+
+def _mmss(ms):
+    secondi = int((ms or 0) // 1000)
+    return f"{secondi // 60:02d}:{secondi % 60:02d}"
+
+
+def trascrivi_supadata(url, dormi=time.sleep, get=None):
+    """Sottotitoli del video presi da Supadata (100 al mese gratis), come "[mm:ss] parole"."""
+    if not SUPADATA_API_KEY:
+        raise RuntimeError("SUPADATA_API_KEY mancante")
+    get = get or requests.get
+    intestazioni = {"x-api-key": SUPADATA_API_KEY}
+    r = get(SUPADATA_URL, timeout=120, headers=intestazioni,
+            params={"url": url, "lang": "it", "mode": "native", "chunkSize": 600})
+    if r.status_code == 202:                         # lavoro lungo: si aspetta il risultato
+        job = r.json().get("jobId")
+        for _ in range(60):
+            dormi(5)
+            r = get(f"{SUPADATA_URL}/{job}", timeout=60, headers=intestazioni)
+            stato = r.json().get("status") if r.status_code == 200 else "errore"
+            if stato == "completed":
+                break
+            if stato in ("failed", "errore"):
+                raise RuntimeError(f"Supadata: lavoro {job} non riuscito ({r.text[:200]})")
+        else:
+            raise RuntimeError("Supadata: troppo tempo")
+    if r.status_code != 200:
+        raise RuntimeError(f"Supadata: HTTP {r.status_code} {r.text[:200]}")
+    contenuto = r.json().get("content")
+    if isinstance(contenuto, str):
+        return contenuto
+    return "\n".join(f"[{_mmss(c.get('offset'))}] {' '.join(str(c.get('text', '')).split())}"
+                     for c in contenuto or [] if str(c.get("text", "")).strip())
+
+
+def trascrizione_completa(url, info):
+    """Prima Supadata (sottotitoli di YouTube); se non va, Gemini Lite."""
+    try:
+        testo = trascrivi_supadata(url)
+        if len(testo.strip()) >= 50:
+            print("Trascrizione da Supadata.")
+            return testo
+        print("Supadata: trascrizione vuota.")
+    except Exception as e:
+        print(f"Supadata non va ({e}): trascrivo con Gemini Lite.")
+    return trascrivi(url, info)
+
+
 def trascrivi(url, info):
     """Trascrizione del video come testo "[mm:ss] Persona: parole"."""
     from google.genai import types
@@ -452,7 +503,7 @@ def estrai_da_trascrizione(url, info, trascrizione=None, dormi=time.sleep, post=
     if not GROQ_API_KEY:
         raise GroqErrore("GROQ_API_KEY mancante")
     possibili = persone_note(info)
-    testo = trascrizione if trascrizione is not None else trascrivi(url, info)
+    testo = trascrizione if trascrizione is not None else trascrizione_completa(url, info)
     if len(testo.strip()) < 50:
         raise GroqErrore("trascrizione vuota")
     parti = dividi_trascrizione(testo)
