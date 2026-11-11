@@ -115,6 +115,8 @@ BANDIERE = {                                   # giocatori non della Juve: bandi
 
 _ID = re.compile(r"(?:v=|youtu\.be/|/shorts/|/live/|/embed/)([A-Za-z0-9_-]{11})")
 
+IMPORTANZE = ["alta", "media", "bassa", "inutile"]     # "inutile" si scarta
+
 SCHEMA = {
     "type": "object",
     "properties": {
@@ -150,8 +152,14 @@ SCHEMA = {
                                         "consiglio o previsione personale (\"secondo me\", \"io lo venderei\", "
                                         "\"dovrebbe\", \"mi stupirebbe\")."),
                     },
+                    "importanza": {
+                        "type": "string", "enum": list(IMPORTANZE),
+                        "description": ("Quanto interessa a un tifoso della Juve: alta (novità vera e concreta), "
+                                        "media, bassa, inutile (vaga, ovvia, già nota, cifre di contorno, niente "
+                                        "di concreto)."),
+                    },
                 },
-                "required": ["argomento", "minuto", "persona", "tipo", "testo", "tono", "protagonista",
+                "required": ["argomento", "minuto", "persona", "tipo", "importanza", "testo", "tono", "protagonista",
                              "protagonista_juve", "nazione", "riscontro"],
             },
         },
@@ -238,7 +246,11 @@ Regole:
   vuole o valuta il club, una trattativa, un contatto, un infortunio, una scelta dell'allenatore).
   Sono opinione i suoi commenti, giudizi, consigli e previsioni ("secondo me", "io farei", "la Juve
   dovrebbe", "mi stupirebbe", critiche al mercato, analisi tattiche). Le opinioni verranno scartate:
-  non mescolarle dentro una notizia.
+  non mescolarle dentro una notizia. Nel dubbio è opinione.
+- IMPORTANZA: alta = novità vera e concreta (trattativa, offerta, contatto, infortunio con tempi,
+  scelta decisa); media = aggiornamento utile; bassa = dettaglio minore; inutile = vaga ("potrebbe",
+  "secondo quanto detto" senza fatti), ovvia, già nota a tutti, ricostruzioni del passato o cifre
+  di contorno senza novità. Le inutili verranno scartate: sii severo.
 - DIREZIONE: non confondere mai acquisto e cessione, arrivo e partenza, chi compra e chi vende.
   "La Juve dovrebbe venderlo" non è "la Juve potrebbe prenderlo". Un giocatore della Juve non viene
   "preso" dalla Juve.
@@ -292,6 +304,9 @@ def solo_notizie(notizie, possibili, info):
         if str(notizia.get("tipo") or "notizia").lower() == "opinione":
             print(f"  [scartata, opinione] {notizia.get('argomento', '')}: {notizia.get('testo', '')[:160]}")
             continue
+        if str(notizia.get("importanza") or "").lower() == "inutile":
+            print(f"  [scartata, inutile] {notizia.get('argomento', '')}: {notizia.get('testo', '')[:160]}")
+            continue
         tenute.append(notizia)
     return tenute
 
@@ -331,10 +346,17 @@ SCHEMA_TRASCRIZIONE = {
 
 FORMATO_GROQ = """
 Rispondi SOLO con un oggetto JSON così: {"notizie": [{"argomento": "...", "minuto": "mm:ss",
-"persona": "...", "tipo": "notizia|opinione", "testo": "...", "tono": "...", "protagonista": "...",
+"persona": "...", "tipo": "notizia|opinione", "importanza": "alta|media|bassa|inutile", "testo": "...", "tono": "...", "protagonista": "...",
 "protagonista_juve": true|false, "nazione": "XX", "riscontro": "..."}]}
 "tono" è uno di: """ + ", ".join(TONI) + """. "riscontro": le frasi della trascrizione su quell'argomento,
 copiate parola per parola. Lista vuota se non si parla della Juventus.
+""".strip()
+
+
+AVVISO_SOTTOTITOLI = """
+- La trascrizione viene dai sottotitoli automatici: senza punteggiatura, senza chi parla, e i nomi
+  possono essere scritti male (es. "Zegò" = Zhegrova, "Conceisao" = Conceição). Correggili con la
+  grafia giusta (tesserati Juve come nell'elenco sopra) e capisci il senso dalle frasi intorno.
 """.strip()
 
 
@@ -495,7 +517,17 @@ def unisci_argomenti(notizie, info, dormi=time.sleep, post=None):
     except Exception as e:
         print(f"Unione degli argomenti non riuscita ({e}): tengo le voci come sono.")
         return notizie
-    return unite or notizie
+    if not unite:
+        return notizie
+    # L'unione non deve perdere argomenti: una voce il cui argomento o protagonista non c'è più torna.
+    presenti = {_semplice(n.get(c)) for n in unite for c in ("argomento", "protagonista") if n.get(c)}
+    parole = set(" ".join(presenti).split())
+    for n in notizie:
+        segni = [_semplice(n.get("protagonista")), _semplice(n.get("argomento"))]
+        if not any(x and (x in presenti or set(x.split()) <= parole) for x in segni):
+            print(f"  [unione] {n.get('argomento')} era sparito: lo rimetto.")
+            unite.append(n)
+    return unite
 
 
 def estrai_da_trascrizione(url, info, trascrizione=None, dormi=time.sleep, post=None):
@@ -508,7 +540,7 @@ def estrai_da_trascrizione(url, info, trascrizione=None, dormi=time.sleep, post=
         raise GroqErrore("trascrizione vuota")
     parti = dividi_trascrizione(testo)
     print(f"Trascrizione: {len(testo)} caratteri, {len(parti)} parti per Groq.")
-    istruzioni = prompt(info, possibili, trascrizione=True) + "\n" + FORMATO_GROQ
+    istruzioni = prompt(info, possibili, trascrizione=True) + "\n" + AVVISO_SOTTOTITOLI + "\n" + FORMATO_GROQ
     notizie = []
     for i, parte in enumerate(parti, 1):
         print(f"Groq, parte {i}/{len(parti)}...")

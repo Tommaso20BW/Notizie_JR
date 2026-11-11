@@ -331,3 +331,21 @@ class SupadataTests(unittest.TestCase):
     def test_senza_supadata_gemini(self):
         with patch.object(yj, "SUPADATA_API_KEY", ""), patch.object(yj, "trascrivi", return_value="gemini"):
             self.assertEqual(yj.trascrizione_completa("u", {}), "gemini")
+
+
+class UnioneTests(unittest.TestCase):
+    def test_unione_non_perde_argomenti(self):
+        unite = [_voce("Zhegrova")]
+        def post(url, json=None, **k):
+            return _Risposta(200, {"notizie": unite})
+        with patch.object(yj, "GROQ_API_KEY", "k"):
+            out = yj.unisci_argomenti([_voce("Kalulu"), _voce("Zhegrova"), _voce("Zhegrova")], {}, post=post)
+        self.assertEqual(sorted(n["argomento"] for n in out), ["Kalulu", "Zhegrova"])
+
+
+class ImportanzaTests(unittest.TestCase):
+    def test_inutili_scartate(self):
+        inutile = {**_voce("Cabal"), "importanza": "inutile"}
+        out = yj.solo_notizie([_voce("Kalulu"), inutile, _voce("Mercato", "opinione")], [], {})
+        self.assertEqual([n["argomento"] for n in out], ["Kalulu"])
+        self.assertIn("importanza", yj.SCHEMA["properties"]["notizie"]["items"]["required"])
