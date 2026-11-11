@@ -9,6 +9,7 @@ messaggio, pronte da inoltrare: emoji iniziali, nomi in grassetto, foto e "Nome 
 parla (sul canale di Romano può essere anche Moretto), @Juventus_Reborn.
 """
 import html
+import json
 import os
 import re
 import sys
@@ -202,7 +203,7 @@ def nome_persona(persona, possibili, info):
     return possibili[0] if possibili else (info.get("canale") or "YouTube")
 
 
-def prompt(info, possibili):
+def prompt(info, possibili, trascrizione=False):
     if len(possibili) == 1:
         chi = f'Parla {possibili[0]}: "persona" è sempre {possibili[0]}.'
     elif possibili:
@@ -211,7 +212,7 @@ def prompt(info, possibili):
     else:
         chi = 'In "persona" metti nome e cognome di chi dice quella notizia.'
     return f"""
-Guarda e ascolta questo video YouTube ("{info.get('titolo', '')}", canale {info.get('canale', '')}).
+{"Leggi la trascrizione di" if trascrizione else "Guarda e ascolta"} questo video YouTube ("{info.get('titolo', '')}", canale {info.get('canale', '')}).
 {chi}
 Trasforma in notizie per il canale Telegram Juventus Reborn SOLO le parti che riguardano la Juventus:
 club, allenatore, dirigenti, squadra, giocatori della Juventus (anche in prestito) e giocatori
@@ -289,6 +290,180 @@ def solo_notizie(notizie, possibili, info):
             continue
         tenute.append(notizia)
     return tenute
+
+
+# --- Trascrizione (Gemini, anche Lite) + notizie scritte da Groq -------------------------------
+# Gemini Lite sbaglia a scrivere notizie dal video, ma per trascrivere va bene ed è meno occupato.
+# Groq (gratis, limite di circa 8.000 token al minuto) scrive le notizie dal testo: la trascrizione
+# lunga si divide in parti, poi le voci sullo stesso argomento si uniscono.
+
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
+GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+GROQ_MODELLI = [m.strip() for m in os.getenv(
+    "GROQ_MODELLI", "openai/gpt-oss-120b,llama-3.3-70b-versatile,qwen/qwen3.8-27b,openai/gpt-oss-20b").split(",") if m.strip()]
+GROQ_CARATTERI = int(os.getenv("GROQ_CARATTERI", "5000"))     # trascrizione per richiesta
+GROQ_MAX_TOKEN = int(os.getenv("GROQ_MAX_TOKEN", "3500"))      # risposta (ragionamento compreso)
+
+SCHEMA_TRASCRIZIONE = {
+    "type": "object",
+    "properties": {
+        "parti": {
+            "type": "array",
+            "description": "Tutto il parlato del video, dall'inizio alla fine, in ordine.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "minuto": {"type": "string", "description": "Minuto del video (mm:ss)."},
+                    "persona": {"type": "string", "description": "Chi parla (nome e cognome se si capisce)."},
+                    "testo": {"type": "string", "description": "Le sue parole, trascritte parola per parola."},
+                },
+                "required": ["minuto", "persona", "testo"],
+            },
+        },
+    },
+    "required": ["parti"],
+}
+
+FORMATO_GROQ = """
+Rispondi SOLO con un oggetto JSON così: {"notizie": [{"argomento": "...", "minuto": "mm:ss",
+"persona": "...", "tipo": "notizia|opinione", "testo": "...", "tono": "...", "protagonista": "...",
+"protagonista_juve": true|false, "nazione": "XX", "riscontro": "..."}]}
+"tono" è uno di: """ + ", ".join(TONI) + """. "riscontro": le frasi della trascrizione su quell'argomento,
+copiate parola per parola. Lista vuota se non si parla della Juventus.
+""".strip()
+
+
+class GroqErrore(RuntimeError):
+    pass
+
+
+def trascrivi(url, info):
+    """Trascrizione del video come testo "[mm:ss] Persona: parole"."""
+    from google.genai import types
+    video = types.Part(file_data=types.FileData(file_uri=url))
+    richiesta = (f'Trascrivi parola per parola, in lingua originale, tutto il parlato di questo video YouTube '
+                 f'("{info.get("titolo", "")}", canale {info.get("canale", "")}). Non riassumere, non saltare '
+                 f'niente, non aggiungere niente. Indica il minuto e chi parla. Nomi dei giocatori della '
+                 f'Juventus, scritti così: {TESSERATI}.')
+    risposta = bg._genera_json(video, richiesta, schema=SCHEMA_TRASCRIZIONE, intero=True, prima_flash=True,
+                               cicli=2, chiave="parti",
+                               config_extra={"media_resolution": "MEDIA_RESOLUTION_LOW",
+                                             "thinking_config": {"thinking_budget": 1024}})
+    righe = [f"[{p.get('minuto', '')}] {p.get('persona', '')}: {' '.join(str(p.get('testo', '')).split())}"
+             for p in risposta.get("parti") or [] if str(p.get("testo", "")).strip()]
+    return "\n".join(righe)
+
+
+def dividi_trascrizione(testo, massimo=None):
+    """Parti di al massimo `massimo` caratteri, tagliate tra una riga e l'altra."""
+    massimo = massimo or GROQ_CARATTERI
+    parti, attuale = [], ""
+    for riga in testo.splitlines():
+        while len(riga) > massimo:                      # riga lunghissima: si taglia a uno spazio
+            taglio = riga.rfind(" ", 0, massimo) if " " in riga[:massimo] else massimo
+            if attuale:
+                parti.append(attuale)
+                attuale = ""
+            parti.append(riga[:taglio])
+            riga = riga[taglio:].strip()
+        if attuale and len(attuale) + 1 + len(riga) > massimo:
+            parti.append(attuale)
+            attuale = riga
+        else:
+            attuale = f"{attuale}\n{riga}" if attuale else riga
+    if attuale.strip():
+        parti.append(attuale)
+    return parti
+
+
+def groq_json(messaggi, modello, dormi=time.sleep, post=None):
+    """Una risposta JSON da Groq. Su 429 (limite al minuto) aspetta quanto chiede e riprova."""
+    post = post or requests.post
+    for tentativo in range(6):
+        r = post(GROQ_URL, timeout=180, headers={"Authorization": f"Bearer {GROQ_API_KEY}"}, json={
+            "model": modello, "messages": messaggi, "temperature": 0,
+            "max_completion_tokens": GROQ_MAX_TOKEN, "response_format": {"type": "json_object"},
+        })
+        if r.status_code == 429:
+            try:
+                aspetta = float(r.headers.get("retry-after") or 20)
+            except ValueError:
+                aspetta = 20
+            if aspetta > 120:                            # limite giornaliero: prova un altro modello
+                raise GroqErrore(f"{modello}: limite raggiunto ({r.text[:200]})")
+            print(f"  Groq {modello}: limite al minuto, aspetto {aspetta:.0f}s.")
+            dormi(aspetta + 1)
+            continue
+        if r.status_code >= 400:
+            raise GroqErrore(f"{modello}: HTTP {r.status_code} {r.text[:300]}")
+        testo = r.json()["choices"][0]["message"]["content"] or ""
+        try:
+            dati = json.loads(testo)
+        except ValueError:
+            dati = json.loads(testo[testo.find("{"):testo.rfind("}") + 1])
+        if not isinstance(dati.get("notizie"), list):
+            raise GroqErrore(f"{modello}: risposta senza lista di notizie")
+        return dati
+    raise GroqErrore(f"{modello}: troppi limiti al minuto")
+
+
+def groq_notizie(messaggi, dormi=time.sleep, post=None):
+    """Prova i modelli Groq in ordine finché uno risponde."""
+    errori = []
+    for modello in GROQ_MODELLI:
+        try:
+            print(f"  Groq: modello {modello}")
+            return groq_json(messaggi, modello, dormi=dormi, post=post)["notizie"]
+        except Exception as e:
+            print(f"  Groq {modello} non va: {e}")
+            errori.append(str(e))
+    raise GroqErrore("Nessun modello Groq ha risposto: " + " | ".join(errori))
+
+
+def unisci_argomenti(notizie, info, dormi=time.sleep, post=None):
+    """Dopo più parti di trascrizione: una sola voce per argomento, senza ripetizioni."""
+    if len(notizie) < 2:
+        return notizie
+    voci = [{k: v for k, v in n.items() if k != "riscontro"} for n in notizie]
+    messaggi = [
+        {"role": "system", "content": "Sei un redattore di notizie sulla Juventus. Rispondi solo in JSON."},
+        {"role": "user", "content": (
+            "Queste notizie vengono da parti diverse dello stesso video. Unisci in UNA voce quelle sullo "
+            "stesso argomento (stesso giocatore, stessa trattativa), togliendo le ripetizioni: ogni fatto "
+            "una volta sola, senza aggiungere né cambiare niente. Le altre lasciale come sono. Testo di "
+            f"norma al massimo {MAX_CARATTERI} caratteri, nomi tra **. Stessi campi, riscontro vuoto.\n"
+            f"{FORMATO_GROQ}\n\n" + json.dumps({"notizie": voci}, ensure_ascii=False))},
+    ]
+    try:
+        unite = groq_notizie(messaggi, dormi=dormi, post=post)
+    except Exception as e:
+        print(f"Unione degli argomenti non riuscita ({e}): tengo le voci come sono.")
+        return notizie
+    return unite or notizie
+
+
+def estrai_da_trascrizione(url, info, trascrizione=None, dormi=time.sleep, post=None):
+    """Notizie scritte da Groq sulla trascrizione. Errore se manca qualcosa: si passa a Gemini Flash."""
+    if not GROQ_API_KEY:
+        raise GroqErrore("GROQ_API_KEY mancante")
+    possibili = persone_note(info)
+    testo = trascrizione if trascrizione is not None else trascrivi(url, info)
+    if len(testo.strip()) < 50:
+        raise GroqErrore("trascrizione vuota")
+    parti = dividi_trascrizione(testo)
+    print(f"Trascrizione: {len(testo)} caratteri, {len(parti)} parti per Groq.")
+    istruzioni = prompt(info, possibili, trascrizione=True) + "\n" + FORMATO_GROQ
+    notizie = []
+    for i, parte in enumerate(parti, 1):
+        print(f"Groq, parte {i}/{len(parti)}...")
+        notizie += groq_notizie([
+            {"role": "system", "content": istruzioni},
+            {"role": "user", "content": f"Trascrizione (parte {i} di {len(parti)}):\n{parte}"},
+        ], dormi=dormi, post=post)
+    notizie = solo_notizie(notizie, possibili, info)
+    if len(parti) > 1:
+        notizie = solo_notizie(unisci_argomenti(notizie, info, dormi=dormi, post=post), possibili, info)
+    return notizie
 
 
 def _chiave(argomento):
@@ -543,7 +718,13 @@ def elabora(link):
     print(f"Video: {info['titolo'] or url} ({info['canale'] or 'canale sconosciuto'})")
     aspetta_sottotitoli(url, info)
     try:
-        notizie = estrai_con_attesa(url, info)
+        notizie = estrai_da_trascrizione(url, info)
+    except Exception as e:
+        print(f"Trascrizione + Groq non riuscita ({e}): provo Gemini Flash sul video.")
+        notizie = None
+    try:
+        if notizie is None:
+            notizie = estrai_con_attesa(url, info)
     except GeminiOccupato as e:
         print(f"{e}: nessuna notizia inviata.")
         avviso(f"⚠️ Gemini è occupato da troppo tempo: non ho estratto niente. Riprova più tardi "

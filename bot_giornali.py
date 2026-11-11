@@ -293,12 +293,12 @@ def modelli_disponibili():
 
 
 def _genera_json(uploaded, prompt, schema=SCHEMA_NOTIZIE, config_extra=None, intero=False, prima_flash=False,
-                 cicli=None, solo_flash=False):
+                 cicli=None, solo_flash=False, chiave="notizie"):
     """Prova tutti i modelli e ripete il giro con backoff su 429/503.
     config_extra: opzioni Gemini in più; intero=True restituisce tutta la risposta (non solo le notizie);
     prima_flash=True usa i Flash (più bravi): se sono occupati aspetta e li riprova, e i Flash-Lite
     si provano solo all'ultimo giro; solo_flash=True non usa mai i Flash-Lite (sbagliano coi video);
-    cicli: quanti giri al massimo (predefinito MAX_CICLI_GEMINI)."""
+    cicli: quanti giri al massimo (predefinito MAX_CICLI_GEMINI); chiave: la lista attesa nella risposta."""
     max_cicli = cicli or MAX_CICLI_GEMINI
     ultimo_errore = None
     modelli_con_quota_giornaliera_esaurita = set()
@@ -352,9 +352,9 @@ def _genera_json(uploaded, prompt, schema=SCHEMA_NOTIZIE, config_extra=None, int
                 if not isinstance(parsed, dict):
                     parsed = json.loads(response.text)
 
-                notizie = parsed.get("notizie")
+                notizie = parsed.get(chiave)
                 if not isinstance(notizie, list):
-                    raise ValueError("Gemini non ha restituito una lista di notizie.")
+                    raise ValueError(f"Gemini non ha restituito la lista «{chiave}».")
                 return parsed if intero else notizie
 
             except Exception as e:
