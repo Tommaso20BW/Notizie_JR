@@ -1,0 +1,54 @@
+name: Notizie da YouTube
+
+# Link di un video YouTube -> notizie sulla Juventus sul bot JR (youtube_juve.py).
+# Si avvia a mano (bottone "Run workflow") o dal Comando Rapido dell'iPhone.
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: "Link del video YouTube"
+        required: true
+        type: string
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  youtube:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Scarica il repository
+        uses: actions/checkout@v6
+
+      - name: Configura Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Installa le dipendenze
+        run: python -m pip install --disable-pip-version-check -q -r requirements.txt
+
+      - name: Notizie dal video
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          YOUTUBE_URL: ${{ inputs.url }}
+        run: python -u youtube_juve.py
+
+      - name: Pulisci la cronologia dei run
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEEP: "0"
+        run: |
+          gh api "repos/${{ github.repository }}/actions/workflows/youtube_juve.yml/runs?status=completed&per_page=100" \
+            --jq '.workflow_runs | sort_by(.created_at) | reverse | .['"$KEEP"':] | .[].id' |
+          while read -r RUN_ID; do
+            gh api -X DELETE "repos/${{ github.repository }}/actions/runs/$RUN_ID" >/dev/null 2>&1 || true
+          done
+          echo "Pulizia completata."

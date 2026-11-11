@@ -292,8 +292,9 @@ def modelli_disponibili():
     return scelti
 
 
-def _genera_json(uploaded, prompt, schema=SCHEMA_NOTIZIE):
-    """Prova tutti i modelli e ripete il giro con backoff su 429/503."""
+def _genera_json(uploaded, prompt, schema=SCHEMA_NOTIZIE, config_extra=None, intero=False):
+    """Prova tutti i modelli e ripete il giro con backoff su 429/503.
+    config_extra: opzioni Gemini in più; intero=True restituisce tutta la risposta (non solo le notizie)."""
     ultimo_errore = None
     modelli_con_quota_giornaliera_esaurita = set()
 
@@ -320,6 +321,7 @@ def _genera_json(uploaded, prompt, schema=SCHEMA_NOTIZIE):
                         "temperature": 0,
                         "max_output_tokens": 65536,
                         "thinking_config": {"thinking_budget": 2048},
+                        **(config_extra or {}),
                     },
                 )
 
@@ -343,7 +345,7 @@ def _genera_json(uploaded, prompt, schema=SCHEMA_NOTIZIE):
                 notizie = parsed.get("notizie")
                 if not isinstance(notizie, list):
                     raise ValueError("Gemini non ha restituito una lista di notizie.")
-                return notizie
+                return parsed if intero else notizie
 
             except Exception as e:
                 ultimo_errore = e
