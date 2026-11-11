@@ -52,6 +52,8 @@ _ESCLUSI = ("preview", "exp", "tts", "live", "audio", "image", "embedding", "tra
             "translate", "omni", "robotics", "computer", "thinking")
 _STABILE = re.compile(r"^gemini-(\d+(?:\.\d+)?)-(flash|flash-lite)$")
 _modelli_scelti = None
+# Tempo massimo di una risposta di Gemini: se un modello non risponde si passa al successivo.
+TIMEOUT_GEMINI = int(os.getenv("GEMINI_TIMEOUT", "240"))   # secondi
 
 FONTI_VALIDE = ("TUTTO", "GAZZETTA", "CORRIERE")
 
@@ -252,6 +254,11 @@ def _secondi_attesa_gemini(messaggio):
     return 30
 
 
+def _scaduto(errore):
+    """Gemini non ha risposto entro TIMEOUT_GEMINI secondi."""
+    return "timeout" in type(errore).__name__.lower() or "timed out" in str(errore).lower()
+
+
 def _scegli_modelli(nomi):
     """Dai nomi dei modelli disponibili: prima i Flash-Lite (economici), poi i Flash,
     ognuno dal più recente. Solo modelli stabili."""
@@ -338,6 +345,7 @@ def _genera_json(uploaded, prompt, schema=SCHEMA_NOTIZIE, config_extra=None, int
                         "temperature": 0,
                         "max_output_tokens": 65536,
                         "thinking_config": {"thinking_budget": 2048},
+                        "http_options": {"timeout": TIMEOUT_GEMINI * 1000},
                         **(config_extra or {}),
                     },
                 )
@@ -374,6 +382,7 @@ def _genera_json(uploaded, prompt, schema=SCHEMA_NOTIZIE, config_extra=None, int
                     "503" in msg
                     or "UNAVAILABLE" in msg
                     or "overloaded" in msg.lower()
+                    or _scaduto(e)
                 )
 
                 if modello_inesistente:
@@ -410,7 +419,8 @@ def _genera_json(uploaded, prompt, schema=SCHEMA_NOTIZIE, config_extra=None, int
                     attesa_ciclo = max(attesa_ciclo or 0, attesa_503)
                     print(
                         f"Modello {modello} temporaneamente non disponibile "
-                        "(503). Provo il modello successivo..."
+                        f"({f'nessuna risposta in {TIMEOUT_GEMINI}s' if _scaduto(e) else '503'}). "
+                        "Provo il modello successivo..."
                     )
                     continue
 

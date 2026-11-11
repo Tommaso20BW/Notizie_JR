@@ -574,7 +574,8 @@ class GeminiOccupato(RuntimeError):
 
 def _occupato(errore):
     testo = str(errore)
-    return "503" in testo or "UNAVAILABLE" in testo or "overloaded" in testo.lower()
+    return ("503" in testo or "UNAVAILABLE" in testo or "overloaded" in testo.lower()
+            or bg._scaduto(errore))
 
 
 def estrai_con_attesa(url, info, attesa=None, pausa=None, dormi=time.sleep, attesa_gemini=None):

@@ -69,6 +69,23 @@ class GeminiTests(unittest.TestCase):
         with patch.object(bot_giornali, "client", client), patch.object(bot_giornali, "_modelli_scelti", None):
             self.assertEqual(bot_giornali.modelli_disponibili(), ["gemini-4.0-flash-lite", "gemini-4.0-flash"])
 
+    def test_modello_che_non_risponde_passa_al_successivo(self):
+        import httpx
+        models = Mock()
+        models.generate_content.side_effect = [httpx.ReadTimeout("timed out"), self._response()]
+        with (
+            patch.object(bot_giornali, "client", SimpleNamespace(models=models)),
+            patch.object(bot_giornali, "modelli_disponibili", lambda: ["g-3.8-flash", "g-3.6-flash"]),
+            patch.object(bot_giornali.time, "sleep") as sleep,
+        ):
+            risultato = bot_giornali._genera_json(object(), "prompt", prima_flash=True, solo_flash=True)
+        self.assertEqual(risultato, [{"testo": "Notizia"}])
+        self.assertEqual([c.kwargs["model"] for c in models.generate_content.call_args_list],
+                         ["g-3.8-flash", "g-3.6-flash"])
+        self.assertEqual(models.generate_content.call_args_list[0].kwargs["config"]["http_options"],
+                         {"timeout": bot_giornali.TIMEOUT_GEMINI * 1000})
+        sleep.assert_not_called()
+
     def test_modello_inesistente_passa_al_successivo(self):
         models = Mock()
         models.generate_content.side_effect = [
