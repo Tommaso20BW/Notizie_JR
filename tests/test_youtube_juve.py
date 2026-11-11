@@ -70,6 +70,7 @@ class FormatoTests(unittest.TestCase):
         altra = yj.emoji_iniziali({"tono": "interesse", "protagonista": "Rossi", "nazione": "jp"})
         self.assertTrue(altra.endswith("🇯🇵"))
 
+    @patch.object(yj, "MAX_CARATTERI", 240)
     def test_lunghe_divise_corte_intere(self):
         corta = "La **Juventus** ha chiesto informazioni per il centrocampista."
         lunga = ("La **Juventus** segue da settimane il difensore e ha già avuto un primo contatto con l'agente. "
@@ -131,6 +132,34 @@ class AttesaTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 yj.estrai_con_attesa("u", {}, attesa=900, pausa=120, dormi=lambda s: None)
         post.assert_not_called()
+
+
+class OpinioniTests(unittest.TestCase):
+    def test_opinioni_scartate(self):
+        info = {"canale_url": "https://www.youtube.com/@RomeoAgresti", "canale": "Romeo Agresti"}
+        notizie = [{"argomento": "Zhegrova", "tipo": "opinione", "testo": "Io lo venderei.", "persona": ""},
+                   {"argomento": "Kolo Muani", "tipo": "notizia", "testo": "Spalletti punta su di lui.", "persona": ""},
+                   {"argomento": "Vecchio formato", "testo": "Senza tipo resta.", "persona": ""}]
+        tenute = yj.solo_notizie(notizie, [], info)
+        self.assertEqual([n["argomento"] for n in tenute], ["Kolo Muani", "Vecchio formato"])
+
+    def test_prompt_con_tesserati(self):
+        testo = yj.prompt({"titolo": "t", "canale": "c"}, [])
+        self.assertIn("Carlo Pinsoglio", testo)
+        self.assertIn("OPINIONE", testo)
+        self.assertIn("tipo", yj.SCHEMA["properties"]["notizie"]["items"]["required"])
+
+
+class ModelliTests(unittest.TestCase):
+    def test_prima_i_flash(self):
+        provati = []
+        def genera(model, contents, config):
+            provati.append(model)
+            raise RuntimeError("400 prova")
+        with patch.object(yj.bg, "modelli_disponibili", return_value=["g-3.5-flash-lite", "g-3.1-flash-lite", "g-3.8-flash"]),                 patch.object(yj.bg.client.models, "generate_content", side_effect=genera),                 patch.object(yj.bg, "MAX_CICLI_GEMINI", 1):
+            with self.assertRaises(Exception):
+                yj.bg._genera_json("v", "p", prima_flash=True)
+        self.assertEqual(provati[0], "g-3.8-flash")
 
 
 if __name__ == "__main__":

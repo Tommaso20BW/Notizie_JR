@@ -292,9 +292,10 @@ def modelli_disponibili():
     return scelti
 
 
-def _genera_json(uploaded, prompt, schema=SCHEMA_NOTIZIE, config_extra=None, intero=False):
+def _genera_json(uploaded, prompt, schema=SCHEMA_NOTIZIE, config_extra=None, intero=False, prima_flash=False):
     """Prova tutti i modelli e ripete il giro con backoff su 429/503.
-    config_extra: opzioni Gemini in più; intero=True restituisce tutta la risposta (non solo le notizie)."""
+    config_extra: opzioni Gemini in più; intero=True restituisce tutta la risposta (non solo le notizie);
+    prima_flash=True prova prima i Flash (più bravi) e tiene i Flash-Lite di riserva."""
     ultimo_errore = None
     modelli_con_quota_giornaliera_esaurita = set()
 
@@ -302,7 +303,10 @@ def _genera_json(uploaded, prompt, schema=SCHEMA_NOTIZIE, config_extra=None, int
         attesa_ciclo = None
         modelli_tentati = 0
 
-        for modello in modelli_disponibili():
+        modelli = modelli_disponibili()
+        if prima_flash:
+            modelli = sorted(modelli, key=lambda m: "lite" in m)
+        for modello in modelli:
             if modello in modelli_con_quota_giornaliera_esaurita:
                 continue
             modelli_tentati += 1

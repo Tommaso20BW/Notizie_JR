@@ -106,7 +106,8 @@ class TranslationTests(unittest.TestCase):
         self.assertEqual(translated.title, "Ci siamo!")
         html = tn.format_article_rich_html(translated)
         self.assertIn("Ci siamo!", html)
-        self.assertIn("originale in inglese", html)
+        self.assertIn("X - FabrizioRomano 🌐</h2>", html)          # globo accanto alla fonte
+        self.assertNotIn("Tradotto", html)                               # nessuna riga sotto
 
     def test_translation_is_off_without_the_switch(self):
         article = tn._MessageArticle(source="X - FabrizioRomano", title="Here we go!",

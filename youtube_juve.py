@@ -19,7 +19,7 @@ import requests
 
 import bot_giornali as bg
 
-MAX_CARATTERI = int(os.getenv("YOUTUBE_MAX_CARATTERI", "240"))
+MAX_CARATTERI = int(os.getenv("YOUTUBE_MAX_CARATTERI", "320"))
 ATTESA = int(os.getenv("YOUTUBE_ATTESA", "900"))     # quanto aspettare un video non ancora leggibile (s)
 PAUSA = int(os.getenv("YOUTUBE_PAUSA", "120"))       # ogni quanto riprovare (s)
 ATTESA_SOTTOTITOLI = int(os.getenv("YOUTUBE_ATTESA_SOTTOTITOLI", "1800"))   # attesa massima dei sottotitoli (s)
@@ -94,6 +94,13 @@ FACCE = {                                      # tesserati Juve: la loro emoji v
     "thuram": ("🇫🇷", "5789690608784253534"),
     "douglas luiz": ("🇧🇷", "5789538682906091775"),
 }
+# Grafia giusta dei tesserati, per Gemini (con il riconoscimento vocale sbaglia i nomi: "Pisilli").
+TESSERATI = ("Luciano Spalletti (allenatore), Andrea Cambiaso, Arkadiusz Milik, Carlo Pinsoglio, Daniele Rugani, "
+             "Douglas Luiz, Edon Zhegrova, Federico Gatti, Francisco Conceição, Gleison Bremer, "
+             "Guglielmo Vicario, Jeff Ekhator, Jérémie Boga, Jhon Lucumí, Juan David Cabal, Kamil Grabara, "
+             "Kenan Yildiz, Kerim Alajbegović, Khéphren Thuram, Lloyd Kelly, Manuel Locatelli, Neto Murara, "
+             "Nick Woltemade, Nicolás González, Pape Matar Sarr, Pierre Kalulu, Randal Kolo Muani, "
+             "Teun Koopmeiners, Weston McKennie, Zeki Çelik")
 BANDIERE = {                                   # giocatori non della Juve: bandiera dopo il tono
     "IT": "5449723275628259037", "AR": "5262873863036872166", "BR": "5202074005346983800",
     "FR": "5202132623060640759", "PT": "5382075788369605892", "NL": "5411124743841524806",
@@ -121,7 +128,7 @@ SCHEMA = {
                     "persona": {"type": "string", "description": "Nome e cognome di chi dice questa notizia nel video."},
                     "testo": {
                         "type": "string",
-                        "description": ("La notizia, nomi tra **. Di norma al massimo 240 caratteri; più lunga "
+                        "description": ("La notizia, nomi tra **. Di norma al massimo 320 caratteri; più lunga "
                                         "solo se ci sono molti fatti diversi da dire. Mai la stessa cosa due volte."),
                     },
                     "tono": {"type": "string", "enum": list(TONI), "description": "Che tipo di notizia è."},
@@ -134,8 +141,15 @@ SCHEMA = {
                                         "parola (nella lingua del video): devono bastare a controllare ogni "
                                         "dettaglio della notizia."),
                     },
+                    "tipo": {
+                        "type": "string", "enum": ["notizia", "opinione"],
+                        "description": ("notizia: un fatto o un'indiscrezione che chi parla riporta (cosa fa o "
+                                        "pensa il club, una trattativa, un infortunio). opinione: il suo giudizio, "
+                                        "consiglio o previsione personale (\"secondo me\", \"io lo venderei\", "
+                                        "\"dovrebbe\", \"mi stupirebbe\")."),
+                    },
                 },
-                "required": ["argomento", "minuto", "persona", "testo", "tono", "protagonista",
+                "required": ["argomento", "minuto", "persona", "tipo", "testo", "tono", "protagonista",
                              "protagonista_juve", "nazione", "riscontro"],
             },
         },
@@ -218,6 +232,17 @@ Regole:
 - Non rafforzare e non attenuare: mantieni esattamente il grado di certezza ("potrebbe", "valuta",
   "c'è un contatto", "è vicino" non sono fatti certi) e le attribuzioni ("secondo il club…").
 - Condensare vuol dire togliere, non riformulare cambiando il senso.
+- NOTIZIA o OPINIONE ("tipo"): è notizia solo ciò che chi parla riporta come informazione (cosa fa,
+  vuole o valuta il club, una trattativa, un contatto, un infortunio, una scelta dell'allenatore).
+  Sono opinione i suoi commenti, giudizi, consigli e previsioni ("secondo me", "io farei", "la Juve
+  dovrebbe", "mi stupirebbe", critiche al mercato, analisi tattiche). Le opinioni verranno scartate:
+  non mescolarle dentro una notizia.
+- DIREZIONE: non confondere mai acquisto e cessione, arrivo e partenza, chi compra e chi vende.
+  "La Juve dovrebbe venderlo" non è "la Juve potrebbe prenderlo". Un giocatore della Juve non viene
+  "preso" dalla Juve.
+- Nomi dei tesserati della Juventus, scritti così: {TESSERATI}. Se nel video senti un nome simile,
+  usa questa grafia; non inventare nomi che non senti.
+- Ogni frase deve avere senso letta da sola da un tifoso: niente frasi confuse o tronche.
 - "riscontro": trascrivi parola per parola le frasi del video su quell'argomento. Ogni dettaglio
   della notizia deve trovarsi nel riscontro; se non c'è, toglilo dalla notizia.
 - UNA NOTIZIA PER ARGOMENTO. Un argomento è un giocatore, una trattativa, un tema (es. tutto quello
@@ -247,12 +272,22 @@ def estrai(url, info):
     from google.genai import types
     possibili = persone_note(info)
     video = types.Part(file_data=types.FileData(file_uri=url))
-    risposta = bg._genera_json(video, prompt(info, possibili), schema=SCHEMA, intero=True,
-                               config_extra={"media_resolution": "MEDIA_RESOLUTION_LOW"})
-    notizie = risposta.get("notizie") or []
+    risposta = bg._genera_json(video, prompt(info, possibili), schema=SCHEMA, intero=True, prima_flash=True,
+                               config_extra={"media_resolution": "MEDIA_RESOLUTION_LOW",
+                                             "thinking_config": {"thinking_budget": 8192}})
+    return solo_notizie(risposta.get("notizie") or [], possibili, info)
+
+
+def solo_notizie(notizie, possibili, info):
+    """Toglie le opinioni di chi parla (commenti, consigli, previsioni): sul canale vanno le notizie."""
+    tenute = []
     for notizia in notizie:
         notizia["persona"] = nome_persona(notizia.get("persona"), possibili, info)
-    return notizie
+        if str(notizia.get("tipo") or "notizia").lower() == "opinione":
+            print(f"  [scartata, opinione] {notizia.get('argomento', '')}: {notizia.get('testo', '')[:160]}")
+            continue
+        tenute.append(notizia)
+    return tenute
 
 
 def _chiave(argomento):

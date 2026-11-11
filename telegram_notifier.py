@@ -244,17 +244,16 @@ def format_article_rich_html(
         )
 
     # La fonte usa la stessa gerarchia visiva dei titoli LeakKit.
+    # Post tradotto: 🌐 accanto al nome della fonte, nessuna riga in più.
+    globo = " 🌐" if is_x and getattr(article, "translated_from", "") else ""
     parts = [
-        f"<h2>{source_emoji(article.source)} {source}</h2>",
+        f"<h2>{source_emoji(article.source)} {source}{globo}</h2>",
     ]
 
     if is_x:
         # Su X il testo originale è il contenuto principale, non un titolo.
         if title:
             parts.append(f"<p>{title}</p>")
-        translated_from = str(getattr(article, "translated_from", "") or "")
-        if translated_from:
-            parts.append(f"<p><i>🌐 Tradotto · originale in {escape(translated_from)}</i></p>")
         if media_block:
             parts.append(media_block)
     else:
