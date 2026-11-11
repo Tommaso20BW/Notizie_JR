@@ -244,6 +244,10 @@ Regole:
   "preso" dalla Juve.
 - Nomi dei tesserati della Juventus, scritti così: {TESSERATI}. Se nel video senti un nome simile,
   usa questa grafia; non inventare nomi che non senti.
+- TEMA: capisci di cosa si sta parlando dalle frasi intorno, prima di scrivere. Non dare un tema
+  che non è detto (futuro, mercato, rinnovo, infortunio). Se si dice che un giocatore ci sarà o non
+  ci sarà in certe partite ("con il Venezia no, con il Como difficile"), si parla della sua
+  disponibilità (infortunio, rientro, squalifica, scelta tecnica), non del suo futuro né del mercato.
 - Ogni frase deve avere senso letta da sola da un tifoso: niente frasi confuse o tronche.
 - "riscontro": trascrivi parola per parola le frasi del video su quell'argomento. Ogni dettaglio
   della notizia deve trovarsi nel riscontro; se non c'è, toglilo dalla notizia.
@@ -301,7 +305,8 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 GROQ_MODELLI = [m.strip() for m in os.getenv(
     "GROQ_MODELLI", "openai/gpt-oss-120b,llama-3.3-70b-versatile,qwen/qwen3.8-27b,openai/gpt-oss-20b").split(",") if m.strip()]
-GROQ_CARATTERI = int(os.getenv("GROQ_CARATTERI", "5000"))     # trascrizione per richiesta
+GROQ_CARATTERI = int(os.getenv("GROQ_CARATTERI", "4500"))     # trascrizione per richiesta
+GROQ_CONTESTO = int(os.getenv("GROQ_CONTESTO", "800"))       # fine della parte prima, per il contesto
 GROQ_MAX_TOKEN = int(os.getenv("GROQ_MAX_TOKEN", "3500"))      # risposta (ragionamento compreso)
 
 SCHEMA_TRASCRIZIONE = {
@@ -456,9 +461,13 @@ def estrai_da_trascrizione(url, info, trascrizione=None, dormi=time.sleep, post=
     notizie = []
     for i, parte in enumerate(parti, 1):
         print(f"Groq, parte {i}/{len(parti)}...")
+        prima = ""
+        if i > 1:                                   # contesto: la fine della parte precedente
+            prima = ("Fine della parte precedente, solo per capire il contesto (le sue notizie sono già "
+                     f"state scritte):\n...{parti[i - 2][-GROQ_CONTESTO:]}\n\n")
         notizie += groq_notizie([
             {"role": "system", "content": istruzioni},
-            {"role": "user", "content": f"Trascrizione (parte {i} di {len(parti)}):\n{parte}"},
+            {"role": "user", "content": f"{prima}Trascrizione (parte {i} di {len(parti)}):\n{parte}"},
         ], dormi=dormi, post=post)
     notizie = solo_notizie(notizie, possibili, info)
     if len(parti) > 1:

@@ -290,3 +290,17 @@ class TrascrizioneTests(unittest.TestCase):
             out = yj.trascrivi("https://youtu.be/abcdefghijk", {})
         self.assertEqual(provati, ["g-3.5-flash-lite"])
         self.assertEqual(out, "[00:01] A: ciao")
+
+
+class ContestoTests(unittest.TestCase):
+    def test_parte_dopo_con_contesto(self):
+        inviati = []
+        def post(url, json=None, **k):
+            inviati.append(json["messages"][-1]["content"])
+            return _Risposta(200, {"notizie": []})
+        testo = "\n".join(f"[0{i}:00] A: " + "parola " * 30 for i in range(10))
+        with patch.object(yj, "GROQ_API_KEY", "k"), patch.object(yj, "GROQ_CARATTERI", 1200):
+            yj.estrai_da_trascrizione("u", {}, trascrizione=testo, post=post)
+        self.assertTrue(inviati[0].startswith("Trascrizione (parte 1"))
+        self.assertIn("Fine della parte precedente", inviati[1])
+        self.assertIn("disponibilità", yj.prompt({}, [], trascrizione=True))
