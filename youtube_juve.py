@@ -53,8 +53,14 @@ SCHEMA = {
                                         "importanti non stanno in 240 caratteri nemmeno condensando."),
                         "items": {"type": "string", "description": "Testo semplice, al massimo 240 caratteri."},
                     },
+                    "riscontro": {
+                        "type": "string",
+                        "description": ("Le frasi dette nel video su questo argomento, trascritte parola per "
+                                        "parola (nella lingua del video): devono bastare a controllare ogni "
+                                        "dettaglio della notizia."),
+                    },
                 },
-                "required": ["argomento", "minuto", "parti"],
+                "required": ["argomento", "minuto", "parti", "riscontro"],
             },
         },
     },
@@ -100,8 +106,14 @@ Regole:
 - Scrivi in italiano, anche se il video è in un'altra lingua.
 - Stile notizia: frasi brevi e chiare, in terza persona, come un post di un canale di notizie.
   Non iniziare con il nome di chi parla: è già nell'intestazione del messaggio.
-- Riporta solo quello che viene detto nel video, senza aggiungere conoscenze esterne.
-- Mantieni il grado di certezza: "potrebbe", "valuta", "c'è un contatto" non sono fatti certi.
+- FEDELTÀ ASSOLUTA: scrivi solo quello che chi parla dice nel video, con le sue parole quando
+  possibile. Niente deduzioni, commenti, conclusioni o contesto aggiunto: nessun nome, data, periodo
+  ("in estate"), cifra, club o ruolo che non sia detto esplicitamente. Nel dubbio, lascia fuori.
+- Non rafforzare e non attenuare: mantieni esattamente il grado di certezza ("potrebbe", "valuta",
+  "c'è un contatto", "è vicino" non sono fatti certi) e le attribuzioni ("secondo il club…").
+- Condensare vuol dire togliere, non riformulare cambiando il senso.
+- "riscontro": trascrivi parola per parola le frasi del video su quell'argomento. Ogni dettaglio
+  della notizia deve trovarsi nel riscontro; se non c'è, toglilo dalla notizia.
 - UNA NOTIZIA PER ARGOMENTO. Un argomento è un giocatore, una trattativa, un tema (es. tutto quello
   che si dice su Sorloth e la Juve è UN argomento, anche se se ne parla in momenti diversi del video).
   Raccogli tutto quello che riguarda lo stesso argomento in una sola voce.
@@ -139,13 +151,17 @@ def prepara(notizie):
         parti = notizia.get("parti") or [notizia.get("testo", "")]
         chiave = _chiave(notizia.get("argomento")) or f"#{len(argomenti)}"
         voce = argomenti.setdefault(chiave, {"argomento": notizia.get("argomento", ""),
-                                            "minuto": notizia.get("minuto", "?"), "parti": []})
+                                            "minuto": notizia.get("minuto", "?"), "parti": [], "riscontro": []})
         voce["parti"] += [t for t in (bg._sanitizza_markup(p) for p in parti) if t]
+        if notizia.get("riscontro"):
+            voce["riscontro"].append(" ".join(str(notizia["riscontro"]).split()))
     pronte = []
     for voce in argomenti.values():
         if not voce["parti"]:
             continue
         print(f"  [{voce['minuto']}] {voce['argomento']}: {len(voce['parti'])} parte/i")
+        for frase in voce["riscontro"]:
+            print(f"      riscontro: «{frase[:600]}»")
         for parte in voce["parti"]:
             print(f"      {html.unescape(parte)}")
             pronte += bg._dividi_testo(parte, MAX_CARATTERI)
