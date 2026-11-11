@@ -314,7 +314,7 @@ def solo_notizie(notizie, possibili, info):
 
 
 # --- Trascrizione da Supadata + notizie scritte da Gemini Flash leggendo il testo --------------
-# SOSPESA: si attiva con YOUTUBE_SUPADATA=1 nel workflow. Spenta, Gemini Flash guarda il video.
+# Attiva con YOUTUBE_SUPADATA=1 nel workflow; se non va, o è spenta, Gemini Flash guarda il video.
 
 SUPADATA_ATTIVO = os.getenv("YOUTUBE_SUPADATA", "0").strip() == "1"
 SUPADATA_API_KEY = os.getenv("SUPADATA_API_KEY", "").strip()
