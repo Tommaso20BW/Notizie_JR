@@ -10,7 +10,7 @@ import youtube_juve as yj
 
 def testo_visibile(post):
     """Solo il corpo della notizia, senza tag."""
-    corpo = re.search(r"<p>(.*?)</p>", post).group(1)
+    corpo = re.search(r"<p>(.*?)<br>", post).group(1)
     corpo = re.sub(r"<tg-emoji[^>]*>.*?</tg-emoji>", "", corpo)
     return yj.html.unescape(re.sub(r"<[^>]+>", "", corpo)).strip()
 
@@ -57,7 +57,7 @@ class FormatoTests(unittest.TestCase):
         self.assertTrue(p.startswith('<p><tg-emoji emoji-id="5370724846936267183">🤔</tg-emoji>'
                                      '<tg-emoji emoji-id="5382300771641470186">🇳🇴</tg-emoji> La <b>Juventus</b>'))
         self.assertIn("<b>Atletico Madrid</b>", p)
-        self.assertIn('<i><tg-emoji emoji-id="5785259727248170398">📲</tg-emoji></i><i> Matteo Moretto - YouTube</i>', p)
+        self.assertIn('<tg-emoji emoji-id="5785259727248170398">📲</tg-emoji><i> Matteo Moretto - YouTube</i>', p)
         self.assertIn("@Juventus_Reborn</a>", p)
         self.assertNotIn("**", p)
 

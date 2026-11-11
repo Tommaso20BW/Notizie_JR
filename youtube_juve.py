@@ -304,9 +304,11 @@ def emoji_iniziali(notizia):
 def post(testo, persona, iniziali):
     foto = emoji(FOTO.get(_semplice(persona), FOTO_GENERICA), "📲")
     nome = html.escape(persona, quote=False)
-    return (f"<p>{iniziali} {grassetto(testo)}</p>"
-            f"<p><i>{foto}</i><i> {nome} - YouTube</i></p>"
-            f"<p>{FIRMA_JR}</p>")
+    # un solo paragrafo con righe vuote come sul canale (tra due <p> Telegram non lascia spazio);
+    # la foto fuori dal corsivo, altrimenti non si vede
+    return (f"<p>{iniziali} {grassetto(testo)}<br><br>"
+            f"{foto}<i> {nome} - YouTube</i><br><br>"
+            f"{FIRMA_JR}</p>")
 
 
 def prepara(notizie):
