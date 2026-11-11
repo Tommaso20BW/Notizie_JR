@@ -24,6 +24,8 @@ ATTESA = int(os.getenv("YOUTUBE_ATTESA", "900"))     # quanto aspettare un video
 PAUSA = int(os.getenv("YOUTUBE_PAUSA", "120"))       # ogni quanto riprovare (s)
 ATTESA_SOTTOTITOLI = int(os.getenv("YOUTUBE_ATTESA_SOTTOTITOLI", "1800"))   # attesa massima dei sottotitoli (s)
 MESSAGGIO = os.getenv("YOUTUBE_MESSAGGIO", "").strip()   # messaggio del video su cui è stato toccato il pulsante
+CANCELLA_DOPO = int(os.getenv("YOUTUBE_CANCELLA_AVVISI", "300"))   # avvisi di servizio cancellati dopo (s)
+_avvisi = []                                             # (message_id, quando) degli avvisi inviati
 YOUTUBE_EMOJI_ID = "5974578526991425004"       # per gli avvisi
 
 # Canali seguiti di più: chi può parlare (sul canale di Romano parla spesso anche Moretto).
@@ -359,10 +361,31 @@ def invia(posts, url, info):
 
 
 def avviso(testo, info=None):
-    """Messaggio di servizio, in risposta al messaggio del video quando si parte dal pulsante."""
+    """Messaggio di servizio, in risposta al messaggio del video quando si parte dal pulsante.
+    Si cancella da solo CANCELLA_DOPO secondi dopo l'invio (a fine lavoro): restano solo le notizie."""
     risposta = int(MESSAGGIO) if MESSAGGIO.isdigit() else None
-    return bg._post_telegram_rich(f"{intestazione((info or {}).get('canale') or 'YouTube')}<p>{testo}</p>",
-                                  reply_to=risposta)
+    message_id = bg._post_telegram_rich(
+        f"{intestazione((info or {}).get('canale') or 'YouTube')}<p>{testo}</p>", reply_to=risposta)
+    if message_id:
+        _avvisi.append((message_id, time.monotonic()))
+    return message_id
+
+
+def cancella_avvisi(dormi=time.sleep, adesso=time.monotonic):
+    """A fine lavoro: aspetta che ogni avviso abbia CANCELLA_DOPO secondi e lo cancella."""
+    for message_id, inviato in sorted(_avvisi, key=lambda a: a[1]):
+        resta = inviato + CANCELLA_DOPO - adesso()
+        if resta > 0:
+            print(f"Avvisi: li cancello tra {resta:.0f}s.")
+            dormi(resta)
+        try:
+            r = requests.post(f"https://api.telegram.org/bot{bg.TELEGRAM_TOKEN}/deleteMessage",
+                              json={"chat_id": bg.CHAT_ID, "message_id": message_id}, timeout=10)
+            if not r.ok:
+                print(f"Avviso {message_id} non cancellato: {r.text[:150]}")
+        except requests.RequestException as e:
+            print(f"Avviso {message_id} non cancellato: {e}")
+    _avvisi.clear()
 
 
 def avvisa_errore(url, errore):
@@ -443,6 +466,13 @@ def estrai_con_attesa(url, info, attesa=None, pausa=None, dormi=time.sleep):
 
 
 def main(link):
+    try:
+        return elabora(link)
+    finally:
+        cancella_avvisi()
+
+
+def elabora(link):
     try:
         url = video_url(link)
     except ValueError as e:
