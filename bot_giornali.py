@@ -293,12 +293,13 @@ def modelli_disponibili():
 
 
 def _genera_json(uploaded, prompt, schema=SCHEMA_NOTIZIE, config_extra=None, intero=False, prima_flash=False,
-                 cicli=None, solo_flash=False, chiave="notizie"):
+                 cicli=None, solo_flash=False, chiave="notizie", prima_lite=False):
     """Prova tutti i modelli e ripete il giro con backoff su 429/503.
     config_extra: opzioni Gemini in più; intero=True restituisce tutta la risposta (non solo le notizie);
     prima_flash=True usa i Flash (più bravi): se sono occupati aspetta e li riprova, e i Flash-Lite
     si provano solo all'ultimo giro; solo_flash=True non usa mai i Flash-Lite (sbagliano coi video);
-    cicli: quanti giri al massimo (predefinito MAX_CICLI_GEMINI); chiave: la lista attesa nella risposta."""
+    cicli: quanti giri al massimo (predefinito MAX_CICLI_GEMINI); chiave: la lista attesa nella risposta;
+    prima_lite=True prova prima i Flash-Lite (veloci, vanno bene per trascrivere), poi i Flash."""
     max_cicli = cicli or MAX_CICLI_GEMINI
     ultimo_errore = None
     modelli_con_quota_giornaliera_esaurita = set()
@@ -308,7 +309,9 @@ def _genera_json(uploaded, prompt, schema=SCHEMA_NOTIZIE, config_extra=None, int
         modelli_tentati = 0
 
         modelli = modelli_disponibili()
-        if prima_flash:
+        if prima_lite:
+            modelli = sorted(modelli, key=lambda m: "lite" not in m)
+        elif prima_flash:
             modelli = sorted(modelli, key=lambda m: "lite" in m)
             if (solo_flash or ciclo < max_cicli) and any("lite" not in m for m in modelli):
                 modelli = [m for m in modelli if "lite" not in m]

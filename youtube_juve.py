@@ -345,7 +345,7 @@ def trascrivi(url, info):
                  f'("{info.get("titolo", "")}", canale {info.get("canale", "")}). Non riassumere, non saltare '
                  f'niente, non aggiungere niente. Indica il minuto e chi parla. Nomi dei giocatori della '
                  f'Juventus, scritti così: {TESSERATI}.')
-    risposta = bg._genera_json(video, richiesta, schema=SCHEMA_TRASCRIZIONE, intero=True, prima_flash=True,
+    risposta = bg._genera_json(video, richiesta, schema=SCHEMA_TRASCRIZIONE, intero=True, prima_lite=True,
                                cicli=2, chiave="parti",
                                config_extra={"media_resolution": "MEDIA_RESOLUTION_LOW",
                                              "thinking_config": {"thinking_budget": 1024}})

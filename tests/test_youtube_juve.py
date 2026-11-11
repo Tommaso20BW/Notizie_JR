@@ -273,3 +273,20 @@ class GroqTests(unittest.TestCase):
         self.assertEqual(len(chiamate), 3)
         self.assertIn("Queste notizie", chiamate[-1])
         self.assertEqual(len(out), 1)
+
+
+class TrascrizioneTests(unittest.TestCase):
+    def test_trascrizione_prima_lite(self):
+        provati = []
+
+        class Modelli:
+            def generate_content(self, model, **k):
+                provati.append(model)
+                class R:
+                    candidates, parsed = [], {"parti": [{"minuto": "00:01", "persona": "A", "testo": "ciao"}]}
+                return R()
+        with patch.object(yj.bg, "modelli_disponibili", return_value=["g-3.8-flash", "g-3.5-flash-lite"]), \
+             patch.object(yj.bg, "client", type("C", (), {"models": Modelli()})()):
+            out = yj.trascrivi("https://youtu.be/abcdefghijk", {})
+        self.assertEqual(provati, ["g-3.5-flash-lite"])
+        self.assertEqual(out, "[00:01] A: ciao")
