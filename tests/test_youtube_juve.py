@@ -38,6 +38,15 @@ class TestiTests(unittest.TestCase):
         self.assertTrue(all(len(html.unescape(t)) <= yj.MAX_CARATTERI for t in testi))
         self.assertIn("30M€", "".join(testi))
 
+    def test_stesso_argomento_unito(self):
+        testi = yj.prepara([
+            {"argomento": "Sorloth", "minuto": "08:45", "parti": ["Accordo verbale con il giocatore."]},
+            {"argomento": "Vlahovic", "minuto": "05:00", "parti": ["Rinnovo fermo."]},
+            {"argomento": "sorloth", "minuto": "09:35", "parti": ["Manca l'accordo con l'Atletico."]},
+        ])
+        self.assertEqual([html.unescape(t) for t in testi],
+                         ["Accordo verbale con il giocatore.", "Manca l'accordo con l'Atletico.", "Rinnovo fermo."])
+
     def test_invio(self):
         inviati = []
         with patch.object(yj.bg, "_post_telegram_rich", side_effect=lambda h: inviati.append(h) or 1), \

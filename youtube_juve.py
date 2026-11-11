@@ -40,14 +40,21 @@ SCHEMA = {
         },
         "notizie": {
             "type": "array",
-            "description": "Notizie sulla Juventus, nell'ordine in cui escono nel video. Vuota se non se ne parla.",
+            "description": ("Una voce per ARGOMENTO (es. un giocatore o una trattativa), nell'ordine del "
+                            "video. Vuota se non si parla della Juventus."),
             "items": {
                 "type": "object",
                 "properties": {
-                    "testo": {"type": "string", "description": "Notizia pronta, testo semplice, al massimo 240 caratteri."},
-                    "minuto": {"type": "string", "description": "Minuto del video in cui se ne parla (mm:ss)."},
+                    "argomento": {"type": "string", "description": "Di cosa parla, in poche parole (es. 'Sorloth')."},
+                    "minuto": {"type": "string", "description": "Minuto del video in cui inizia (mm:ss)."},
+                    "parti": {
+                        "type": "array",
+                        "description": ("La notizia: di norma UNA sola parte. Più parti solo se le informazioni "
+                                        "importanti non stanno in 240 caratteri nemmeno condensando."),
+                        "items": {"type": "string", "description": "Testo semplice, al massimo 240 caratteri."},
+                    },
                 },
-                "required": ["testo", "minuto"],
+                "required": ["argomento", "minuto", "parti"],
             },
         },
     },
@@ -95,12 +102,14 @@ Regole:
   Non iniziare con il nome di chi parla: è già nell'intestazione del messaggio.
 - Riporta solo quello che viene detto nel video, senza aggiungere conoscenze esterne.
 - Mantieni il grado di certezza: "potrebbe", "valuta", "c'è un contatto" non sono fatti certi.
-- Ogni notizia al massimo {MAX_CARATTERI} caratteri (spazi compresi).
-- Una notizia per argomento. Se un argomento non sta in {MAX_CARATTERI} caratteri, dividilo in più
-  notizie consecutive, ognuna comprensibile da sola. Non dividere se ci sta in una sola, e non unire
-  argomenti diversi nella stessa notizia.
-- Non ripetere la stessa informazione in più notizie: se nel video un concetto torna più volte,
-  mettilo una volta sola, nella notizia a cui appartiene.
+- UNA NOTIZIA PER ARGOMENTO. Un argomento è un giocatore, una trattativa, un tema (es. tutto quello
+  che si dice su Sorloth e la Juve è UN argomento, anche se se ne parla in momenti diversi del video).
+  Raccogli tutto quello che riguarda lo stesso argomento in una sola voce.
+- Ogni parte al massimo {MAX_CARATTERI} caratteri (spazi compresi). Prima condensa: togli ripetizioni,
+  giri di parole e dettagli secondari, e fai stare l'argomento in UNA parte. Usa una seconda parte
+  solo se restano informazioni importanti che non ci stanno; ogni parte deve reggersi da sola.
+- Argomenti diversi vanno in voci diverse: non unirli. Non spezzare un argomento in più voci.
+- Non ripetere la stessa informazione: un concetto detto più volte nel video va scritto una volta.
 - Importi in milioni di euro in forma compatta: "30 milioni di euro" -> "30M€", "tra 40 e 50" -> "40-50M€".
 - Niente emoji, hashtag, titoli, Markdown o HTML.
 - Se nel video non si parla della Juventus, restituisci una lista vuota.
@@ -118,15 +127,28 @@ def estrai(url, info):
     return persona, risposta.get("notizie") or []
 
 
+def _chiave(argomento):
+    return " ".join(re.sub(r"[^\w ]", " ", str(argomento or "").lower()).split())
+
+
 def prepara(notizie):
-    """Testi puliti per Telegram; quelli oltre il limite si dividono tra una frase e l'altra."""
-    pronte = []
+    """Testi puliti per Telegram, un argomento dopo l'altro. Voci con lo stesso argomento si uniscono
+    (Gemini a volte lo divide lo stesso); una parte oltre il limite si divide tra una frase e l'altra."""
+    argomenti = {}
     for notizia in notizie:
-        testo = bg._sanitizza_markup(notizia.get("testo", ""))
-        if not testo:
+        parti = notizia.get("parti") or [notizia.get("testo", "")]
+        chiave = _chiave(notizia.get("argomento")) or f"#{len(argomenti)}"
+        voce = argomenti.setdefault(chiave, {"argomento": notizia.get("argomento", ""),
+                                            "minuto": notizia.get("minuto", "?"), "parti": []})
+        voce["parti"] += [t for t in (bg._sanitizza_markup(p) for p in parti) if t]
+    pronte = []
+    for voce in argomenti.values():
+        if not voce["parti"]:
             continue
-        print(f"  [{notizia.get('minuto', '?')}] {html.unescape(testo)}")
-        pronte += bg._dividi_testo(testo, MAX_CARATTERI)
+        print(f"  [{voce['minuto']}] {voce['argomento']}: {len(voce['parti'])} parte/i")
+        for parte in voce["parti"]:
+            print(f"      {html.unescape(parte)}")
+            pronte += bg._dividi_testo(parte, MAX_CARATTERI)
     return pronte
 
 
