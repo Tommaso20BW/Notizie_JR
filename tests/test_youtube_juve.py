@@ -8,6 +8,17 @@ os.environ.setdefault("GEMINI_API_KEY", "test-key")
 import youtube_juve as yj
 
 
+def setUpModule():
+    # Nei test Gemini Flash sulla trascrizione è "occupato": si prova Groq (salvo test che dicono altro).
+    global _gemini_testo
+    _gemini_testo = patch.object(yj, "notizie_gemini_testo", side_effect=RuntimeError("503 UNAVAILABLE"))
+    _gemini_testo.start()
+
+
+def tearDownModule():
+    _gemini_testo.stop()
+
+
 def testo_visibile(post):
     """Solo il corpo della notizia, senza tag."""
     corpo = re.search(r"<p>(.*?)<br>", post).group(1)
@@ -349,3 +360,11 @@ class ImportanzaTests(unittest.TestCase):
         out = yj.solo_notizie([_voce("Kalulu"), inutile, _voce("Mercato", "opinione")], [], {})
         self.assertEqual([n["argomento"] for n in out], ["Kalulu"])
         self.assertIn("importanza", yj.SCHEMA["properties"]["notizie"]["items"]["required"])
+
+
+class GeminiTestoTests(unittest.TestCase):
+    def test_prima_gemini_flash_sul_testo(self):
+        with patch.object(yj, "notizie_gemini_testo", return_value=[_voce("Kalulu"), _voce("X", "opinione")]):
+            out = yj.estrai_da_trascrizione("u", {}, trascrizione="[00:10] " + "ciao " * 40,
+                                            post=lambda *a, **k: self.fail("Groq non serve"))
+        self.assertEqual([n["argomento"] for n in out], ["Kalulu"])

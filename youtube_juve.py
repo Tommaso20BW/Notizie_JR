@@ -530,16 +530,38 @@ def unisci_argomenti(notizie, info, dormi=time.sleep, post=None):
     return unite
 
 
+def notizie_gemini_testo(testo, info, possibili):
+    """Gemini Flash legge la trascrizione (testo, non il video) e scrive le notizie."""
+    richiesta = prompt(info, possibili, trascrizione=True) + "\n" + AVVISO_SOTTOTITOLI
+    risposta = bg._genera_json(f"Trascrizione del video:\n{testo}", richiesta, schema=SCHEMA, intero=True,
+                               prima_flash=True, solo_flash=True, cicli=3,
+                               config_extra={"thinking_config": {"thinking_budget": 8192}})
+    return risposta.get("notizie") or []
+
+
 def estrai_da_trascrizione(url, info, trascrizione=None, dormi=time.sleep, post=None):
-    """Notizie scritte da Groq sulla trascrizione. Errore se manca qualcosa: si passa a Gemini Flash."""
-    if not GROQ_API_KEY:
-        raise GroqErrore("GROQ_API_KEY mancante")
+    """Trascrizione (Supadata) -> notizie scritte da Gemini Flash; se Flash è occupato, da Groq.
+    Errore se non si riesce: si passa a Gemini Flash sul video."""
     possibili = persone_note(info)
     testo = trascrizione if trascrizione is not None else trascrizione_completa(url, info)
     if len(testo.strip()) < 50:
         raise GroqErrore("trascrizione vuota")
+    print(f"Trascrizione: {len(testo)} caratteri.")
+    try:
+        notizie = notizie_gemini_testo(testo, info, possibili)
+        print("Notizie scritte da Gemini Flash dalla trascrizione.")
+        return solo_notizie(notizie, possibili, info)
+    except Exception as e:
+        print(f"Gemini Flash non va sulla trascrizione ({str(e)[:200]}): provo Groq.")
+    return notizie_groq(testo, info, possibili, dormi=dormi, post=post)
+
+
+def notizie_groq(testo, info, possibili, dormi=time.sleep, post=None):
+    """Notizie scritte da Groq sulla trascrizione, divisa in parti per il limite al minuto."""
+    if not GROQ_API_KEY:
+        raise GroqErrore("GROQ_API_KEY mancante")
     parti = dividi_trascrizione(testo)
-    print(f"Trascrizione: {len(testo)} caratteri, {len(parti)} parti per Groq.")
+    print(f"Groq: {len(parti)} parti.")
     istruzioni = prompt(info, possibili, trascrizione=True) + "\n" + AVVISO_SOTTOTITOLI + "\n" + FORMATO_GROQ
     notizie = []
     for i, parte in enumerate(parti, 1):
