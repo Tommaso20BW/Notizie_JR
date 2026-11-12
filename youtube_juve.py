@@ -41,7 +41,7 @@ CANALI = {
 
 # --- Formato dei post di @Juventus_Reborn (emoji personalizzate prese dai post del canale) ---
 FIRMA_JR = ('<tg-emoji emoji-id="5985659276327132147">👉</tg-emoji> '
-            '<a href="https://t.me/Juventus_Reborn">@Juventus_Reborn</a>')
+            '@Juventus_Reborn')                    # testo semplice, come negli altri post
 FOTO = {                                       # foto di chi parla, prima di "Nome - YouTube"
     "fabrizio romano": "5785366354106261925",
     "matteo moretto": "5785259727248170398",

@@ -99,7 +99,8 @@ class FormatoTests(unittest.TestCase):
                                      '<tg-emoji emoji-id="5382300771641470186">🇳🇴</tg-emoji> La <b>Juventus</b>'))
         self.assertIn("<b>Atletico Madrid</b>", p)
         self.assertIn('<tg-emoji emoji-id="5785259727248170398">📲</tg-emoji><i> Matteo Moretto - YouTube</i>', p)
-        self.assertIn("@Juventus_Reborn</a>", p)
+        self.assertIn("</tg-emoji> @Juventus_Reborn", p)
+        self.assertNotIn("t.me/Juventus_Reborn", p)          # testo semplice, non link
         self.assertNotIn("**", p)
 
     def test_giocatore_juve_faccia_prima(self):
