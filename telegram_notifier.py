@@ -42,6 +42,7 @@ SOURCE_EMOJIS = (
     ("YouTube - ", "5974578526991425004", "🖥"),
     ("Gianluca Di Marzio", "5785253271912324677", "📲"),
     ("Alfredo Pedullà", "5785322627044220734", "📲"),
+    ("Mirko Di Natale", "5810081494302992771", "📲"),
     ("Borsa Italiana", "5244837092042750681", "📈"),
     ("Juventus.com", "6028591382870888482", "⚪️"),
 )
@@ -166,6 +167,7 @@ def source_link_label(source: str) -> str:
             "Tuttosport",
             "Gianluca Di Marzio",
             "Alfredo Pedullà",
+            "Mirko Di Natale",
         )
     ):
         return "Apri notizia"

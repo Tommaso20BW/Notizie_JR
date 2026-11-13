@@ -10,6 +10,7 @@ Controlla le notizie Juventus pubblicate OGGI su:
 - Juventus.com
 - Comunicati stampa PDF Juventus.com
 - Gianluca Di Marzio (filtro di rilevanza Juventus) e Alfredo Pedullà
+- TuttoJuve: articoli di Mirko Di Natale (solo di oggi)
 - Borsa Italiana (notizie sull'azione Juventus)
 - YouTube: Juventus, Fabrizio Romano e Romeo Agresti
 - X: profili configurati (filtro Juventus per account; i repost non vengono mai inviati)
@@ -20,6 +21,7 @@ Ogni notizia viene inviata su Telegram una sola volta. Lo stato è salvato nel f
 
 import re
 import argparse
+import html
 import io
 import json
 import os
@@ -166,6 +168,25 @@ GIANLUCA_DI_MARZIO_CHECKED_URLS: set[str] = set()
 ALFREDO_PEDULLA_JUVENTUS_URLS = (
     "https://www.alfredopedulla.com/search/juve/",
 )
+TUTTOJUVE_DI_NATALE_URL = "https://www.tuttojuve.com/redazione/mirko-di-natale-410"
+TUTTOJUVE_DI_NATALE_SOURCE = "Mirko Di Natale - TuttoJuve"
+TUTTOJUVE_ARTICLE_PATH_RE = re.compile(r"-\d{5,}$")
+TUTTOJUVE_DAY_HEADING_RE = re.compile(
+    r"^(?:luned[iì]|marted[iì]|mercoled[iì]|gioved[iì]|venerd[iì]|sabato|domenica)"
+    r"\s+(\d{1,2})\s+"
+    r"(gennaio|febbraio|marzo|aprile|maggio|giugno|luglio|agosto|"
+    r"settembre|ottobre|novembre|dicembre)$",
+    re.IGNORECASE,
+)
+TUTTOJUVE_TIME_RE = re.compile(r"^(\d{1,2}):(\d{2})$")
+TUTTOJUVE_LEADING_TIME_RE = re.compile(r"^\s*(\d{1,2}):(\d{2})\s*")
+# Etichette di rubrica attaccate al titolo nell'elenco ("Esclusiva TJ", "Live").
+TUTTOJUVE_LABEL_PREFIX_RE = re.compile(
+    r"^(?:Esclusiva\s*TJ|Live(?=[A-ZÀ-Ý0-9]))\s*"
+)
+# Dettagli articolo già letti (titolo completo, sommario, immagine): l'elenco
+# tronca i titoli lunghi con "...", quindi si apre l'articolo una sola volta.
+TUTTOJUVE_DETAIL_CACHE: dict[str, tuple[str, str, str]] = {}
 BORSA_ITALIANA_JUVENTUS_URL = (
     "https://www.borsaitaliana.it/borsa/azioni/"
     "elenco-completo-notizie.html?isin=IT0005572778&lang=it"
@@ -2459,6 +2480,151 @@ def scrape_alfredo_pedulla(
     return articles
 
 
+def _tuttojuve_listing_title(raw_text: str) -> str:
+    """Titolo dell'elenco senza etichetta di rubrica né orario iniziale."""
+    text = " ".join(raw_text.split())
+    text = TUTTOJUVE_LEADING_TIME_RE.sub("", text)
+    return TUTTOJUVE_LABEL_PREFIX_RE.sub("", text).strip()
+
+
+def scrape_tuttojuve_di_natale(
+    session: requests.Session,
+    requested_dates: set[date],
+) -> list[Article]:
+    """Articoli di Mirko Di Natale su TuttoJuve pubblicati OGGI (Europe/Rome).
+
+    La pagina autore raggruppa gli articoli sotto un'intestazione di giorno
+    ("Giovedì 12 novembre") e li elenca con l'orario ("19:00") e il link.
+    Il percorso nel documento è in ordine: ricordo l'ultimo giorno e l'ultimo
+    orario visti e li assegno al primo link che segue. L'orario viene
+    consumato dal link, così i link del riquadro laterale e delle "più lette"
+    (che non hanno un orario davanti) non vengono mai scambiati per articoli.
+    """
+    today = datetime.now(ROME).date()
+    if today not in requested_dates:
+        return []
+
+    response = session.get(TUTTOJUVE_DI_NATALE_URL, timeout=30)
+    response.raise_for_status()
+    soup = BeautifulSoup(response.text, "html.parser")
+
+    current_day: date | None = None
+    pending_time: tuple[int, int] | None = None
+    listing: list[tuple[str, str, datetime]] = []
+    urls_done: set[str] = set()
+
+    for node in soup.descendants:
+        if isinstance(node, str):
+            if node.find_parent("a") is not None:
+                continue
+            text = " ".join(node.split())
+            if not text:
+                continue
+            heading = TUTTOJUVE_DAY_HEADING_RE.match(text)
+            if heading:
+                month = ITALIAN_MONTHS[heading.group(2).casefold()]
+                day = int(heading.group(1))
+                # L'intestazione non riporta l'anno: se la data cadrebbe nel
+                # futuro (cambio d'anno) appartiene all'anno precedente.
+                try:
+                    candidate = date(today.year, month, day)
+                    if candidate > today + timedelta(days=1):
+                        candidate = date(today.year - 1, month, day)
+                except ValueError:
+                    candidate = None
+                current_day = candidate
+                pending_time = None
+                continue
+            time_match = TUTTOJUVE_TIME_RE.match(text)
+            if time_match:
+                pending_time = (int(time_match.group(1)), int(time_match.group(2)))
+            continue
+
+        if getattr(node, "name", None) != "a" or not node.get("href"):
+            continue
+
+        link_text = " ".join(node.get_text(" ", strip=True).split())
+        time_value = pending_time
+        leading_time = TUTTOJUVE_LEADING_TIME_RE.match(link_text)
+        if leading_time:
+            time_value = (int(leading_time.group(1)), int(leading_time.group(2)))
+        pending_time = None
+        if current_day is None or time_value is None:
+            continue
+
+        url = normalize_url(urljoin(TUTTOJUVE_DI_NATALE_URL, str(node["href"])))
+        parts = urlsplit(url)
+        if parts.netloc.lower() not in {"www.tuttojuve.com", "tuttojuve.com"}:
+            continue
+        if not TUTTOJUVE_ARTICLE_PATH_RE.search(parts.path):
+            continue
+        if url in urls_done:
+            continue
+        # Solo oggi: i giorni precedenti si saltano senza aprire gli articoli.
+        if current_day != today:
+            continue
+
+        try:
+            published = datetime(
+                current_day.year,
+                current_day.month,
+                current_day.day,
+                time_value[0],
+                time_value[1],
+                tzinfo=ROME,
+            )
+        except ValueError:
+            continue
+
+        # Il badge di rubrica ("Esclusiva TJ", "Live") è uno span a parte.
+        title_text = " ".join(
+            string
+            for string in node.strings
+            if string.find_parent(class_="tcc-badge") is None
+        )
+        urls_done.add(url)
+        listing.append((url, _tuttojuve_listing_title(title_text), published))
+
+    articles: list[Article] = []
+    for url, listing_title, published in listing:
+        if url not in TUTTOJUVE_DETAIL_CACHE:
+            try:
+                article_response = session.get(url, timeout=30)
+                article_response.raise_for_status()
+            except requests.RequestException:
+                # Errore transitorio: si riprova al ciclo successivo, così non
+                # si invia mai il titolo troncato dell'elenco.
+                continue
+            article_soup = BeautifulSoup(article_response.text, "html.parser")
+            full_title, _, summary, image_url = _generic_article_metadata(
+                article_soup,
+                url,
+            )
+            TUTTOJUVE_DETAIL_CACHE[url] = (
+                full_title or listing_title,
+                summary,
+                image_url,
+            )
+
+        title, summary, image_url = TUTTOJUVE_DETAIL_CACHE[url]
+        title = _tuttojuve_listing_title(html.unescape(title)) or listing_title
+        summary = html.unescape(summary)
+        if not title:
+            continue
+        articles.append(
+            Article(
+                source=TUTTOJUVE_DI_NATALE_SOURCE,
+                title=title,
+                url=url,
+                published=published,
+                summary=summary,
+                image_url=image_url,
+            )
+        )
+
+    return articles
+
+
 def scrape_borsa_italiana(
     session: requests.Session,
     requested_dates: set[date],
@@ -3558,6 +3724,7 @@ def _article_scrapers() -> tuple[tuple[str, Callable], ...]:
         ('Juventus.com - Comunicati PDF', scrape_juventus_press_releases),
         ('Gianluca Di Marzio', scrape_gianluca_di_marzio),
         ('Alfredo Pedullà', scrape_alfredo_pedulla),
+        ('Mirko Di Natale - TuttoJuve', scrape_tuttojuve_di_natale),
         ('Borsa Italiana', scrape_borsa_italiana),
         ('YouTube', scrape_youtube_channels),
         ('X', scrape_x_profiles),
