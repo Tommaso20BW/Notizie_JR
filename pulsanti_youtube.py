@@ -18,7 +18,8 @@ import requests
 PREFISSO = "yt:"
 WORKFLOW = "youtube_juve.yml"
 VECCHIO = 6 * 3600          # tocchi di altri più vecchi di così: abbandonati, si possono segnare letti
-RIPETIZIONE = 3600          # stesso video toccato di nuovo entro un'ora: non si riavvia
+RIPETIZIONE = 60            # stesso video toccato due volte nel giro di un minuto (doppio tocco): una volta sola.
+                            # Dopo si può rifare quando si vuole.
 
 _fatti = {}                 # id del video -> quando è stato avviato (in questo worker)
 
