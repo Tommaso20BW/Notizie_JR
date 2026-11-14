@@ -591,6 +591,8 @@ class GeminiOccupato(RuntimeError):
 def _occupato(errore):
     testo = str(errore)
     return ("503" in testo or "UNAVAILABLE" in testo or "overloaded" in testo.lower()
+            or "DEADLINE_EXCEEDED" in testo or "INTERNAL" in testo
+            or "servererror" in type(errore).__name__.lower()      # qualsiasi errore 5xx di Gemini
             or bg._scaduto(errore))
 
 
@@ -633,7 +635,7 @@ def _estrai_riprovando(url, info, attesa, attesa_gemini, pausa, dormi, inizio, a
                 print(f"Gemini Flash occupato: riprovo tra {pausa}s.")
                 testo = f"⏳ Gemini è occupato: riprovo ogni {minuti} minuti per {limite // 60} minuti."
             else:
-                print(f"Video non ancora leggibile ({type(e).__name__}): riprovo tra {pausa}s.")
+                print(f"{'Gemini' if trascrizione else 'Video'} non ancora leggibile ({type(e).__name__}): riprovo tra {pausa}s.")
                 testo = f"⏳ Il video non è ancora leggibile: riprovo ogni {minuti} minuti per {limite // 60} minuti."
             if occupato not in avvisato:
                 avvisato[occupato] = avviso(testo, info) or -1
