@@ -594,7 +594,8 @@ def _occupato(errore):
             or bg._scaduto(errore))
 
 
-def estrai_con_attesa(url, info, attesa=None, pausa=None, dormi=time.sleep, attesa_gemini=None):
+def estrai_con_attesa(url, info, attesa=None, pausa=None, dormi=time.sleep, attesa_gemini=None,
+                      trascrizione=None):
     """Riprova ogni PAUSA secondi, con un solo avviso, se:
     - Gemini non riesce ancora a leggere il video (appena pubblicato): per ATTESA secondi;
     - Gemini Flash è occupato (503): per ATTESA_GEMINI secondi, poi GeminiOccupato.
@@ -604,15 +605,18 @@ def estrai_con_attesa(url, info, attesa=None, pausa=None, dormi=time.sleep, atte
     pausa = PAUSA if pausa is None else pausa
     inizio, avvisato = time.monotonic(), {}
     try:
-        return _estrai_riprovando(url, info, attesa, attesa_gemini, pausa, dormi, inizio, avvisato)
+        return _estrai_riprovando(url, info, attesa, attesa_gemini, pausa, dormi, inizio, avvisato,
+                                  trascrizione)
     finally:
         for message_id in avvisato.values():
             togli(message_id)
 
 
-def _estrai_riprovando(url, info, attesa, attesa_gemini, pausa, dormi, inizio, avvisato):
+def _estrai_riprovando(url, info, attesa, attesa_gemini, pausa, dormi, inizio, avvisato, trascrizione=None):
     while True:
         try:
+            if trascrizione:                  # testo già scaricato: si riprova con quello, non si butta
+                return estrai_da_trascrizione(url, info, trascrizione=trascrizione)
             return estrai(url, info)
         except Exception as e:
             passati = time.monotonic() - inizio
@@ -653,15 +657,17 @@ def elabora(link):
     info = info_video(url)
     print(f"Video: {info['titolo'] or url} ({info['canale'] or 'canale sconosciuto'})")
     aspetta_sottotitoli(url, info)
-    notizie = None
+    trascrizione = None
     if SUPADATA_ATTIVO:
         try:
-            notizie = estrai_da_trascrizione(url, info)
+            trascrizione = trascrivi_supadata(url)          # scaricata una volta sola
+            if len(trascrizione.strip()) < 50:
+                raise RuntimeError("trascrizione vuota")
         except Exception as e:
+            trascrizione = None
             print(f"Trascrizione Supadata non riuscita ({e}): provo Gemini Flash sul video.")
     try:
-        if notizie is None:
-            notizie = estrai_con_attesa(url, info)
+        notizie = estrai_con_attesa(url, info, trascrizione=trascrizione)
     except GeminiOccupato as e:
         print(f"{e}: nessuna notizia inviata.")
         avviso(f"⚠️ Gemini è occupato da troppo tempo: non ho estratto niente. Riprova più tardi "
