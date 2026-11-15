@@ -52,14 +52,44 @@ class PulsanteNelMessaggio(unittest.TestCase):
         video = SimpleNamespace(source="YouTube - Fabrizio Romano", title="Live", summary="",
                                 url="https://www.youtube.com/watch?v=3vDhGYP_rLs")
         html = tn.format_article_rich_html(video)
-        self.assertIn('<tg-button type="callback_data" style="primary" data="yt:3vDhGYP_rLs">Estrai notizie</tg-button>', html)
+        self.assertIn('<tg-button type="callback_data" style="primary" data="yt:3vDhGYP_rLs">📝 Estrai notizie</tg-button>', html)
         self.assertIn("Apri video", html)
+        self.assertLess(html.index("Estrai notizie"), html.index("Apri video"))     # prima di "Apri video"
         juve = SimpleNamespace(source="YouTube - Juventus", title="Highlights", summary="",
                                url="https://www.youtube.com/watch?v=3vDhGYP_rLs")
         self.assertNotIn("callback_data", tn.format_article_rich_html(juve))
         self.assertIn("Apri video", tn.format_article_rich_html(juve))
         articolo = SimpleNamespace(source="Tuttosport", title="T", summary="", url="https://www.tuttosport.com/x")
         self.assertNotIn("callback_data", tn.format_article_rich_html(articolo))
+
+
+class EstrazioneAutomaticaTests(unittest.TestCase):
+    def setUp(self):
+        pu._fatti.clear()
+
+    def video(self, canale="Fabrizio Romano"):
+        return SimpleNamespace(source=f"YouTube - {canale}", title="Live", summary="",
+                               url="https://www.youtube.com/watch?v=3vDhGYP_rLs")
+
+    def test_avvia_il_workflow_appena_inviato(self):
+        import juve_press_bot as bot
+        s = Sessione([])
+        with patch.dict(os.environ, {"GH_TOKEN": "G", "GITHUB_REPOSITORY": "u/r"}):
+            self.assertTrue(bot.auto_extract_youtube(self.video(), 777, session=s))
+        (avvio,) = s.metodi("dispatches")
+        self.assertEqual(avvio["inputs"], {"url": "https://www.youtube.com/watch?v=3vDhGYP_rLs", "messaggio": "777"})
+        self.assertIn("3vDhGYP_rLs", pu._fatti)          # doppio tocco subito dopo: non riparte
+
+    def test_non_per_juventus_ne_articoli_ne_senza_token(self):
+        import juve_press_bot as bot
+        s = Sessione([])
+        articolo = SimpleNamespace(source="Tuttosport", title="T", summary="", url="https://www.tuttosport.com/x")
+        with patch.dict(os.environ, {"GH_TOKEN": "G"}):
+            self.assertFalse(bot.auto_extract_youtube(self.video("Juventus"), 1, session=s))
+            self.assertFalse(bot.auto_extract_youtube(articolo, 1, session=s))
+        with patch.dict(os.environ, {"GH_TOKEN": "", "GITHUB_TOKEN": ""}):
+            self.assertFalse(bot.auto_extract_youtube(self.video(), 1, session=s))
+        self.assertEqual(s.metodi("dispatches"), [])
 
 
 class TocchiTests(unittest.TestCase):

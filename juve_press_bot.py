@@ -3939,6 +3939,7 @@ def _run_cycle(
             f'[PUB] {article.source} | {compact_log_text(article.title, 65)} | '
             f'{receipt.mode} #{receipt.message_id or "?"} | stato salvato'
         )
+        auto_extract_youtube(article, receipt.message_id)
         time.sleep(0.8)
 
     pending = [article_from_journal(entry) for entry in journal.entries]
@@ -3958,6 +3959,29 @@ def _run_cycle(
     collect_articles(session, requested_dates, on_article=publish_discovered)
     checkpoint_state_to_git()
     return sent_count
+
+
+def auto_extract_youtube(article: Article, message_id, session=None) -> bool:
+    """Video YouTube appena inviato: parte subito "Notizie da YouTube", come se si toccasse
+    "Estrai notizie" (che resta per rifarlo). Un errore qui non ferma le notizie."""
+    from telegram_notifier import youtube_extract_id
+    video_id = youtube_extract_id(article)
+    if not video_id:
+        return False
+    gh_token = os.getenv('GH_TOKEN') or os.getenv('GITHUB_TOKEN')
+    if not gh_token:
+        print(f'[YOUTUBE] estrazione automatica saltata per {video_id}: manca GH_TOKEN')
+        return False
+    try:
+        import pulsanti_youtube
+        repo = os.getenv('GITHUB_REPOSITORY') or 'Tommaso20BW/Notizie_JR'
+        pulsanti_youtube.avvia(video_id, message_id, gh_token, repo, session or requests)
+        pulsanti_youtube._fatti[video_id] = time.time()     # un tocco subito dopo non la riavvia
+    except Exception as error:
+        print(f'[YOUTUBE] estrazione automatica non avviata per {video_id}: {compact_log_text(error, 120)}')
+        return False
+    print(f'[YOUTUBE] estrazione automatica avviata per {video_id}')
+    return True
 
 
 def check_youtube_buttons() -> None:

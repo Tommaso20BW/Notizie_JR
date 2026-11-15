@@ -147,6 +147,18 @@ def youtube_video_id(url: str) -> str:
     return match.group(1) if match and "youtu" in str(url) else ""
 
 
+EXTRACT_BUTTON_LABEL = "📝 Estrai notizie"
+
+
+def youtube_extract_id(article) -> str:
+    """Id del video da cui estrarre le notizie: solo video YouTube, non del canale ufficiale
+    Juventus (lì non ci sono notizie da estrarre). Vuoto per tutto il resto."""
+    source = str(getattr(article, "source", "") or "")
+    if not source.startswith("YouTube - ") or source == "YouTube - Juventus":
+        return ""
+    return youtube_video_id(getattr(article, "url", ""))
+
+
 def source_link_label(source: str) -> str:
     """Restituisce la CTA più adatta al tipo di fonte."""
     source = str(source or "")
@@ -270,26 +282,25 @@ def format_article_rich_html(
     # CTA pulita: per X il permalink del post resta sempre disponibile.
     # Se il post contiene anche un link esterno, lo mostriamo come secondo
     # pulsante invece di lasciarlo scritto nel corpo della notizia.
-    buttons = [
+    buttons = []
+    video_id = youtube_extract_id(article)
+    if video_id:
+        # Prima di "Apri video". Tocco letto dal worker Notizie Web (pulsanti_youtube.py): avvia
+        # "Notizie da YouTube" (che parte già da solo all'arrivo del video: il tasto serve a rifarlo).
+        buttons.append(
+            f'<tg-button type="callback_data" style="primary" data="yt:{video_id}">'
+            f'{EXTRACT_BUTTON_LABEL}'
+            '</tg-button>'
+        )
+    buttons.append(
         f'<tg-button type="url" style="primary" url="{url}">'
         f'{source_link_label(article.source)}'
         '</tg-button>'
-    ]
+    )
     if is_x and content_url:
         buttons.append(
             f'<tg-button type="url" style="primary" url="{content_url}">'
             'Apri contenuto'
-            '</tg-button>'
-        )
-    # Non sui video del canale ufficiale Juventus: lì non ci sono notizie da estrarre.
-    youtube = str(article.source or "")
-    video_id = (youtube_video_id(article.url)
-                if youtube.startswith("YouTube - ") and youtube != "YouTube - Juventus" else "")
-    if video_id:
-        # Tocco letto dal worker Notizie Web (pulsanti_youtube.py): avvia "Notizie da YouTube".
-        buttons.append(
-            f'<tg-button type="callback_data" style="primary" data="yt:{video_id}">'
-            'Estrai notizie'
             '</tg-button>'
         )
     parts.append(
