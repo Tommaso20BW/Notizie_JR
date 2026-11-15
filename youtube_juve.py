@@ -20,7 +20,7 @@ import requests
 
 import bot_giornali as bg
 
-MAX_CARATTERI = int(os.getenv("YOUTUBE_MAX_CARATTERI", "320"))
+MAX_CARATTERI = int(os.getenv("YOUTUBE_MAX_CARATTERI", "240"))
 ATTESA = int(os.getenv("YOUTUBE_ATTESA", "900"))     # quanto aspettare un video non ancora leggibile (s)
 PAUSA = int(os.getenv("YOUTUBE_PAUSA", "120"))       # ogni quanto riprovare (s)
 TIMEOUT_GEMINI = int(os.getenv("YOUTUBE_TIMEOUT_GEMINI", "90"))   # risposta di un modello, poi il successivo (s)
@@ -133,8 +133,8 @@ SCHEMA = {
                     "persona": {"type": "string", "description": "Nome e cognome di chi dice questa notizia nel video."},
                     "testo": {
                         "type": "string",
-                        "description": ("La notizia, nomi tra **. Di norma al massimo 320 caratteri; più lunga "
-                                        "solo se ci sono molti fatti diversi da dire. Mai la stessa cosa due volte."),
+                        "description": ("La notizia, nomi tra **. AL MASSIMO 240 caratteri, mai di più: condensa. "
+                                        "Mai la stessa cosa due volte."),
                     },
                     "tono": {"type": "string", "enum": list(TONI), "description": "Che tipo di notizia è."},
                     "protagonista": {"type": "string", "description": "Cognome del protagonista (giocatore o allenatore), vuoto se nessuno."},
@@ -267,10 +267,9 @@ Regole:
 - UNA NOTIZIA PER ARGOMENTO. Un argomento è un giocatore, una trattativa, un tema (es. tutto quello
   che si dice su Sorloth e la Juve è UN argomento, anche se se ne parla in momenti diversi del video).
   Raccogli tutto quello che riguarda lo stesso argomento in una sola voce.
-- Un solo testo per argomento, di norma al massimo {MAX_CARATTERI} caratteri (spazi compresi, **
-  esclusi): condensa togliendo ripetizioni, giri di parole e dettagli secondari. Puoi superarli solo
-  se restano fatti importanti e diversi: in quel caso scrivi frasi complete e autonome, perché il testo
-  verrà diviso tra una frase e l'altra. Ogni fatto si scrive UNA volta sola: niente riepiloghi finali.
+- Un solo testo per argomento, AL MASSIMO {MAX_CARATTERI} caratteri (spazi compresi, ** esclusi),
+  MAI di più: condensa togliendo ripetizioni, giri di parole e dettagli secondari, tieni solo i fatti
+  più importanti. Ogni fatto si scrive UNA volta sola: niente riepiloghi finali.
 - Argomenti diversi vanno in voci diverse: non unirli. Non spezzare un argomento in più voci.
 - Non ripetere la stessa informazione: un concetto detto più volte nel video va scritto una volta.
 - NOMI NON RIPETUTI: nello stesso testo un giocatore, un club o una persona si nomina UNA volta
