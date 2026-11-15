@@ -52,9 +52,9 @@ class PulsanteNelMessaggio(unittest.TestCase):
         video = SimpleNamespace(source="YouTube - Fabrizio Romano", title="Live", summary="",
                                 url="https://www.youtube.com/watch?v=3vDhGYP_rLs")
         html = tn.format_article_rich_html(video)
-        self.assertIn('<tg-button type="callback_data" style="primary" data="yt:3vDhGYP_rLs">📝 Estrai notizie</tg-button>', html)
+        self.assertIn('<tg-button type="callback_data" style="primary" data="yt:3vDhGYP_rLs">📝</tg-button>', html)
         self.assertIn("Apri video", html)
-        self.assertLess(html.index("Estrai notizie"), html.index("Apri video"))     # prima di "Apri video"
+        self.assertLess(html.index("yt:3vDhGYP_rLs"), html.index("Apri video"))     # prima di "Apri video"
         juve = SimpleNamespace(source="YouTube - Juventus", title="Highlights", summary="",
                                url="https://www.youtube.com/watch?v=3vDhGYP_rLs")
         self.assertNotIn("callback_data", tn.format_article_rich_html(juve))

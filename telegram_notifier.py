@@ -147,7 +147,7 @@ def youtube_video_id(url: str) -> str:
     return match.group(1) if match and "youtu" in str(url) else ""
 
 
-EXTRACT_BUTTON_LABEL = "📝 Estrai notizie"
+EXTRACT_BUTTON_LABEL = "📝"          # solo emoji: "Estrai notizie", per rifarla
 
 
 def youtube_extract_id(article) -> str:
