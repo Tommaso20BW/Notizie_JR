@@ -180,9 +180,9 @@ TUTTOJUVE_DAY_HEADING_RE = re.compile(
 )
 TUTTOJUVE_TIME_RE = re.compile(r"^(\d{1,2}):(\d{2})$")
 TUTTOJUVE_LEADING_TIME_RE = re.compile(r"^\s*(\d{1,2}):(\d{2})\s*")
-# Etichette di rubrica attaccate al titolo nell'elenco ("Esclusiva TJ", "Live").
+# Etichette di rubrica attaccate al titolo ("Esclusiva TJ", "Live", "TJ - ").
 TUTTOJUVE_LABEL_PREFIX_RE = re.compile(
-    r"^(?:Esclusiva\s*TJ|Live(?=[A-ZÀ-Ý0-9]))\s*"
+    r"^(?:Esclusiva\s*TJ|TJ\s*[-–]|Live(?=[A-ZÀ-Ý0-9]))\s*"
 )
 # Dettagli articolo già letti (titolo completo, sommario, immagine): l'elenco
 # tronca i titoli lunghi con "...", quindi si apre l'articolo una sola volta.

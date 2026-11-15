@@ -273,6 +273,13 @@ Regole:
   verrà diviso tra una frase e l'altra. Ogni fatto si scrive UNA volta sola: niente riepiloghi finali.
 - Argomenti diversi vanno in voci diverse: non unirli. Non spezzare un argomento in più voci.
 - Non ripetere la stessa informazione: un concetto detto più volte nel video va scritto una volta.
+- NOMI NON RIPETUTI: nello stesso testo un giocatore, un club o una persona si nomina UNA volta
+  sola. La volta dopo usa un pronome o un riferimento ("il giocatore", "il centrocampista", "il
+  club", "i nerazzurri", "lui") oppure unisci le frasi. Esempio:
+  NO: "La **Juventus** si era informata su **Calhanoglu**, senza offerte scritte all'**Inter**.
+  Attualmente **Calhanoglu** dà la priorità al rinnovo con l'**Inter**."
+  SÌ: "La **Juventus** si era informata su **Calhanoglu**, senza offerte scritte all'**Inter**.
+  Attualmente il giocatore dà la priorità al rinnovo con i nerazzurri."
 - Importi in milioni di euro in forma compatta: "30 milioni di euro" -> "30M€", "tra 40 e 50" -> "40-50M€".
 - Niente emoji, hashtag, titoli o HTML.
 - "tono": nuova (notizia nuova), aggiornamento (novità su una cosa già nota), valutazione (il club
@@ -636,7 +643,9 @@ def _estrai_riprovando(url, info, attesa, attesa_gemini, pausa, dormi, inizio, a
                 testo = f"⏳ Gemini è occupato: riprovo ogni {minuti} minuti per {limite // 60} minuti."
             else:
                 print(f"{'Gemini' if trascrizione else 'Video'} non ancora leggibile ({type(e).__name__}): riprovo tra {pausa}s.")
-                testo = f"⏳ Il video non è ancora leggibile: riprovo ogni {minuti} minuti per {limite // 60} minuti."
+                testo = (f"⏳ Gemini non riesce ancora a scrivere le notizie dalla trascrizione: riprovo ogni {minuti} "
+                         f"minuti per {limite // 60} minuti." if trascrizione else
+                         f"⏳ Il video non è ancora leggibile: riprovo ogni {minuti} minuti per {limite // 60} minuti.")
             if occupato not in avvisato:
                 avvisato[occupato] = avviso(testo, info) or -1
             dormi(pausa)

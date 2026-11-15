@@ -106,6 +106,12 @@ class TuttoJuveDiNataleTests(unittest.TestCase):
         self.assertEqual(articles, [])
         self.assertEqual(session.calls, [])
 
+    def test_tj_prefix_removed(self):
+        self.assertEqual(
+            bot._tuttojuve_listing_title("TJ - Miranda nella top 3 dei terzini"),
+            "Miranda nella top 3 dei terzini",
+        )
+
     def test_registered_among_scrapers(self):
         names = [name for name, _ in bot._article_scrapers()]
         self.assertIn("Mirko Di Natale - TuttoJuve", names)
