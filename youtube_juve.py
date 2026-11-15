@@ -3,7 +3,7 @@
 Si avvia dal workflow "Notizie da YouTube" (a mano o dal Comando Rapido dell'iPhone) con il link di
 un video. Gemini guarda il video direttamente dal link (niente sottotitoli da scaricare), tiene solo
 quello che riguarda la Juventus o giocatori legati alla Juve e lo riscrive come notizie pronte da
-pubblicare: al massimo 240 caratteri ciascuna, divise solo quando serve. Le notizie arrivano sul bot
+pubblicare: al massimo 240 caratteri ciascuna, un solo messaggio per notizia. Le notizie arrivano sul bot
 JR (stessa chat di Notizie quotidiani) già nel formato del canale @Juventus_Reborn, una per
 messaggio, pronte da inoltrare: emoji iniziali, nomi in grassetto, foto e "Nome - YouTube" di chi
 parla (sul canale di Romano può essere anche Moretto), @Juventus_Reborn.
@@ -411,10 +411,36 @@ def grassetto(testo):
     return re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", testo).replace("*", "")
 
 
-def _dividi(testo):
-    if len(visibile(testo)) <= MAX_CARATTERI:
-        return [testo]
-    return bg._dividi_testo(testo, MAX_CARATTERI)    # i ** contano: le parti escono un po' più corte
+def _accorcia(testo, limite=None):
+    """Riassunto in UN solo messaggio di al massimo `limite` caratteri visibili (** esclusi), mai diviso.
+    Se Gemini sfora si tengono le frasi intere che ci stanno; se non ci sta nemmeno la prima, si taglia
+    a una virgola o a uno spazio e si chiude con "…"."""
+    limite = limite or MAX_CARATTERI
+    testo = " ".join(testo.split())
+    if len(visibile(testo)) <= limite:
+        return testo
+
+    def chiudi(t):      # un ** rimasto spaiato dal taglio si toglie, gli altri grassetti restano
+        if t.count("**") % 2:
+            i = t.rfind("**")
+            t = t[:i] + t[i + 2:]
+        return t.rstrip(" ,;:-–")
+
+    frasi = re.split(r"(?<=[.!?])\s+", testo)
+    tenute = ""
+    for frase in frasi:
+        prova = (tenute + " " + frase.strip()).strip()
+        if len(visibile(prova)) > limite:
+            break
+        tenute = prova
+    if tenute:
+        return chiudi(tenute)
+    for separatore in (r"[,;:]\s", r"\s"):
+        tagli = [m.start() for m in re.finditer(separatore, testo)
+                 if len(visibile(testo[:m.start()])) <= limite - 1]
+        if tagli:
+            return chiudi(testo[:tagli[-1]]) + "…"
+    return testo[:limite - 1] + "…"
 
 
 def emoji(emoji_id, fallback):
@@ -449,7 +475,7 @@ def post(testo, persona, iniziali):
 
 def prepara(notizie):
     """Post pronti per il canale, un argomento dopo l'altro. Voci con lo stesso argomento si uniscono
-    (Gemini a volte lo divide lo stesso); una parte oltre il limite si divide tra una frase e l'altra."""
+    (Gemini a volte lo divide lo stesso); un riassunto oltre il limite si accorcia, mai diviso in più messaggi."""
     argomenti = {}
     for notizia in notizie:
         parti = notizia.get("parti") or [notizia.get("testo", "")]     # "parti": vecchio formato
@@ -470,7 +496,7 @@ def prepara(notizie):
             print(f"      riscontro: «{frase[:600]}»")
         for parte in voce["parti"]:
             print(f"      {visibile(parte)}")
-            pronti += [post(p, persona, iniziali) for p in _dividi(parte)]
+            pronti.append(post(_accorcia(parte), persona, iniziali))
     return pronti
 
 

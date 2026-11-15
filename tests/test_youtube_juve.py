@@ -113,18 +113,27 @@ class FormatoTests(unittest.TestCase):
         self.assertTrue(altra.endswith("🇯🇵"))
 
     @patch.object(yj, "MAX_CARATTERI", 240)
-    def test_lunghe_divise_corte_intere(self):
+    def test_lunghe_accorciate_mai_divise(self):
         corta = "La **Juventus** ha chiesto informazioni per il centrocampista."
         lunga = ("La **Juventus** segue da settimane il difensore e ha già avuto un primo contatto con l'agente. "
                  "La richiesta del club è di 30 milioni di euro, cifra che i bianconeri considerano alta. "
                  "Si lavora a una formula con prestito e obbligo di riscatto legato alle presenze.")
         posts = yj.prepara([{"argomento": "a", "parti": [corta], "persona": "X"},
                             {"argomento": "b", "parti": [lunga], "persona": "X"}])
+        self.assertEqual(len(posts), 2)                     # un messaggio per notizia
         self.assertEqual(testo_visibile(posts[0]), "La Juventus ha chiesto informazioni per il centrocampista.")
-        self.assertGreater(len(posts), 2)
-        self.assertTrue(all(len(testo_visibile(p)) <= yj.MAX_CARATTERI for p in posts))
-        self.assertIn("30M€", "".join(posts))
+        seconda = testo_visibile(posts[1])
+        self.assertLessEqual(len(seconda), 240)
+        self.assertTrue(seconda.endswith("considerano alta."))   # frasi intere
+        self.assertIn("<b>Juventus</b>", posts[1])
         self.assertTrue(all("**" not in p for p in posts))
+
+    def test_accorcia_frase_unica_troppo_lunga(self):
+        frase = "Il **Milan** " + "e il club segue con attenzione il giocatore, " * 8 + "senza fretta."
+        corto = yj._accorcia(frase, 240)
+        self.assertLessEqual(len(yj.visibile(corto)), 240)
+        self.assertTrue(corto.endswith("…"))
+        self.assertEqual(corto.count("**") % 2, 0)
 
     def test_stesso_argomento_unito(self):
         posts = yj.prepara([
