@@ -378,10 +378,15 @@ def _genera_json(uploaded, prompt, schema=SCHEMA_NOTIZIE, config_extra=None, int
                 errore_quota = "429" in msg or "RESOURCE_EXHAUSTED" in msg
                 # Modello ritirato o rinominato da Google: si passa al successivo.
                 modello_inesistente = "404" in msg or "NOT_FOUND" in msg
+                # 5xx di Google (503 occupato, 500 INTERNAL, 504 DEADLINE_EXCEEDED) o nessuna
+                # risposta in tempo: si passa al modello successivo, non ci si ferma.
                 errore_temporaneo = (
                     "503" in msg
                     or "UNAVAILABLE" in msg
                     or "overloaded" in msg.lower()
+                    or "INTERNAL" in msg
+                    or "DEADLINE_EXCEEDED" in msg
+                    or "servererror" in type(e).__name__.lower()
                     or _scaduto(e)
                 )
 
@@ -419,7 +424,7 @@ def _genera_json(uploaded, prompt, schema=SCHEMA_NOTIZIE, config_extra=None, int
                     attesa_ciclo = max(attesa_ciclo or 0, attesa_503)
                     print(
                         f"Modello {modello} temporaneamente non disponibile "
-                        f"({'nessuna risposta in tempo' if _scaduto(e) else '503'}). "
+                        f"({'nessuna risposta in tempo' if _scaduto(e) else msg[:120]}). "
                         "Provo il modello successivo..."
                     )
                     continue

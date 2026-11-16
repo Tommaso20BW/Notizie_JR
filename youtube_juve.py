@@ -664,7 +664,7 @@ def _estrai_riprovando(url, info, attesa, attesa_gemini, pausa, dormi, inizio, a
                 raise
             minuti = max(1, pausa // 60)
             if occupato:
-                print(f"Gemini Flash occupato: riprovo tra {pausa}s.")
+                print(f"Gemini Flash occupato ({str(e)[:150]}): riprovo tra {pausa}s.")
                 testo = f"⏳ Gemini è occupato: riprovo ogni {minuti} minuti per {limite // 60} minuti."
             else:
                 print(f"{'Gemini' if trascrizione else 'Video'} non ancora leggibile ({type(e).__name__}): riprovo tra {pausa}s.")

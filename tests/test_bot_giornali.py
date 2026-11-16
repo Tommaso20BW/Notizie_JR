@@ -22,6 +22,22 @@ class GeminiTests(unittest.TestCase):
             candidates=[],
         )
 
+    def test_errore_500_o_504_passa_al_modello_successivo(self):
+        for errore in ("500 INTERNAL. An internal error has occurred.",
+                       "504 DEADLINE_EXCEEDED. The request timed out."):
+            models = Mock()
+            models.generate_content.side_effect = [RuntimeError(errore), self._response()]
+            with (
+                patch.object(bot_giornali, "client", SimpleNamespace(models=models)),
+                patch.object(bot_giornali, "modelli_disponibili", lambda: ["primo-flash", "secondo-flash"]),
+                patch.object(bot_giornali.time, "sleep") as sleep,
+            ):
+                risultato = bot_giornali._genera_json(object(), "prompt", prima_flash=True, solo_flash=True)
+            self.assertEqual(risultato, [{"testo": "Notizia"}])
+            self.assertEqual([c.kwargs["model"] for c in models.generate_content.call_args_list],
+                             ["primo-flash", "secondo-flash"])
+            sleep.assert_not_called()
+
     def test_quota_giornaliera_passa_subito_al_modello_successivo(self):
         models = Mock()
         models.generate_content.side_effect = [
