@@ -235,6 +235,12 @@ Regole:
   sono comunicazioni tra le parti."
   "**Juve** e **Conte** non hanno mai parlato: oggi è solo una suggestione."
   Non iniziare con il nome di chi parla: è già nella firma del post.
+- ITALIANO SCRITTO, NON PARLATO: frasi complete con soggetto e verbo, come un articolo di
+  giornale. Mai elenchi di sostantivi ("Accostamenti tra X e Y."), mai parentesi, mai "dunque" o
+  "quindi" a inizio frase. Le espressioni del parlato si dicono in buon italiano: "un acquisto di
+  presente e futuro" -> "un acquisto pensato per il presente e per il futuro"; "non è calda" ->
+  "al momento non è concreta"; "torna su" -> "si sarebbe di nuovo interessato a".
+  Fedeltà vuol dire stessi fatti e stessa certezza, non copiare le parole del parlato.
 - Grassetto: racchiudi tra ** i nomi di club, giocatori, allenatori e dirigenti (**Juventus**,
   **Sorloth**, **Atletico Madrid**). Nient'altro in grassetto.
 - FEDELTÀ ASSOLUTA: scrivi solo quello che chi parla dice nel video, con le sue parole quando
@@ -302,6 +308,80 @@ def estrai(url, info):
                                              "thinking_config": {"thinking_budget": 8192},
                                              "http_options": {"timeout": TIMEOUT_GEMINI * 1000}})
     return solo_notizie(risposta.get("notizie") or [], possibili, info)
+
+
+SCHEMA_RIFINITURA = {
+    "type": "object",
+    "properties": {
+        "testi": {
+            "type": "array",
+            "description": "Un testo riscritto per ogni notizia, nello stesso ordine e con lo stesso numero.",
+            "items": {"type": "object", "properties": {"n": {"type": "integer"}, "testo": {"type": "string"}},
+                      "required": ["n", "testo"]},
+        },
+    },
+    "required": ["testi"],
+}
+
+
+def prompt_rifinitura(notizie):
+    voci = "\n\n".join(f"[{i}] TESTO: {n.get('testo', '')}\n    RISCONTRO (parole dette nel video): "
+                        f"{n.get('riscontro', '')}" for i, n in enumerate(notizie, 1))
+    return f"""
+Sei il caporedattore del canale Telegram Juventus Reborn. Qui sotto ci sono notizie scritte di fretta
+da un video: rileggi ogni TESTO e riscrivilo in un italiano giornalistico naturale e scorrevole, che
+suoni bene letto da un tifoso.
+
+Regole:
+- Stessi fatti, stessa certezza ("potrebbe", "valuta", "non risulta" restano tali), stesse
+  attribuzioni: controlla tutto sul RISCONTRO. Non aggiungere nulla che non sia nel riscontro e non
+  togliere fatti importanti.
+- Frasi complete con soggetto e verbo. Mai elenchi di sostantivi ("Accostamenti tra X e Y."), mai
+  parentesi, niente "dunque"/"quindi" messi lì, niente calchi del parlato.
+- Grassetto: lascia tra ** i nomi di club, giocatori, allenatori e dirigenti, nient'altro.
+- Ogni nome UNA volta sola: poi "il giocatore", "il centrocampista", "i bianconeri", "il club".
+- AL MASSIMO {MAX_CARATTERI} caratteri per testo (** esclusi). Niente emoji, hashtag o HTML.
+- Non iniziare con il nome di chi parla.
+- Se un testo è già scritto bene, lascialo com'è.
+
+Esempi:
+NO: "Voci di un ritorno del **Chelsea** su **Kerim Alajbegović**, ma per la **Juventus** è un acquisto
+di presente e futuro: i bianconeri contano assolutamente su di lui."
+SÌ: "Si parla di un nuovo interesse del **Chelsea** per **Kerim Alajbegović**, ma la **Juventus** lo
+considera un acquisto importante, per il presente e per il futuro, e punta assolutamente su di lui."
+NO: "Accostamenti tra **Weston McKennie** e il **Manchester United** di **Maurizio Pochettino**. Per
+gennaio i **Red Devils** hanno altre priorità (difesa e attacco), dunque l'opzione per il
+centrocampista della **Juventus** non è calda."
+SÌ: "Il **Manchester United** di **Maurizio Pochettino** viene accostato a **Weston McKennie**, ma
+per gennaio i **Red Devils** cercano soprattutto un difensore e un centravanti: la pista per il
+centrocampista della **Juventus** al momento non è concreta."
+
+Restituisci "testi": per ogni notizia il numero [n] e il testo riscritto, nello stesso ordine.
+
+{voci}
+""".strip()
+
+
+def rifinisci(notizie):
+    """Secondo passaggio: Gemini rilegge i testi e li riscrive in buon italiano (stessi fatti).
+    Se non va, restano i testi della prima estrazione."""
+    if not notizie:
+        return notizie
+    try:
+        testi = bg._genera_json("Notizie da rileggere.", prompt_rifinitura(notizie), schema=SCHEMA_RIFINITURA,
+                                chiave="testi", prima_flash=True, solo_flash=True, cicli=2,
+                                config_extra={"thinking_config": {"thinking_budget": 4096},
+                                              "http_options": {"timeout": TIMEOUT_GEMINI * 1000}})
+    except Exception as e:                                    # noqa: BLE001 - meglio i testi grezzi che niente
+        print(f"Rilettura dei testi non riuscita ({e}): uso quelli della prima estrazione.")
+        return notizie
+    nuovi = {int(t.get("n", 0)): str(t.get("testo") or "").strip() for t in testi if isinstance(t, dict)}
+    for i, notizia in enumerate(notizie, 1):
+        testo = nuovi.get(i, "")
+        if testo and len(visibile(testo)) <= MAX_CARATTERI * 1.15:
+            print(f"  [riletto] {notizia.get('argomento', '')}: {testo}")
+            notizia["testo"] = testo
+    return notizie
 
 
 def solo_notizie(notizie, possibili, info):
@@ -714,6 +794,7 @@ def elabora(link):
         avvisa_errore(url, e)
         return 1
     print(f"Notizie trovate: {len(notizie)}")
+    notizie = rifinisci(notizie)
     return 0 if invia(prepara(notizie), url, info) else 1
 
 

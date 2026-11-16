@@ -315,3 +315,31 @@ class TimeoutTests(unittest.TestCase):
         with patch.object(yj.bg, "_genera_json", side_effect=genera):
             yj.estrai("https://youtu.be/abcdefghijk", {})
         self.assertEqual(visti["http_options"], {"timeout": 90000})
+
+
+class RifinituraTests(unittest.TestCase):
+    """Secondo passaggio: i testi riletti in buon italiano sostituiscono quelli grezzi."""
+
+    def notizie(self):
+        return [{"argomento": "McKennie", "testo": "Accostamenti tra **McKennie** e lo **United**.",
+                 "riscontro": "il Manchester United non è caldissimo su McKennie"},
+                {"argomento": "Yildiz", "testo": "**Yildiz** sta bene.", "riscontro": "Yildiz sta bene"}]
+
+    def test_sostituisce_i_testi_e_manda_il_riscontro(self):
+        visti = {}
+
+        def genera(contenuto, prompt, **k):
+            visti["prompt"], visti["chiave"] = prompt, k["chiave"]
+            return [{"n": 1, "testo": "Il **Manchester United** viene accostato a **McKennie**."},
+                    {"n": 2, "testo": "x" * 400}]                  # troppo lungo: resta il vecchio
+        with patch.object(yj.bg, "_genera_json", side_effect=genera):
+            out = yj.rifinisci(self.notizie())
+        self.assertEqual(out[0]["testo"], "Il **Manchester United** viene accostato a **McKennie**.")
+        self.assertEqual(out[1]["testo"], "**Yildiz** sta bene.")
+        self.assertEqual(visti["chiave"], "testi")
+        self.assertIn("non è caldissimo", visti["prompt"])
+
+    def test_se_gemini_non_risponde_restano_i_testi_grezzi(self):
+        with patch.object(yj.bg, "_genera_json", side_effect=RuntimeError("503 UNAVAILABLE")):
+            out = yj.rifinisci(self.notizie())
+        self.assertEqual(out[0]["testo"], "Accostamenti tra **McKennie** e lo **United**.")
