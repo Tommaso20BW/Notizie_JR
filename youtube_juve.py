@@ -522,7 +522,7 @@ def avviso(testo, info=None, resta=False):
     """Messaggio di servizio, in risposta al messaggio del video quando si parte dal pulsante.
     Gli avvisi d'attesa ("riprovo…") si cancellano appena il lavoro va avanti; gli altri
     CANCELLA_DOPO secondi dopo l'invio (a fine lavoro): restano solo le notizie.
-    resta=True: non si cancella (es. "riprova più tardi", che deve restare visibile)."""
+    resta=True: non si cancella (oggi nessun avviso lo usa: anche "Gemini è occupato" se ne va)."""
     risposta = int(MESSAGGIO) if MESSAGGIO.isdigit() else None
     message_id = bg._post_telegram_rich(
         f"{intestazione((info or {}).get('canale') or 'YouTube')}<p>{testo}</p>", reply_to=risposta)
@@ -707,7 +707,7 @@ def elabora(link):
     except GeminiOccupato as e:
         print(f"{e}: nessuna notizia inviata.")
         avviso(f"⚠️ Gemini è occupato da troppo tempo: non ho estratto niente. Riprova più tardi "
-               f"col pulsante.<br>{html.escape(url)}", info, resta=True)
+               f"col pulsante.<br>{html.escape(url)}", info)
         return 1
     except Exception as e:
         print(f"Gemini non è riuscito a leggere il video: {e}")
