@@ -340,7 +340,8 @@ Regole:
   parentesi, niente "dunque"/"quindi" messi lì, niente calchi del parlato.
 - Grassetto: lascia tra ** i nomi di club, giocatori, allenatori e dirigenti, nient'altro.
 - Ogni nome UNA volta sola: poi "il giocatore", "il centrocampista", "i bianconeri", "il club".
-- AL MASSIMO {MAX_CARATTERI} caratteri per testo (** esclusi). Niente emoji, hashtag o HTML.
+- AL MASSIMO {MAX_CARATTERI} caratteri per testo (spazi compresi, ** esclusi), MAI di più: un testo più
+  lungo viene buttato. Niente emoji, hashtag o HTML.
 - Non iniziare con il nome di chi parla.
 - Se un testo è già scritto bene, lascialo com'è.
 
@@ -378,7 +379,7 @@ def rifinisci(notizie):
     nuovi = {int(t.get("n", 0)): str(t.get("testo") or "").strip() for t in testi if isinstance(t, dict)}
     for i, notizia in enumerate(notizie, 1):
         testo = nuovi.get(i, "")
-        if testo and len(visibile(testo)) <= MAX_CARATTERI * 1.15:
+        if testo and len(visibile(testo)) <= MAX_CARATTERI:          # 240 al massimo: se sfora resta il vecchio
             print(f"  [riletto] {notizia.get('argomento', '')}: {testo}")
             notizia["testo"] = testo
     return notizie
