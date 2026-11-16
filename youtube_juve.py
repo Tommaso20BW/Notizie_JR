@@ -708,7 +708,7 @@ def elabora(link):
         print(f"{e}: nessuna notizia inviata.")
         avviso(f"⚠️ Gemini è occupato da troppo tempo: non ho estratto niente. Riprova più tardi "
                f"col pulsante.<br>{html.escape(url)}", info)
-        return 1
+        return 0          # Gemini occupato non è un errore del bot: il lavoro su GitHub resta verde
     except Exception as e:
         print(f"Gemini non è riuscito a leggere il video: {e}")
         avvisa_errore(url, e)
