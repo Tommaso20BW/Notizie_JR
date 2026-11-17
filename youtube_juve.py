@@ -116,7 +116,7 @@ BANDIERE = {                                   # giocatori non della Juve: bandi
 
 _ID = re.compile(r"(?:v=|youtu\.be/|/shorts/|/live/|/embed/)([A-Za-z0-9_-]{11})")
 
-IMPORTANZE = ["alta", "media", "bassa", "inutile"]     # "inutile" si scarta
+IMPORTANZE = ["alta", "media", "bassa", "inutile"]     # "inutile" (= non riguarda la Juve) si scarta
 
 SCHEMA = {
     "type": "object",
@@ -156,8 +156,8 @@ SCHEMA = {
                     "importanza": {
                         "type": "string", "enum": list(IMPORTANZE),
                         "description": ("Quanto interessa a un tifoso della Juve: alta (novità vera e concreta), "
-                                        "media, bassa, inutile (vaga, ovvia, già nota, cifre di contorno, niente "
-                                        "di concreto)."),
+                                        "media, bassa (anche retroscena del passato, dettagli, cose vaghe), "
+                                        "inutile (solo se non riguarda la Juventus)."),
                     },
                 },
                 "required": ["argomento", "minuto", "persona", "tipo", "importanza", "testo", "tono", "protagonista",
@@ -255,9 +255,10 @@ Regole:
   dovrebbe", "mi stupirebbe", critiche al mercato, analisi tattiche). Le opinioni verranno scartate:
   non mescolarle dentro una notizia. Nel dubbio è opinione.
 - IMPORTANZA: alta = novità vera e concreta (trattativa, offerta, contatto, infortunio con tempi,
-  scelta decisa); media = aggiornamento utile; bassa = dettaglio minore; inutile = vaga ("potrebbe",
-  "secondo quanto detto" senza fatti), ovvia, già nota a tutti, ricostruzioni del passato o cifre
-  di contorno senza novità. Le inutili verranno scartate: sii severo.
+  scelta decisa); media = aggiornamento utile o retroscena (anche contatti e trattative del passato);
+  bassa = dettaglio minore, cosa vaga o già nota; inutile = SOLO se non riguarda la Juventus (né il
+  club, né i suoi giocatori, né l'allenatore, né il mercato della Juve). Tutto ciò che riguarda la
+  Juve va tenuto: le inutili verranno scartate.
 - DIREZIONE: non confondere mai acquisto e cessione, arrivo e partenza, chi compra e chi vende.
   "La Juve dovrebbe venderlo" non è "la Juve potrebbe prenderlo". Un giocatore della Juve non viene
   "preso" dalla Juve.
