@@ -109,6 +109,13 @@ class TranslationTests(unittest.TestCase):
         self.assertIn("X - FabrizioRomano 🌐</h2>", html)          # globo accanto alla fonte
         self.assertNotIn("Tradotto", html)                               # nessuna riga sotto
 
+    def test_juventus_account_is_never_translated(self):
+        article = tn._MessageArticle(source="X - juventusfc", title="Matchday! Let's go!",
+                                     url="https://x.com/juventusfc/status/1", summary="")
+        with patch.dict(os.environ, {"TRANSLATE_X_POSTS": "1"}),                 patch.object(tn, "translate_to_italian") as translate:
+            self.assertIs(tn._translate_x(article), article)
+        translate.assert_not_called()
+
     def test_translation_is_off_without_the_switch(self):
         article = tn._MessageArticle(source="X - FabrizioRomano", title="Here we go!",
                                      url="https://x.com/FabrizioRomano/status/1", summary="")

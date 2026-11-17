@@ -77,9 +77,19 @@ class _MessageArticle:
     translated_from: str = ""      # lingua originale, se il testo è stato tradotto
 
 
+# Account X i cui post restano sempre nella lingua originale (mai tradotti).
+X_NEVER_TRANSLATE = {"juventusfc"}
+
+
 def _translate_x(article) -> object:
-    """Post X in un'altra lingua: testo tradotto in italiano (con TRANSLATE_X_POSTS=1)."""
+    """Post X in un'altra lingua: testo tradotto in italiano (con TRANSLATE_X_POSTS=1).
+
+    I post dell'account ufficiale della Juventus non vengono mai tradotti.
+    """
     if os.environ.get("TRANSLATE_X_POSTS", "").strip() != "1":
+        return article
+    handle = str(article.source or "").removeprefix("X - ").strip().lstrip("@").casefold()
+    if handle in X_NEVER_TRANSLATE:
         return article
     translation = translate_to_italian(str(article.title or ""))
     if translation is None:
