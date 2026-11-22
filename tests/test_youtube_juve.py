@@ -79,6 +79,16 @@ class PersonaTests(unittest.TestCase):
         self.assertEqual(yj.nome_persona("", possibili, info), "Fabrizio Romano")
         self.assertIn("Matteo Moretto", yj.prompt(info, possibili))
 
+    def test_nomi_storpiati_corretti(self):
+        info = {"canale_url": "https://www.youtube.com/@FabrizioRomanoItaliano", "canale": "Fabrizio Romano Italiano"}
+        possibili = yj.persone_note(info)
+        self.assertEqual(yj.nome_persona("Fabrizio Ormano", possibili, info), "Fabrizio Romano")
+        self.assertEqual(yj.nome_persona("Ormano", possibili, info), "Fabrizio Romano")
+        self.assertEqual(yj.nome_persona("Matteo Moreto", possibili, info), "Matteo Moretto")
+        self.assertEqual(yj.nome_persona("Fabrizio Biasin", possibili, info), "Fabrizio Biasin")
+        altro = {"canale_url": "https://www.youtube.com/@juventus", "canale": "Juventus"}
+        self.assertEqual(yj.nome_persona("Romeo Agrest", [], altro), "Romeo Agresti")
+
     def test_canale_sconosciuto(self):
         info = {"canale_url": "https://www.youtube.com/@Altro", "canale": "Altro canale"}
         self.assertEqual(yj.persone_note(info), [])

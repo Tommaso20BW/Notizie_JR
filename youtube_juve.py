@@ -8,6 +8,7 @@ JR (stessa chat di Notizie quotidiani) già nel formato del canale @Juventus_Reb
 messaggio, pronte da inoltrare: emoji iniziali, nomi in grassetto, foto e "Nome - YouTube" di chi
 parla (sul canale di Romano può essere anche Moretto), @Juventus_Reborn.
 """
+import difflib
 import html
 import json
 import os
@@ -201,11 +202,22 @@ def _semplice(testo):
     return " ".join(re.sub(r"[^\w ]", " ", testo.lower()).split())
 
 
+def _simile(a, b):
+    return difflib.SequenceMatcher(None, a, b).ratio()
+
+
 def nome_persona(persona, possibili, info):
     """Nome pulito di chi parla: se è uno dei nomi attesi per il canale si usa quella grafia."""
     trovato = _semplice(persona).split()
-    for nome in possibili:
+    noti = list(dict.fromkeys(list(possibili) + [n for v in CANALI.values() for n in v]))
+    for nome in noti:
         if _semplice(nome).split()[-1] in trovato:
+            return nome
+    # nomi storpiati dall'IA ("Fabrizio Ormano", "Matteo Moreto"): si riconoscono per somiglianza
+    for nome in noti:
+        atteso = _semplice(nome)
+        if trovato and (_simile(" ".join(trovato), atteso) >= 0.85
+                        or (len(trovato) == 1 and _simile(trovato[0], atteso.split()[-1]) >= 0.8)):
             return nome
     if str(persona or "").strip():
         return " ".join(str(persona).split())
