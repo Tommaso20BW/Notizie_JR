@@ -3756,7 +3756,7 @@ def collect_articles(
             source = future_sources[future]
             try:
                 source_articles = future.result()
-            except (requests.RequestException, ValueError, KeyError, ET.ParseError) as error:
+            except Exception as error:      # una fonte difettosa non deve spegnere il worker
                 errors.append(f'{source}: {error}')
                 print(f'[FONTE] {source}: errore ({compact_log_text(error, 70)})')
                 continue

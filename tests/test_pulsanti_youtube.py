@@ -66,6 +66,7 @@ class PulsanteNelMessaggio(unittest.TestCase):
 class EstrazioneAutomaticaTests(unittest.TestCase):
     def setUp(self):
         pu._fatti.clear()
+        pu._gestiti.clear()
 
     def video(self, canale="Fabrizio Romano"):
         return SimpleNamespace(source=f"YouTube - {canale}", title="Live", summary="",
@@ -95,6 +96,7 @@ class EstrazioneAutomaticaTests(unittest.TestCase):
 class TocchiTests(unittest.TestCase):
     def setUp(self):
         pu._fatti.clear()
+        pu._gestiti.clear()
 
     def controlla(self, sessione):
         return pu.controlla(token="T", chat_id="42", gh_token="G", repo="u/r", session=sessione, adesso=ADESSO)
@@ -181,6 +183,21 @@ class CancellaAvvisiTests(unittest.TestCase):
         self.assertEqual(cancellati, [101, 102])
         self.assertEqual(attese, [50])                      # il primo ha 250s: mancano 50s; il secondo ne ha 300
         self.assertEqual(yj._avvisi, [])
+
+
+class ToccoBloccatoTests(unittest.TestCase):
+    def test_tocco_non_segnabile_letto_parte_una_volta(self):
+        pu._fatti.clear()
+        pu._gestiti.clear()
+        # prima del nostro c'è un tocco recente di LiveScore: il nostro resta nella coda di Telegram
+        coda = [tocco(1, "kit:1:a"), tocco(2, "yt:3vDhGYP_rLs")]
+        avvii = 0
+        for minuto in range(10):
+            sessione = Sessione(list(coda))
+            with patch.object(pu, "avvia") as avvia:
+                pu.controlla("t", "42", "g", "o/r", sessione, ADESSO + minuto * 60)
+            avvii += avvia.call_count
+        self.assertEqual(avvii, 1)
 
 
 if __name__ == "__main__":

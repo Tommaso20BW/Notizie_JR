@@ -22,6 +22,7 @@ RIPETIZIONE = 60            # stesso video toccato due volte nel giro di un minu
                             # Dopo si può rifare quando si vuole.
 
 _fatti = {}                 # id del video -> quando è stato avviato (in questo worker)
+_gestiti = set()            # tocchi già gestiti ma che Telegram può ripresentare finché non sono segnati letti
 
 
 def _telegram(token, metodo, dati, session):
@@ -85,6 +86,9 @@ def controlla(token=None, chat_id=None, gh_token=None, repo=None, session=None, 
         if not dato.startswith(PREFISSO):
             continue
         nostri.add(agg["update_id"])
+        if agg["update_id"] in _gestiti:
+            continue
+        _gestiti.add(agg["update_id"])
         messaggio = cb.get("message") or {}
         if chat_id and str((messaggio.get("chat") or {}).get("id")) != chat_id:
             _rispondi(token, cb.get("id"), "Messaggio non valido", session)
@@ -103,6 +107,7 @@ def controlla(token=None, chat_id=None, gh_token=None, repo=None, session=None, 
         avviati += 1
         print(f"[PULSANTI] estrazione avviata per {video_id}")
         _rispondi(token, cb.get("id"), "Avviato: controllo i sottotitoli e poi estraggo le notizie", session)
+    _gestiti.intersection_update(nostri)
     offset = _offset(aggiornamenti, nostri, adesso)
     if offset is not None:
         _telegram(token, "getUpdates", {"offset": str(offset), "timeout": "0", "limit": "1",
