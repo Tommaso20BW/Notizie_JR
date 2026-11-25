@@ -190,6 +190,7 @@ def source_link_label(source: str) -> str:
             "Gianluca Di Marzio",
             "Alfredo Pedullà",
             "Mirko Di Natale",
+            "Il Bianconero",
         )
     ):
         return "Apri notizia"

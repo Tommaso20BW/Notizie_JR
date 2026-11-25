@@ -11,6 +11,7 @@ Controlla le notizie Juventus pubblicate OGGI su:
 - Comunicati stampa PDF Juventus.com
 - Gianluca Di Marzio (filtro di rilevanza Juventus) e Alfredo Pedullà
 - TuttoJuve: articoli di Mirko Di Natale (solo di oggi)
+- Il Bianconero (ilbianconero.com, elenco /notizie)
 - Borsa Italiana (notizie sull'azione Juventus)
 - YouTube: Juventus, Fabrizio Romano e Romeo Agresti
 - X: profili configurati (filtro Juventus per account; i repost non vengono mai inviati)
@@ -187,6 +188,39 @@ TUTTOJUVE_LABEL_PREFIX_RE = re.compile(
 # Dettagli articolo già letti (titolo completo, sommario, immagine): l'elenco
 # tronca i titoli lunghi con "...", quindi si apre l'articolo una sola volta.
 TUTTOJUVE_DETAIL_CACHE: dict[str, tuple[str, str, str]] = {}
+ILBIANCONERO_LISTING_URL = "https://www.ilbianconero.com/notizie"
+ILBIANCONERO_SOURCE = "Il Bianconero"
+ILBIANCONERO_HOSTS = {"www.ilbianconero.com", "ilbianconero.com"}
+# Gli articoli stanno in /<rubrica>/<slug>/blt<id>, per esempio
+# /liste/juventus-allenamento-24-novembre/blt10e965db312d14c4.
+ILBIANCONERO_ARTICLE_PATH_RE = re.compile(
+    r"^/[^/]+/[^/]+/blt[0-9a-f]{8,}$",
+    re.IGNORECASE,
+)
+# Orario e data riportati sulla card dell'elenco: nel testo possono risultare
+# attaccati ("18:2425/11/2026") oppure separati ("18:24 25/11/2026").
+ILBIANCONERO_LISTING_STAMP_RE = re.compile(
+    r"(\d{1,2}):(\d{2})\s*(\d{1,2})/(\d{1,2})/(\d{4})"
+)
+# Data visibile nella pagina dell'articolo ("24 nov 2026, 12:52"): serve solo
+# quando la card non la riporta.
+ILBIANCONERO_VISIBLE_DATE_RE = re.compile(
+    r"\b(\d{1,2})\s+"
+    r"(gen|feb|mar|apr|mag|giu|lug|ago|set|ott|nov|dic)[a-zà-ù]*\.?\s+"
+    r"(\d{4}),?\s+(\d{1,2}):(\d{2})\b",
+    re.IGNORECASE,
+)
+# Il titolo della pagina finisce con " | Il BiancoNero".
+ILBIANCONERO_TITLE_SUFFIX_RE = re.compile(
+    r"\s*\|\s*Il\s*Bianco\s*Nero\s*$",
+    re.IGNORECASE,
+)
+ILBIANCONERO_CARD_MAX_DEPTH = 6
+# Dettagli articolo già letti (titolo completo, sommario, immagine, data):
+# ogni pagina si apre una sola volta, anche se l'elenco viene riletto ogni ciclo.
+ILBIANCONERO_DETAIL_CACHE: dict[
+    str, tuple[str, str, str, datetime | None]
+] = {}
 BORSA_ITALIANA_JUVENTUS_URL = (
     "https://www.borsaitaliana.it/borsa/azioni/"
     "elenco-completo-notizie.html?isin=IT0005572778&lang=it"
@@ -2625,6 +2659,161 @@ def scrape_tuttojuve_di_natale(
     return articles
 
 
+def _ilbianconero_article_url(href: str) -> str:
+    """URL normalizzato di un articolo Il Bianconero, o '' se il link non lo è."""
+    url = normalize_url(urljoin(ILBIANCONERO_LISTING_URL, href))
+    parts = urlsplit(url)
+    if parts.netloc.lower() not in ILBIANCONERO_HOSTS:
+        return ""
+    if not ILBIANCONERO_ARTICLE_PATH_RE.match(parts.path):
+        return ""
+    return url
+
+
+def _ilbianconero_stamp_datetime(match: re.Match) -> datetime | None:
+    hour, minute, day, month, year = (int(group) for group in match.groups())
+    try:
+        return datetime(year, month, day, hour, minute, tzinfo=ROME)
+    except ValueError:
+        return None
+
+
+def _ilbianconero_card_published(link) -> datetime | None:
+    """Data e ora di un articolo, lette dalla sua card nell'elenco.
+
+    Dal link si risale finché il contenitore riguarda un solo articolo: appena
+    compare un secondo articolo si è usciti dalla card e si rinuncia (la data
+    verrà letta dalla pagina dell'articolo).
+    """
+    own_url = _ilbianconero_article_url(str(link["href"]))
+    container = link
+    for _ in range(ILBIANCONERO_CARD_MAX_DEPTH):
+        if container is None or container.name in {None, "[document]", "body", "html"}:
+            return None
+        other_articles = {
+            _ilbianconero_article_url(str(anchor["href"]))
+            for anchor in container.find_all("a", href=True)
+        }
+        other_articles.discard("")
+        other_articles.discard(own_url)
+        if other_articles:
+            return None
+        match = ILBIANCONERO_LISTING_STAMP_RE.search(
+            container.get_text(" ", strip=True)
+        )
+        if match:
+            return _ilbianconero_stamp_datetime(match)
+        container = container.parent
+    return None
+
+
+def _ilbianconero_visible_published(soup: BeautifulSoup) -> datetime | None:
+    """Data mostrata in pagina ("24 nov 2026, 12:52"): ultima risorsa."""
+    scope = soup.find("article") or soup.find("main") or soup
+    match = ILBIANCONERO_VISIBLE_DATE_RE.search(scope.get_text(" ", strip=True))
+    if not match:
+        return None
+    months = tuple(_IT_MONTH_ABBR_TO_EN)
+    try:
+        return datetime(
+            int(match.group(3)),
+            months.index(match.group(2).casefold()) + 1,
+            int(match.group(1)),
+            int(match.group(4)),
+            int(match.group(5)),
+            tzinfo=ROME,
+        )
+    except ValueError:
+        return None
+
+
+def _ilbianconero_article_details(
+    session: requests.Session,
+    url: str,
+) -> tuple[str, str, str, datetime | None]:
+    """Titolo completo, sommario, immagine e data letti dalla pagina articolo."""
+    cached = ILBIANCONERO_DETAIL_CACHE.get(url)
+    if cached is not None:
+        return cached
+
+    response = session.get(url, timeout=30)
+    response.raise_for_status()
+    response.encoding = "utf-8"
+    soup = BeautifulSoup(response.text, "html.parser")
+    title, published, summary, image_url = _generic_article_metadata(soup, url)
+    if published is None:
+        published = _ilbianconero_visible_published(soup)
+    title = ILBIANCONERO_TITLE_SUFFIX_RE.sub("", html.unescape(title)).strip()
+
+    details = (title, html.unescape(summary), image_url, published)
+    if title:
+        # Senza titolo la pagina viene riletta al ciclo successivo.
+        ILBIANCONERO_DETAIL_CACHE[url] = details
+    return details
+
+
+def scrape_ilbianconero(
+    session: requests.Session,
+    requested_dates: set[date],
+) -> list[Article]:
+    """Notizie di Il Bianconero (ilbianconero.com) dall'elenco /notizie.
+
+    Il sito non ha un feed RSS. L'elenco mostra le ultime 30 notizie in ordine
+    cronologico e ogni card riporta orario e data ("18:24 25/11/2026"):
+    la data si legge quindi dall'elenco e le notizie fuori dai giorni
+    richiesti non vengono nemmeno aperte. Le altre si aprono una sola volta
+    (cache) per leggere titolo completo, sommario e immagine, perché i testi
+    dell'elenco sono mescolati a etichette e didascalie delle foto.
+    """
+    response = session.get(ILBIANCONERO_LISTING_URL, timeout=30)
+    response.raise_for_status()
+    response.encoding = "utf-8"
+    soup = BeautifulSoup(response.text, "html.parser")
+
+    listing: dict[str, datetime | None] = {}
+    for link in soup.find_all("a", href=True):
+        url = _ilbianconero_article_url(str(link["href"]))
+        if not url:
+            continue
+        # Lo stesso articolo ha più link (foto, titolo): vale la prima data letta.
+        if listing.get(url) is None:
+            listing[url] = _ilbianconero_card_published(link)
+
+    articles: list[Article] = []
+    for url, listed_published in listing.items():
+        if listed_published is not None and not is_requested_date(
+            listed_published, requested_dates
+        ):
+            continue
+        try:
+            title, summary, image_url, detail_published = (
+                _ilbianconero_article_details(session, url)
+            )
+        except requests.RequestException:
+            # Errore transitorio: si riprova al ciclo successivo.
+            continue
+
+        published = listed_published or detail_published
+        if (
+            published is None
+            or not title
+            or not is_requested_date(published, requested_dates)
+        ):
+            continue
+        articles.append(
+            Article(
+                source=ILBIANCONERO_SOURCE,
+                title=title,
+                url=url,
+                published=published,
+                summary=summary,
+                image_url=image_url,
+            )
+        )
+
+    return articles
+
+
 def scrape_borsa_italiana(
     session: requests.Session,
     requested_dates: set[date],
@@ -3725,6 +3914,7 @@ def _article_scrapers() -> tuple[tuple[str, Callable], ...]:
         ('Gianluca Di Marzio', scrape_gianluca_di_marzio),
         ('Alfredo Pedullà', scrape_alfredo_pedulla),
         ('Mirko Di Natale - TuttoJuve', scrape_tuttojuve_di_natale),
+        ('Il Bianconero', scrape_ilbianconero),
         ('Borsa Italiana', scrape_borsa_italiana),
         ('YouTube', scrape_youtube_channels),
         ('X', scrape_x_profiles),
