@@ -43,6 +43,7 @@ SOURCE_EMOJIS = (
     ("Gianluca Di Marzio", "5785253271912324677", "📲"),
     ("Alfredo Pedullà", "5785322627044220734", "📲"),
     ("Mirko Di Natale", "5810081494302992771", "📲"),
+    ("Il Bianconero", "5972294171325636771", "📰"),
     ("Borsa Italiana", "5244837092042750681", "📈"),
     ("Juventus.com", "6028591382870888482", "⚪️"),
 )
