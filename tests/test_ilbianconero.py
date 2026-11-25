@@ -201,9 +201,12 @@ class IlBianconeroScraperTests(unittest.TestCase):
 
 
 class IlBianconeroMessageTests(unittest.TestCase):
-    def test_label_and_default_emoji(self):
+    def test_custom_emoji_and_label(self):
         self.assertEqual(source_link_label("Il Bianconero"), "Apri notizia")
-        self.assertEqual(source_emoji("Il Bianconero"), "📰")
+        self.assertEqual(
+            source_emoji("Il Bianconero"),
+            '<tg-emoji emoji-id="5972294171325636771">📰</tg-emoji>',
+        )
 
     def test_message_header(self):
         article = mock.Mock(
@@ -213,7 +216,12 @@ class IlBianconeroMessageTests(unittest.TestCase):
             summary="",
         )
         message = format_article_message(article)
-        self.assertTrue(message.startswith("📰 <b>Il Bianconero</b>"))
+        self.assertTrue(
+            message.startswith(
+                '<tg-emoji emoji-id="5972294171325636771">📰</tg-emoji> '
+                "<b>Il Bianconero</b>"
+            )
+        )
         self.assertIn("Apri notizia", message)
 
 
